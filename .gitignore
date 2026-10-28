@@ -1,0 +1,12 @@
+# build outputs (deliver copies of the .snap elsewhere)
+*.snap
+parts/
+stage/
+prime/
+.craft/
+build.log
+# Python caches
+__pycache__/
+*.pyc
+# development data (fake mode)
+data/

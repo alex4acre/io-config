@@ -1,0 +1,111 @@
+name: io-config
+title: I/O Config
+version: 1.0.0
+summary: EtherCAT bus scan with ESI, ENI and EEPROM cross-check
+description: |
+  EtherCAT bus scan with ESI, ENI and EEPROM cross-check
+  Web UI at https://<ctrlx>/io-config (sidebar entry "I/O Config"), Data Layer nodes under io-config/...,
+  configuration in the app data of the active configuration (io-config/config.json).
+base: core24
+confinement: strict
+grade: stable
+
+platforms:
+  amd64:
+  arm64:
+    build-on: [amd64, arm64]
+    build-for: [arm64]
+
+apps:
+  io-config:
+    command: bin/run.sh
+    environment:
+      LD_LIBRARY_PATH: $SNAP/usr/lib
+    plugs:
+      - network
+      - network-bind          # needed to listen on the proxy's unix socket; without it: 502 "Waiting for app to start"
+      - datalayer
+      - active-solution
+    slots:
+      - package-assets
+      - package-run
+    daemon: simple
+    restart-condition: always
+    passthrough:
+      restart-delay: 10s
+
+parts:
+  # The Python venv (bin/python3, lib/python3.12/site-packages) with the third-party dependencies only.
+  # Its source never changes with the app code, so code changes don't rebuild it.
+  deps:
+    plugin: python
+    source: snap/local/deps
+    python-requirements:
+      - requirements.txt
+
+  # The app package, copied into the venv's site-packages (bin/run.sh imports app.main).
+  app:
+    plugin: dump
+    source: app/
+    after: [deps]
+    organize:
+      "*": lib/python3.12/site-packages/app/
+    stage:
+      - -**/__pycache__
+      - -**/*.pyc
+
+  # Bundle libcomm_datalayer from the SDK .deb (both arches are inside it; keep only the target one)
+  datalayer:
+    plugin: nil
+    source: deb/ctrlx-datalayer-3.5.2.deb
+    source-type: deb
+    override-build: |
+      mkdir -p $CRAFT_PART_INSTALL/usr/lib
+      cp -a usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/libcomm_datalayer.so* $CRAFT_PART_INSTALL/usr/lib/
+
+  www:
+    plugin: dump
+    source: www/
+    organize:
+      "*": www/
+
+  configs:
+    plugin: dump
+    source: ./configs
+    organize:
+      "package-assets/*": package-assets/${CRAFT_PROJECT_NAME}/
+
+  wrapper-scripts:
+    plugin: dump
+    source: wrapper/
+    organize:
+      ./run.sh : bin/run.sh
+
+slots:
+  package-assets:
+    interface: content
+    content: package-assets
+    source:
+      read:
+        - $SNAP/package-assets/${CRAFT_PROJECT_NAME}
+  package-run:
+    interface: content
+    content: package-run
+    source:
+      write:
+        - $SNAP_DATA/package-run/${CRAFT_PROJECT_NAME}
+
+plugs:
+  active-solution:
+    interface: content
+    content: solutions
+    target: $SNAP_COMMON/solutions
+  datalayer:
+    interface: content
+    content: datalayer
+    target: $SNAP_DATA/.datalayer
+
+lint:
+  ignore:
+    - library:
+        - usr/lib/libcomm_datalayer.so.*

@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.boschrexroth.com/ctrlx-automation/ctrlx-core/apps/package-manifest/package-manifest.v1.6.schema.json",
+  "version": "1.0.0",
+  "id": "io-config",
+  "services": {
+    "proxyMapping": [
+      {
+        "name": "io-config.web",
+        "url": "/io-config",
+        "binding": "unix://{$SNAP_DATA}/package-run/io-config/web.sock",
+        "restricted": [
+          "/io-config/api"
+        ]
+      }
+    ]
+  },
+  "menus": {
+    "sidebar": [
+      {
+        "id": "io-config",
+        "title": "I/O Config",
+        "icon": "bosch-ic-automation",
+        "link": "/io-config/?token=${bearertoken}",
+        "target": "embedded",
+        "items": []
+      }
+    ],
+    "overview": [
+      {
+        "id": "io-config",
+        "title": "I/O Config",
+        "description": "EtherCAT bus scan with ESI, ENI and EEPROM cross-check",
+        "icon": "bosch-ic-automation",
+        "link": "/io-config/?token=${bearertoken}"
+      }
+    ]
+  },
+  "commands": {
+    "activeConfiguration": {
+      "load": [
+        {
+          "id": "io-config",
+          "subject": "I/O Config configuration",
+          "url": "/io-config/api/v1/admin/cfg/load"
+        }
+      ],
+      "save": [
+        {
+          "id": "io-config",
+          "subject": "I/O Config configuration",
+          "url": "/io-config/api/v1/admin/cfg/save"
+        }
+      ]
+    }
+  },
+  "configuration": {
+    "appDirectories": [
+      {
+        "name": "io-config",
+        "description": "I/O Config configuration",
+        "icon": "bosch-ic-automation",
+        "copyOnLoad": true,
+        "writeProtected": false
+      }
+    ],
+    "appPrivateFiles": [
+      "^io-config/.*\\.tmp$"
+    ]
+  }
+}

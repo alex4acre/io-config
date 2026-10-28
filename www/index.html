@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>I/O Config</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>I/O Config</h1>
+    <span id="conn" class="chip">...</span>
+  </header>
+  <div id="banner" class="banner" hidden></div>
+
+  <main>
+    <section class="card">
+      <h2>State</h2>
+      <dl class="grid">
+        <dt>Counter</dt><dd id="counter">-</dd>
+        <dt>Uptime</dt><dd id="uptime">-</dd>
+      </dl>
+    </section>
+
+    <section class="card">
+      <h2>Setpoint</h2>
+      <p class="hint">Also writable as the Data Layer node <code>io-config/setpoint</code>.</p>
+      <div class="row">
+        <input id="setpoint" type="number" step="any">
+        <button id="save" class="primary">Save</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Data Layer node</h2>
+      <div class="row">
+        <input id="path" type="text" placeholder="e.g. framework/metrics/system/cpu-utilisation-percent">
+        <button id="read">Read</button>
+      </div>
+      <div class="row">
+        <input id="value" type="text" placeholder="value as JSON, e.g. true, 1.5, &quot;text&quot;, [1,2]">
+        <button id="write">Write</button>
+      </div>
+      <pre id="result"></pre>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
