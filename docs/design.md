@@ -1,8 +1,8 @@
-# ethercat-config: design (draft 2026-10-28)
+# io-config: design (2026-10-28)
 
 A ctrlX CORE app that configures the EtherCAT bus from the controller's web UI, without ctrlX
 I/O Engineering: scan the bus, identify each device, build the bus configuration (ENI + ini) and
-download it to the EtherCAT Master app. Working name; rename before scaffolding.
+download it to the EtherCAT Master app. Sidebar entry "I/O Config".
 
 ## What the controller offers (read on the X3 at 192.168.7.22)
 
@@ -85,15 +85,14 @@ visible.
 
 ## Phases
 
-1. **Read-only:** scan, identity, EEPROM decode, parse current ENI, show the bus with sources.
-   Testable on .22 with no risk.
+1. **Read-only (1.0.0, built 2026-10-28):** scan, identity, EEPROM decode, parse current ENI, ESI
+   upload and index, show the bus with the three sources and findings. Testable on .22 with no risk.
 2. **Generator** plus the acceptance test against `controller-eni.xml` (offline, on the VM).
-3. **ESI import and learn-from-EEPROM:** library management in the UI.
+3. **Learn from the EEPROM** into the library (ESI upload is already in phase 1).
 4. **Download** to the controller; only with the user's OK on the X3.
 
 ## Open questions
 
-- App name.
 - Which ESI files to start with (ctrlX I/O family; ctrlX DRIVE; third-party).
 - May the Rexroth ctrlX I/O ESI files be shipped in the snap?
 - Is ctrlX COREvirtual (.27) able to run an EtherCAT master for testing, or is the X3 the only bus?
