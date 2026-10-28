@@ -4,7 +4,9 @@
 
     IO_CONFIG_FAKE=1 IO_CONFIG_CONFIG=<path of a file that doesn't exist yet> python3 -m app.main   # a FRESH backend each run
     geckodriver --port 4444            # Ubuntu's Firefox snap: /snap/bin/firefox.geckodriver --port 4444
-    python3 tests/ui/ui_check.py <screenshot folder>    # with the Firefox snap: a folder under ~/snap/firefox/common
+    python3 tests/ui/ui_check.py <screenshot folder> [<XI522001 ESI file to upload>]
+                                       # with the Firefox snap: both under ~/snap/firefox/common
+The backend's ESI library must hold the XB-EC-12, XI190202 and XI422202 files (IO_CONFIG_ESI), not XI522001.
 
 Plain WebDriver over HTTP (no selenium needed). Stop the backend and geckodriver by PID afterwards.
 """
@@ -20,6 +22,7 @@ WD = "http://127.0.0.1:4444"
 PORT = int(os.environ.get("IO_CONFIG_PORT", "12617"))
 URL = f"http://127.0.0.1:{PORT}/io-config/?token=dev"
 OUT = sys.argv[1] if len(sys.argv) > 1 else None
+UPLOAD = sys.argv[2] if len(sys.argv) > 2 else None      # path of an ESI file Firefox may read (XI522001)
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 failures = []
 
@@ -62,22 +65,52 @@ def shot(name):
             f.write(base64.b64decode(call("GET", S + "/screenshot")))
 
 
+def find(css):
+    return next(iter(call("POST", S + "/element", {"using": "css selector", "value": css}).values()))
+
+
+def text(id_):
+    return js(f"return document.getElementById('{id_}').textContent")
+
+
 try:
     call("POST", S + "/url", {"url": URL})
-    check(until("document.getElementById('counter').textContent !== '-'"), "state is shown")
     check(until("document.getElementById('conn').classList.contains('ok')"), "connection chip is green")
-    js("document.getElementById('setpoint').value = '12.5'; document.getElementById('save').click();")
-    check(until("document.getElementById('banner').textContent === 'Saved'"), "setpoint saved")
-    with opener.open(f"http://127.0.0.1:{PORT}/io-config/api/v1/config", timeout=5) as r:
-        check(json.loads(r.read())["setpoint"] == 12.5, "the backend has the new setpoint")
-    js("document.getElementById('path').value = 'demo/flag'; document.getElementById('read').click();")
-    check(until("document.getElementById('result').textContent.trim() === 'false'"), "Data Layer read")
-    js("document.getElementById('value').value = 'true'; document.getElementById('write').click();")
-    check(until("document.getElementById('result').textContent.trim() === 'true'"), "Data Layer write")
-    js("document.getElementById('path').value = 'no/such/node'; document.getElementById('read').click();")
-    check(until("!document.getElementById('banner').hidden && "
-                "document.getElementById('banner').textContent.includes('INVALID_ADDRESS')"), "error shown in the banner")
-    shot("main")
+    check(until("!document.getElementById('noscan').hidden"), "not scanned yet")
+    js("document.getElementById('scan').click();")
+    check(until("document.querySelectorAll('#devices tbody tr').length === 4"), "scan shows 4 devices")
+    names = js("return [...document.querySelectorAll('#devices tbody tr')].map(r => r.cells[1].textContent)")
+    check(names == ["XB_EC_12", "XI190202", "XI422202", "XI522001"], f"device names {names}")
+    check("op" in text("m-state") and "4 connected, 4 configured" in text("m-devices"), "master overview")
+    esi = js("return [...document.querySelectorAll('#devices tbody tr')].map(r => r.cells[6].textContent)")
+    check(esi == ["exact", "exact", "exact", "missing"], f"ESI column {esi} (XI522001 has no ESI yet)")
+    check(js("return document.querySelectorAll('#devices tbody tr')[3].cells[9].textContent") == "Check (1)", "XI522001 flagged")
+    js("document.querySelectorAll('#devices tbody tr')[2].click();")
+    check(until("!document.getElementById('detail').hidden && "
+                "document.getElementById('d-title').textContent === '2: XI422202'"), "detail of XI422202 opens")
+    check(until("document.querySelectorAll('#d-pdos tbody tr').length === 6"), "6 PDOs side by side")
+    check("agree" in text("d-findings"), "no findings for XI422202")
+    check(js("return document.querySelectorAll('#d-vars tbody tr').length") == 8, "8 process image variables")
+    check(js("return document.querySelectorAll('#d-init tbody tr').length") == 2, "2 startup parameters (ENI)")
+    shot("bus")
+    js("document.querySelectorAll('#devices tbody tr')[3].click();")
+    check(until("document.getElementById('d-findings').textContent.includes('No ESI file')"), "XI522001 finding shown")
+    shot("missing-esi")
+
+    js("document.getElementById('tab-esi').click();")
+    check(until("document.getElementById('esi-count').textContent.startsWith('3 files, 5 devices')"), "library shows 3 files")
+    if UPLOAD:
+        call("POST", S + f"/element/{find('#esi-files')}/value", {"text": UPLOAD})
+        js("document.getElementById('esi-upload').click();")
+        check(until("document.getElementById('esi-result').textContent.includes('1 device added')"), "ESI uploaded")
+        check(until("document.getElementById('esi-count').textContent.startsWith('4 files, 6 devices')"), "library has 4 files")
+        js("document.getElementById('esi-search').value = 'serial'; document.getElementById('esi-search').oninput();")
+        check(until("document.querySelectorAll('#esi-devices tbody tr').length === 1"), "search finds XI522001")
+        shot("esi")
+        js("document.getElementById('tab-bus').click(); document.getElementById('scan').click();")
+        check(until("document.querySelectorAll('#devices tbody tr')[3] && "
+                    "document.querySelectorAll('#devices tbody tr')[3].cells[6].textContent === 'exact'"),
+              "after a rescan XI522001 has its ESI")
 finally:
     call("DELETE", S)
 

@@ -3,9 +3,9 @@ title: I/O Config
 version: 1.0.0
 summary: EtherCAT bus scan with ESI, ENI and EEPROM cross-check
 description: |
-  EtherCAT bus scan with ESI, ENI and EEPROM cross-check
-  Web UI at https://<ctrlx>/io-config (sidebar entry "I/O Config"), Data Layer nodes under io-config/...,
-  configuration in the app data of the active configuration (io-config/config.json).
+  EtherCAT bus scan with ESI, ENI and EEPROM cross-check (read-only).
+  Web UI at https://<ctrlx>/io-config (sidebar entry "I/O Config"). Reads the EtherCAT master from the
+  Data Layer; ESI library in $SNAP_COMMON/esi; configuration in the active configuration (io-config/config.json).
 base: core24
 confinement: strict
 grade: stable

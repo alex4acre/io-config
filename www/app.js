@@ -307,7 +307,7 @@ $("esi-upload").onclick = async () => {
   }
   const reasons = {};
   for (const s of skipped) (reasons[s.reason] = reasons[s.reason] || []).push(s.file);
-  out.replaceChildren(el("p", { class: added ? "ok" : "muted" }, `${added} devices added.`),
+  out.replaceChildren(el("p", { class: added ? "ok" : "muted" }, `${added} device${added === 1 ? "" : "s"} added.`),
     ...Object.entries(reasons).map(([reason, names]) => el("details", {},
       el("summary", {}, `${names.length} skipped: ${reason}`), el("ul", { class: "files" }, ...names.map((n) => el("li", {}, n))))));
   $("esi-files").value = "";

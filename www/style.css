@@ -100,6 +100,7 @@ pre:empty { display: none; }
 .check { display: flex; align-items: center; gap: 6px; color: var(--muted); }
 .check input { height: auto; }
 button:disabled { opacity: 0.5; cursor: default; }
+input[type="file"] { height: auto; padding: 4px 8px; }
 button.small { height: 24px; padding: 0 8px; font-size: 12px; }
 
 .grid.cols { grid-template-columns: repeat(3, max-content 1fr); }
