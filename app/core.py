@@ -400,10 +400,13 @@ class Core:
                 edit = None
             dev = configure.device_for(src, {position: edit} if edit else {})
             out = edits.options(src, dev, edit)
-            out["startup"] = (edit or {}).get("startup", [])
+            if edit and "startup" in edit:
+                out["startup"] = edit["startup"]
+            else:                       # not edited yet: what the configuration keeps now, as the starting point
+                out["startup"] = edits.kept_startup(configure.device_for(src, {}))
             coe_cfg = ((dev or {}).get("mailbox") or {}).get("coe")
             out["coe"] = coe_cfg is not None
-            out["fixed_startup"] = [c for c in (coe_cfg or {}).get("init", []) if not c.get("user")]
+            out["fixed_startup"] = [c for c in (coe_cfg or {}).get("init", []) if not c.get("user") and not c.get("from_eni")]
             out["pdo_assign"] = bool((coe_cfg or {}).get("pdo_assign"))
             return out
 
@@ -432,7 +435,15 @@ class Core:
     # --- CoE objects of a device (online, through the master's mailbox) ------------------------------
 
     def _coe_address(self, position: int) -> dict:
-        self._source(position)
+        src = self._source(position)
+        protocols = None
+        if src.get("esi_device") is not None:
+            protocols = src["esi_device"].get("mailbox", [])
+        elif src.get("eeprom"):
+            protocols = src["eeprom"].get("mailbox", [])
+        if protocols is not None and "CoE" not in protocols:
+            raise ConfigError(f'the device at position {position} has no CoE mailbox '
+                              f'({", ".join(protocols) or "no mailbox protocols"}), so it has no objects to read or write')
         return {"addressType": "autoincrement", "address": (-position) & 0xFFFF}
 
     def _coe_base(self) -> str:

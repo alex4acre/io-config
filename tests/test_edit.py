@@ -101,6 +101,25 @@ class EditTest(unittest.TestCase):
         self.assertNotIn(1, self.core.load_edits())                        # refused edits are not saved
 
 
+    def test_startup_replaces_the_kept_ones(self):
+        """Seen on the X3: the kept 1000 and the new 0 both ended up in the ENI."""
+        def gains():
+            return [(c["index"], c["data"]) for c in self.built()["coe_init"] if c["index"] == 0x8000]
+        self.core.save_edit(2, {"startup": [self.core.startup_entry(2, 0x8000, 1, 1000)]})
+        self.core.plan()
+        p = self.core.plan_data
+        self.core.start_download(p["id"])
+        self.core.wait_scan()
+        self.core.wait_scan()
+        self.core.reset_edit(2)
+        self.assertEqual(gains(), [(0x8000, "E8030000")])                         # kept from the running configuration
+        self.assertEqual(self.core.edit_options(2)["startup"][0]["data"], "E8030000")  # and shown for editing
+        self.core.save_edit(2, {"startup": [self.core.startup_entry(2, 0x8000, 1, 0)]})
+        self.assertEqual(gains(), [(0x8000, "00000000")])                         # replaced, not added
+        self.core.save_edit(2, {"startup": []})
+        self.assertEqual(gains(), [])                                             # and removable
+
+
 class ObjectTest(unittest.TestCase):
 
     def setUp(self):
@@ -130,7 +149,7 @@ class ObjectTest(unittest.TestCase):
     def test_no_coe(self):
         with self.assertRaises(Exception) as cm:
             self.core.objects(1)
-        self.assertIn("Protocol not supported", str(cm.exception))
+        self.assertIn("has no CoE mailbox (FoE)", str(cm.exception))
 
     def test_sdo_write(self):
         with self.assertRaises(ConfigError) as cm:

@@ -146,11 +146,23 @@ def apply_edit(dev: dict, src: dict, edit: dict) -> dict:
             chosen.append(dict(p, sm=sm))
         out["pdos"] = chosen
         out["source"] = "edited"
-    if edit.get("startup"):
+    if "startup" in edit:
+        # the user's list replaces the startup commands kept from the current configuration (it starts as a
+        # copy of them in the editor); the ESI's own commands stay
         mbx = out.get("mailbox")
         if not mbx or mbx.get("coe") is None:
-            raise EditError("the device has no CoE mailbox for startup parameters")
-        coe = dict(mbx["coe"], init=list(mbx["coe"].get("init", [])) +
-                   [dict(x, complete_access=False, user=True) for x in edit["startup"]])
+            if edit["startup"]:
+                raise EditError("the device has no CoE mailbox for startup parameters")
+            return out
+        init = [c for c in mbx["coe"].get("init", []) if not c.get("from_eni")]
+        coe = dict(mbx["coe"], init=init + [dict(x, complete_access=False, user=True) for x in edit["startup"]])
         out["mailbox"] = dict(mbx, coe=coe)
     return out
+
+
+def kept_startup(dev: dict) -> list:
+    """The startup commands a device keeps from the current configuration, in the editor's form."""
+    coe = ((dev or {}).get("mailbox") or {}).get("coe") or {}
+    return [{"index": c["index"], "subindex": c["subindex"], "data": c["data"], "transitions": c["transitions"],
+             "comment": c.get("comment") or f'{c["index"]:#06x}:{c["subindex"]}'}
+            for c in coe.get("init", []) if c.get("from_eni")]

@@ -103,6 +103,10 @@ visible.
    for the entry's data type). CoE object dictionary online (list, descriptions, values), SDO write now
    (refused when the entry isn't writable in the device's current state, e.g. 0x8000 settings are PreOp-only),
    process data read/write through realtime_data (outputs only, range-checked by ENI type).
+   Device-tested on the X3 2026-10-28 (1.2.0): object lists ~0.5 s per device, process data 44 variables in
+   0.12 s, analog output and 0x10F1:2 written and restored, startup parameter 0x8000:1 downloaded and read
+   back from the device. 1.2.1: an edited startup list replaces the commands kept from the running
+   configuration (1.2.0 added them, so a changed value appeared twice and a removed one stayed).
 6. **Next:** drives (modules/slots, PDO mapping content, SoE startup), DC mode choice, devices without a
    mailbox, more than one frame.
 

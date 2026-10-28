@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "io-config"
-version = "1.2.0"
+version = "1.2.1"
 description = "EtherCAT bus scan with ESI, ENI and EEPROM cross-check"
 requires-python = ">=3.10"
 dependencies = [

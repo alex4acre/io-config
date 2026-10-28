@@ -148,7 +148,7 @@ def apply_eni(dev: dict, slave: dict) -> dict:
     out["pdos"] = [p for p in slave["pdos"] if p["index"] in assigned]
     out["dc"] = {"assign_activate": slave["dc_activate"]} if slave.get("dc_activate") else None
     if out.get("mailbox") and out["mailbox"].get("coe") is not None:
-        extra = [c for c in slave.get("coe_init", []) if c["index"] not in (0x1C12, 0x1C13)]
+        extra = [dict(c, from_eni=True) for c in slave.get("coe_init", []) if c["index"] not in (0x1C12, 0x1C13)]
         out["mailbox"] = dict(out["mailbox"], coe=dict(out["mailbox"]["coe"], init=extra))
     return out
 
