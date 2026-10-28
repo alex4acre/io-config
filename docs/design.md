@@ -119,6 +119,11 @@ visible.
    parameters. SoE parameter read/write via device_access/soe/parameter (needs the drive in PreOp+, i.e.
    configured). The FSoE slot (MinInstances 0) is not configured.
    **Needed:** an ENI from ctrlX I/O Engineering with this drive to replace the guesses with facts.
+   **Tried on the X3 2026-10-28 (user approved):** the draft (tests/data/x3-drive-draft-1.3.0.xml) was accepted,
+   checksums matched, the I/O stayed in Op; the drive reached PreOp (AL 0x02, code 0) and the master then set
+   its requested state to PreOp (gave up on PS). Every SoE read timed out ("Ecat: Timeout" 0C850010) in PreOp;
+   mailbox counters: SoE 22 read requests, 0 bytes, 0 writes. The original configuration was restored.
+   Suspects: mailbox-state FMMU / SoE InitCmd format / something I/O Engineering adds for drives.
 7. **Next:** DC mode choice, devices without a mailbox, more than one frame, slots/modules.
 
 ## Open questions
