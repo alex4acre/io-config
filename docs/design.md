@@ -95,7 +95,8 @@ visible.
    configuration (io-config/backups), master to Init, write `admin/fieldbus_config`, compare the master's
    checksums (CRC-32 without the final inversion, little-endian), master to Op, and the master's files
    `comm.ethercat.master/config/<instance>/ethercat.xml|.ini` in the active configuration (loaded at boot).
-   Restore from a backup the same way. Not yet tried on the X3.
+   Restore from a backup the same way. Tried on the X3 2026-10-28 with the identical configuration: ~10 s,
+   checksums match, back in Op, and the master rewrote its active-configuration files itself.
 5. **Next:** editing (PDO selection, device names, DC mode), devices without a mailbox, more than one frame.
 
 ## Open questions
