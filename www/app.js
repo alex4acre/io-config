@@ -104,7 +104,7 @@ function renderState(s) {
   $("conn").textContent = s.connected ? "Data Layer connected" : "Data Layer offline";
   $("conn").className = "chip " + (s.connected ? "ok" : "bad");
   $("instance").textContent = s.instance;
-  $("scan").disabled = s.scan.running;
+  $("scan").disabled = s.scan.running || s.download.running;
   $("progress").textContent = s.scan.running ? "Scanning: " + s.scan.progress : "";
   if (s.scan.error && !s.scan.running && s.scan.finished !== lastFinished) banner("Scan failed: " + s.scan.error);
 
@@ -137,7 +137,12 @@ function renderState(s) {
   if (s.scan.finished !== lastFinished) {
     lastFinished = s.scan.finished;
     if (selected !== null) openDevice(selected);
+    if (plan) {                     // a new scan makes a built configuration stale
+      plan = null;
+      $("plan").hidden = true;
+    }
   }
+  renderConfig(s);
 }
 
 async function poll() {
@@ -234,6 +239,137 @@ async function openDevice(pos) {
   add("ESI modes", modes.length ? modes.slice(0, 6).map((m) => `${m.name} (${m.desc}, ${hex(m.assign_activate)})`).join("; ") +
     (modes.length > 6 ? `; ... ${modes.length} in all` : "") : "-");
 }
+
+// --- configuration: build, write, backups -------------------------------------------------------
+
+let plan = null;
+let downloadFinished = null;
+
+function renderConfig(s) {
+  $("config-card").hidden = !s.master;
+  const busy = s.scan.running || s.download.running;
+  $("build").disabled = busy;
+  $("write").disabled = busy || !plan || plan.errors.length > 0;
+  if (s.master && !$("cycle").value && s.master.cycle_us) $("cycle").value = s.master.cycle_us;
+
+  const d = s.download;
+  $("dl").hidden = !d.running && !d.finished;
+  if (!$("dl").hidden) {
+    $("dl-title").textContent = d.running ? "Writing to the EtherCAT master ..." :
+      (d.error ? "Writing failed" : "Written");
+    const ul = $("dl-steps");
+    ul.replaceChildren(...d.steps.map((t) => el("li", { class: "ok" }, t)));
+    if (d.error) ul.append(el("li", { class: "error" }, d.error));
+  }
+  if (d.finished && d.finished !== downloadFinished) {
+    downloadFinished = d.finished;
+    plan = null;
+    $("plan").hidden = true;
+    loadBackups();
+  }
+}
+
+async function getFile(path, name) {
+  try {
+    const r = await fetch(API + path, { headers: { Authorization: "Bearer " + TOKEN } });
+    if (!r.ok) throw new Error((await r.json()).error || r.statusText);
+    const url = URL.createObjectURL(await r.blob());
+    const a = el("a", { href: url, download: name });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  } catch (e) {
+    banner(e.message);
+  }
+}
+
+$("build").onclick = async () => {
+  try {
+    banner("");
+    const cycle = Number($("cycle").value);
+    plan = await api("POST", "/plan", cycle ? { cycle_us: cycle } : {});
+  } catch (e) {
+    plan = null;
+    $("plan").hidden = true;
+    banner(e.message);
+    return;
+  }
+  $("plan").hidden = false;
+  $("dl").hidden = true;
+  const v = plan.variables;
+  const nChanges = v.added.length + v.removed.length + v.changed.length;
+  $("plan-summary").textContent = plan.errors.length ? "The configuration can't be built:" :
+    plan.identical ? "Identical to the configuration the master runs now." :
+    `Differs from the current configuration (${plan.eni_size} bytes ENI, cycle time ${plan.cycle_us} µs).`;
+  $("plan-summary").className = plan.errors.length ? "error" : (plan.identical ? "ok" : "");
+  const msgs = $("plan-messages");
+  msgs.replaceChildren(...plan.errors.map((t) => el("li", { class: "error" }, t)),
+    ...plan.warnings.map((t) => el("li", { class: "warning" }, t)),
+    ...plan.removed_devices.map((n) => el("li", { class: "warning" }, `${n} is configured now but not on the bus: it will be removed`)));
+  const tb = $("plan-devices").tBodies[0];
+  tb.replaceChildren();
+  for (const d of plan.devices) row(tb, [d.position, d.name, d.note || d.source || "-", d.inputs + " B", d.outputs + " B"]);
+  $("plan-vars").querySelector("summary").textContent = nChanges
+    ? `Process image: ${v.added.length} variables new, ${v.removed.length} removed, ${v.changed.length} changed (type or offset)`
+    : "Process image: no variable changes";
+  const body = $("plan-vars-body");
+  body.replaceChildren();
+  for (const [label, list] of [["New", v.added], ["Removed", v.removed], ["Changed", v.changed]]) {
+    if (list.length) body.append(el("h3", {}, label), el("ul", { class: "files" }, ...list.map((n) => el("li", {}, n))));
+  }
+  $("write").disabled = plan.errors.length > 0;
+};
+
+$("get-eni").onclick = () => getFile("/plan/eni", "ethercat.xml");
+$("get-ini").onclick = () => getFile("/plan/ini", "ethercat.ini");
+
+const WRITE_WARNING = "The EtherCAT master goes to Init while the configuration is written: the bus stops, outputs " +
+  "drop and the PLC and MOTION lose their I/O until the master is back in Op.\n\n" +
+  "The current configuration is saved as a backup first.";
+
+$("write").onclick = async () => {
+  if (!plan) return;
+  const what = plan.identical ? "The new configuration is identical to the current one.\n\n" : "";
+  if (!confirm(what + WRITE_WARNING + "\n\nWrite the configuration now?")) return;
+  try {
+    banner("");
+    await api("POST", "/download", { plan_id: plan.id, confirm: true });
+    $("write").disabled = true;
+    poll();
+  } catch (e) {
+    banner(e.message);
+  }
+};
+
+async function loadBackups() {
+  try {
+    const r = await api("GET", "/backups");
+    const tb = $("backups").tBodies[0];
+    tb.replaceChildren();
+    if (!r.backups.length) row(tb, [el("span", { class: "muted" }, "none yet"), "", "", ""]);
+    for (const b of r.backups) {
+      const get = el("button", { class: "small" }, "ENI");
+      get.onclick = () => getFile(`/backups/${b.name}/eni`, `${b.name}-ethercat.xml`);
+      const restore = el("button", { class: "small" }, "Restore");
+      restore.onclick = async () => {
+        if (!confirm(`Write the configuration saved ${new Date(b.time * 1000).toLocaleString()} back to the master?\n\n` +
+          WRITE_WARNING)) return;
+        try {
+          await api("POST", `/backups/${b.name}/restore`, { confirm: true });
+          poll();
+        } catch (e) {
+          banner(e.message);
+        }
+      };
+      row(tb, [new Date(b.time * 1000).toLocaleString(), b.before, b.devices.join(", "), el("span", {}, get, " ", restore)]);
+    }
+  } catch (e) {
+    banner(e.message);
+  }
+}
+
+$("backups-box").ontoggle = () => { if ($("backups-box").open) loadBackups(); };
 
 $("d-close").onclick = () => {
   selected = null;

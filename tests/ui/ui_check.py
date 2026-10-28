@@ -97,6 +97,25 @@ try:
     check(until("document.getElementById('d-findings').textContent.includes('No ESI file')"), "XI522001 finding shown")
     shot("missing-esi")
 
+    # configuration: build (identical), change the cycle time, write, backup
+    js("document.getElementById('build').click();")
+    check(until("!document.getElementById('plan').hidden && "
+                "document.getElementById('plan-summary').textContent.startsWith('Identical')"), "built configuration is identical")
+    check(js("return document.querySelectorAll('#plan-devices tbody tr').length") == 4, "plan lists 4 devices")
+    js("document.getElementById('cycle').value = '1000'; document.getElementById('build').click();")
+    check(until("document.getElementById('plan-summary').textContent.includes('cycle time 1000')"), "cycle time change differs")
+    check("no variable changes" in js("return document.querySelector('#plan-vars summary').textContent"),
+          "cycle time change keeps the variables")
+    shot("plan")
+    js("window.confirm = () => true; document.getElementById('write').click();")
+    check(until("document.getElementById('dl-title').textContent === 'Written'", 20), "configuration written")
+    steps = text("dl-steps")
+    check("checksums match" in steps and "Op" in steps and "backup" in steps, f"download steps: {steps}")
+    check(until("document.getElementById('m-cycle').textContent === '1000 µs'", 20), "rescan shows the new cycle time")
+    js("document.getElementById('backups-box').open = true;")
+    check(until("document.querySelectorAll('#backups tbody tr button').length === 2"), "one backup listed")
+    shot("written")
+
     js("document.getElementById('tab-esi').click();")
     check(until("document.getElementById('esi-count').textContent.startsWith('3 files, 5 devices')"), "library shows 3 files")
     if UPLOAD:

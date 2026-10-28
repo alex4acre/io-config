@@ -50,6 +50,10 @@ class GeneratorTest(unittest.TestCase):
         self.assertEqual([d["name"] for d in devices], ["XB_EC_12", "XI190202", "XI422202", "XI522001"])
         self.assertEqual(generate.generate_eni(devices, "ethercatmaster", 2000), REFERENCE)
 
+    def test_same_file_from_the_current_configuration_alone(self):
+        devices = [generate.device_from_eni(s) for s in self.current["slaves"]]
+        self.assertEqual(generate.generate_eni(devices, "ethercatmaster", 2000), REFERENCE)
+
     def test_ini_and_checksums(self):
         self.assertEqual(generate.generate_ini(REFERENCE_INI.decode("latin-1"), 2000), REFERENCE_INI)
         self.assertIn(b"CycleTimeUs=1000\r\n", generate.generate_ini(REFERENCE_INI.decode("latin-1"), 1000))
@@ -105,6 +109,12 @@ class PlanTest(unittest.TestCase):
         p = build_plan(self.sources, {"eni": b"", "ini": b"", "parsed": None}, "ethercatmaster")
         self.assertEqual(p["eni"], REFERENCE)
         self.assertEqual(len(p["variables"]["added"]), 44)
+
+    def test_device_without_esi_is_kept_from_the_configuration(self):
+        self.sources[3].update(esi_match="none", esi_device=None)
+        p = build_plan(self.sources, self.current, "ethercatmaster")
+        self.assertTrue(p["identical"])
+        self.assertIn("no ESI: taken from the current configuration", p["devices"][3]["note"])
 
     def test_device_without_esi_is_learned_from_the_eeprom(self):
         self.sources[3].update(esi_match="none", esi_device=None, eni_slave=None)

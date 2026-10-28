@@ -57,6 +57,10 @@ def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = N
             if src["esi_match"] == "nearest":
                 dev["revision"] = revision
                 note.append(f'ESI of revision {esi["revision"]:#x}')
+        elif slave is not None and (slave["vendor"], slave["product"], slave["revision"]) == (vendor, product, revision):
+            name = slave["name"]
+            dev = generate.device_from_eni(slave)
+            note.append("no ESI: taken from the current configuration")
         elif src.get("eeprom"):
             name = src["eeprom"].get("order") or src["eeprom"].get("name") or "Device"
             dev = generate.device_from_eeprom(src["eeprom"], "")

@@ -90,6 +90,44 @@ class MethodNode:
         cb(Result.UNSUPPORTED, None)
 
 
+class VariableNode(MethodNode):
+    """A readable/writable flatbuffers node (master_state, fieldbus_config): keeps the last written value as JSON."""
+
+    def __init__(self, system, type_address, value):
+        super().__init__(system, type_address, None)
+        self.value = value
+        self.written = []
+
+    def _answer(self, cb, value):
+        with Variant() as tv:
+            tv.set_flatbuffers(bytearray(self.bfbs))
+            r, out, err = self.converter.parse_json_complex(json.dumps(value), tv)
+            with out, err:
+                cb(Result.OK if r == Result.OK else Result.FAILED, out if r == Result.OK else None)
+
+    def on_read(self, userdata, address, data, cb):
+        self._answer(cb, self.value)
+
+    def on_write(self, userdata, address, data: Variant, cb):
+        with Variant() as tv:
+            tv.set_flatbuffers(bytearray(self.bfbs))
+            r, js = self.converter.converter_generate_json_complex(data, tv, -1)
+            with js:
+                if r != Result.OK:
+                    cb(Result.INVALID_VALUE, None)
+                    return
+                value = json.loads(js.get_string())
+        self.written.append(value)
+        self._answer(cb, value)
+
+    def on_metadata(self, userdata, address, cb):
+        builder = MetadataBuilder(allowed=AllowedOperation.READ | AllowedOperation.WRITE, description="simulated")
+        builder.set_node_class(NodeClass.NodeClass.Variable)
+        builder.add_reference(ReferenceType.read(), self.type_address)
+        builder.add_reference(ReferenceType.write(), self.type_address)
+        cb(Result.OK, builder.build())
+
+
 def main():
     _nodes, slaves = recorded_nodes()
     by_address = {s["autoinc"]: s for s in slaves}
@@ -115,8 +153,30 @@ def main():
             m.bfbs = f.read()
         check(provider.register_node(MASTER + "device_access/" + name, m.node) == Result.OK, f"node {name} registered")
         methods[name] = m
+    variables = {}
+    for name, path, value in (("master_state", "admin/fieldbus_status/master_state",
+                               {"response": {"currentState": "op", "requestedState": "op"}}),
+                              ("fieldbus_config", "admin/fieldbus_config", {"response": {"eni": [60, 97, 47, 62], "ini": [10]}})):
+        type_address = f"types/ethercat/master/{name}"
+        bfbs = os.path.join(HERE, "bfbs", name + ".bfbs")
+        check(provider.register_type(type_address, bfbs) == Result.OK, f"type {type_address} registered")
+        v = VariableNode(system, type_address, value)
+        with open(bfbs, "rb") as f:
+            v.bfbs = f.read()
+        check(provider.register_node(MASTER + path, v.node) == Result.OK, f"node {name} registered")
+        variables[name] = (path, v)
     bus = DatalayerBus(system, "ipc://")
     try:
+        path, v = variables["master_state"]
+        bus.write(MASTER + path, {"request": {"newState": "init"}})
+        check(v.written and v.written[-1].get("request") == {"newState": "init"}, f"master_state written: {v.written}")
+        path, v = variables["fieldbus_config"]
+        check(bus.read(MASTER + path)["response"]["eni"] == [60, 97, 47, 62], "fieldbus_config read as byte list")
+        eni_bytes = open(os.path.join(HERE, "..", "data", "controller-eni.xml"), "rb").read()
+        bus.write(MASTER + path, {"request": {"eni": list(eni_bytes), "ini": [65, 13, 10]}})
+        got = bytes(v.written[-1]["request"]["eni"]) if v.written else b""
+        check(got == eni_bytes and v.written[-1]["request"]["ini"] == [65, 13, 10],
+              f"fieldbus_config written: the provider got the {len(got)}-byte ENI unchanged")
         check(bus.is_connected(), "client connected")
         a = bus.read_args(MASTER + "device_access/slave_online_info",
                           {"request": {"addressType": "autoincrement", "address": 65534}})
@@ -149,6 +209,8 @@ def main():
         bus.close()
         for name in methods:
             provider.unregister_node(MASTER + "device_access/" + name)
+        for path, _v in variables.values():
+            provider.unregister_node(MASTER + path)
         provider.stop()
         provider.close()
         system.stop(True)

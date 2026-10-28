@@ -87,9 +87,16 @@ visible.
 
 1. **Read-only (1.0.0, built 2026-10-28):** scan, identity, EEPROM decode, parse current ENI, ESI
    upload and index, show the bus with the three sources and findings. Testable on .22 with no risk.
-2. **Generator** plus the acceptance test against `controller-eni.xml` (offline, on the VM).
+2. **Generator (1.1.0):** reproduces `controller-eni.xml` byte for byte from the current configuration's
+   choices, from the ESI files alone, and from the ENI alone. Devices are described from the ESI, else the
+   current configuration, else the EEPROM.
 3. **Learn from the EEPROM** into the library (ESI upload is already in phase 1).
-4. **Download** to the controller; only with the user's OK on the X3.
+4. **Download (1.1.0):** checksum guard (no other download since the scan), backup in the active
+   configuration (io-config/backups), master to Init, write `admin/fieldbus_config`, compare the master's
+   checksums (CRC-32 without the final inversion, little-endian), master to Op, and the master's files
+   `comm.ethercat.master/config/<instance>/ethercat.xml|.ini` in the active configuration (loaded at boot).
+   Restore from a backup the same way. Not yet tried on the X3.
+5. **Next:** editing (PDO selection, device names, DC mode), devices without a mailbox, more than one frame.
 
 ## Open questions
 

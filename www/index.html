@@ -49,6 +49,39 @@
       <p class="hint">Click a device for the sources side by side.</p>
     </section>
 
+    <section class="card" id="config-card" hidden>
+      <div class="row head">
+        <h2>Configuration</h2>
+        <label class="check">Cycle time <input id="cycle" type="number" min="125" max="100000" step="125"> µs</label>
+        <button id="build" class="primary">Build configuration</button>
+      </div>
+      <p class="hint">Builds the bus configuration (ENI + ini) for the devices found by the last scan: each device from
+        its ESI (without one: from the current configuration, else from its EEPROM), keeping the current configuration's choices where the same device
+        type sits at that position. Nothing is written until you press "Write to the EtherCAT master".</p>
+      <div id="plan" hidden>
+        <p id="plan-summary"></p>
+        <ul id="plan-messages" class="findings"></ul>
+        <div class="scroll"><table id="plan-devices"><thead><tr><th>Pos</th><th>Name</th><th>Description from</th>
+          <th>Inputs</th><th>Outputs</th></tr></thead><tbody></tbody></table></div>
+        <details id="plan-vars"><summary></summary><div id="plan-vars-body"></div></details>
+        <div class="row">
+          <button id="get-eni">Download ENI file</button>
+          <button id="get-ini">Download ini file</button>
+          <span class="spacer"></span>
+          <button id="write" class="danger">Write to the EtherCAT master</button>
+        </div>
+      </div>
+      <div id="dl" hidden>
+        <h3 id="dl-title"></h3>
+        <ul id="dl-steps" class="findings"></ul>
+      </div>
+      <details id="backups-box">
+        <summary>Backups (configurations replaced by this app)</summary>
+        <div class="scroll"><table id="backups"><thead><tr><th>Saved</th><th>Before</th><th>Devices</th><th></th></tr></thead>
+          <tbody></tbody></table></div>
+      </details>
+    </section>
+
     <section class="card" id="detail" hidden>
       <div class="row head">
         <h2 id="d-title"></h2>

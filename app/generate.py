@@ -114,6 +114,30 @@ def device_from_eeprom(sii: dict, name: str) -> dict:
     return dev
 
 
+def device_from_eni(slave: dict) -> dict:
+    """A device described by the current configuration alone (no ESI): what the ENI holds is enough to write
+    the same device again."""
+    h = slave["harvest"]
+    mbx = h["mailbox"]
+    sms = list(slave["sm"])
+    if mbx:
+        sms = [{"no": 0, "type": "MBoxOut", "start": mbx["send"][0], "size": mbx["send"][1],
+                "control": h["sm_control"].get(0, 0x26), "enable": True},
+               {"no": 1, "type": "MBoxIn", "start": mbx["recv"][0], "size": mbx["recv"][1],
+                "control": h["sm_control"].get(1, 0x22), "enable": True}] + sms
+    esi_like = {
+        "vendor": slave["vendor"], "product": slave["product"], "revision": slave["revision"],
+        "check_revision": "" if h["check_high"] else "LW_EQ", "physics": slave["physics"] or "YY",
+        "timeouts": h["timeouts"], "fmmu": [{"outputs": "Outputs", "inputs": "Inputs", "mailbox state": "MBoxState"}
+                                           .get(k, k) for k in h["fmmu"]],
+        "sm": sms, "pdos": slave["pdos"], "mailbox": slave["mailbox"],
+        "bootstrap": b"".join(x.to_bytes(2, "little") for x in mbx["bootstrap"]) if mbx and mbx["bootstrap"] else None,
+        "pdo_assign": bool(mbx and mbx["pdo_assign"]), "profile_no": mbx["coe_profile"] if mbx else None,
+        "mailbox_timeout": mbx["coe_timeout"] if mbx else 2000, "dc_modes": [],
+    }
+    return apply_eni(device_from_esi(esi_like, slave["name"]), slave)
+
+
 def apply_eni(dev: dict, slave: dict) -> dict:
     """Keeps the choices the current configuration made for this device: its name, assigned PDOs (as
     configured there), DC activation and extra CoE startup commands."""

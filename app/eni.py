@@ -73,9 +73,36 @@ def _slave(el, position: int) -> dict:
                              "data": _text(c, "Data"), "complete_access": flag(c.get("CompleteAccess"))})
     dc = el.find("DC")
     dc_activate = None
+    sm_control, fmmu, timeouts, check_high = {}, [], {}, False
     for c in el.findall("InitCmds/InitCmd"):
-        if num(c.findtext("Ado")) == 0x0980 and "PS" in [t.text for t in c.findall("Transition")]:
-            dc_activate = int.from_bytes(bytes.fromhex((c.findtext("Data") or "").strip()), "little")
+        ado, comment = num(c.findtext("Ado")), (c.findtext("Comment") or "").strip()
+        transitions = [t.text for t in c.findall("Transition")]
+        data = (c.findtext("Data") or "").strip()
+        if ado == 0x0980 and "PS" in transitions:
+            dc_activate = int.from_bytes(bytes.fromhex(data), "little")
+        elif comment.startswith("set sm ") and len(data) == 16:
+            sm_control[int(comment.split()[2])] = int(data[8:10], 16)
+        elif comment.startswith("set fmmu ") and "(" in comment:
+            fmmu.append(comment.split("(", 1)[1].rstrip(")"))
+        elif "high word" in comment:
+            check_high = True
+        timeout = num(c.findtext("Validate/Timeout"))
+        for key, match in (("back_to_init", ("check device state for INIT", "PI")),
+                           ("preop", ("check device state for preop", "IP")),
+                           ("safeop_op", ("check device state for SAFEOP", "PS")),
+                           ("back_to_safeop", ("check device state for SAFEOP", "OS"))):
+            if timeout is not None and comment == match[0] and match[1] in transitions:
+                timeouts[key] = timeout
+    mbx = None
+    if mailbox is not None and mailbox.find("Send") is not None:
+        def pair(path):
+            return num(mailbox.findtext(path + "/Start"), 0), num(mailbox.findtext(path + "/Length"), 0)
+        boot = mailbox.find("BootStrap")
+        mbx = {"send": pair("Send"), "recv": pair("Recv"),
+               "bootstrap": pair("BootStrap/Send") + pair("BootStrap/Recv") if boot is not None else None,
+               "coe_profile": num(mailbox.findtext("CoE/Profile/ChannelInfo/ProfileNo")),
+               "coe_timeout": num(mailbox.findtext("CoE/InitCmds/InitCmd/Timeout"), 2000),
+               "pdo_assign": any(c["index"] in (0x1C12, 0x1C13) for c in coe_init)}
     return {
         "position": position,
         "name": _text(info, "Name"),
@@ -92,6 +119,8 @@ def _slave(el, position: int) -> dict:
         "dc": {c.tag: (c.text or "").strip() for c in dc.iter() if c is not dc and not len(c)} if dc is not None else None,
         "dc_activate": dc_activate,
         "physics": _text(info, "Physics"),
+        "harvest": {"sm_control": sm_control, "fmmu": fmmu, "timeouts": timeouts, "check_high": check_high,
+                    "mailbox": mbx},
         "variables": [],
     }
 
