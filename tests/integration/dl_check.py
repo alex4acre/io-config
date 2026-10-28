@@ -156,7 +156,8 @@ def main():
     variables = {}
     for name, path, value in (("master_state", "admin/fieldbus_status/master_state",
                                {"response": {"currentState": "op", "requestedState": "op"}}),
-                              ("fieldbus_config", "admin/fieldbus_config", {"response": {"eni": [60, 97, 47, 62], "ini": [10]}})):
+                              ("fieldbus_config", "admin/fieldbus_config", {"response": {"eni": [60, 97, 47, 62], "ini": [10]}}),
+                              ("sdo", "device_access/coe/sdo", {"response": {"data": [0, 0, 0, 0]}})):
         type_address = f"types/ethercat/master/{name}"
         bfbs = os.path.join(HERE, "bfbs", name + ".bfbs")
         check(provider.register_type(type_address, bfbs) == Result.OK, f"type {type_address} registered")
@@ -177,6 +178,12 @@ def main():
         got = bytes(v.written[-1]["request"]["eni"]) if v.written else b""
         check(got == eni_bytes and v.written[-1]["request"]["ini"] == [65, 13, 10],
               f"fieldbus_config written: the provider got the {len(got)}-byte ENI unchanged")
+        path, v = variables["sdo"]
+        bus.write_json(MASTER + path, {"request": {"addressType": "autoincrement", "address": 65534, "objectIndex": 0x8000,
+                                                   "subIndex": 1, "flags": "noFlags", "data": [232, 3, 0, 0], "maxLength": 4}})
+        req = v.written[-1].get("request", {}) if v.written else {}
+        check(req.get("objectIndex") == 0x8000 and req.get("data") == [232, 3, 0, 0] and req.get("flags") == "noFlags",
+              f"SDO download via write_json arrives as sent: {req}")
         check(bus.is_connected(), "client connected")
         a = bus.read_args(MASTER + "device_access/slave_online_info",
                           {"request": {"addressType": "autoincrement", "address": 65534}})

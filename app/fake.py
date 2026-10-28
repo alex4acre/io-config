@@ -32,7 +32,33 @@ def recorded_nodes(data_dir: str = DATA) -> dict:
     nodes[MASTER + "admin/fieldbus_config"] = {"response": {"ini": ini, "eni": eni}}
     nodes[MASTER + "device_access/slave_online_info"] = None      # needs arguments
     nodes[MASTER + "device_access/slave_eeprom"] = None
+    for name in ("object_dictionary_list", "object_description", "entry_description", "sdo"):
+        nodes[MASTER + "device_access/coe/" + name] = None
+    # process data: one node per ENI variable, as the master publishes them
+    from app.eni import parse_eni
+    for s in parse_eni(bytes(eni))["slaves"]:
+        for v in s["variables"]:
+            nodes[f'{MASTER}realtime_data/{v["dir"]}/data/{v["name"]}'] = _initial(v)
     return nodes, rec["slaves"]
+
+
+def _initial(v):
+    t = v["type"].upper()
+    if t in ("BIT", "BOOL"):
+        return False
+    if t.startswith("ARRAY"):
+        return [0] * (v["bits"] // 8)
+    if t in ("REAL", "LREAL"):
+        return 0.0
+    if v["name"].endswith("_Voltage"):
+        return 24100                     # the coupler's supply voltages in mV
+    return 0
+
+
+def recorded_coe(data_dir: str = DATA) -> dict:
+    """autoinc address -> recorded object dictionary (tests/data/x3-coe.json)."""
+    with open(os.path.join(data_dir, "x3-coe.json"), encoding="utf-8") as f:
+        return {int(k): v for k, v in json.load(f).items()}
 
 
 class FakeBus:
@@ -45,6 +71,7 @@ class FakeBus:
         self.slaves = list(slaves or [])    # [{"autoinc", "online_info", "eeprom"}] in bus order
         self.calls = []                     # (operation, address, args) for tests
         self.written = []                   # (eni, ini) of each configuration write
+        self.coe = recorded_coe() if self.slaves else {}       # autoinc address -> object dictionary
         self.fail_op = False                # True: the master stays in PreOp after requesting Op
 
     def is_connected(self) -> bool:
@@ -98,7 +125,55 @@ class FakeBus:
                     raise BusError("read: DL_TIMEOUT (Ecat: Timeout)")
                 offset = request.get("eepromOffset", 0)
                 return {"response": {"data": s["eeprom"][offset:offset + length]}}
+            if address.startswith(MASTER + "device_access/coe/"):
+                return self._coe(address.rsplit("/", 1)[1], request)
             raise BusError(f"read {address}: DL_INVALID_ADDRESS")
+
+    def _coe(self, node, req):
+        self._slave(req)
+        dev = self.coe.get(req.get("address"))
+        if dev is None or "__error__" in dev["list"]["all"]:
+            raise BusError("read: DL_FAILED (Ecat CoE: Protocol not supported)")
+
+        def answer(rec):
+            if "__error__" in rec:
+                raise BusError(f'read: DL_FAILED ({rec["__error__"].get("detail", "")})')
+            return rec
+        if node == "object_dictionary_list":
+            return answer(dev["list"][req.get("listType", "all")])
+        obj = dev["objects"].get(str(req.get("objectIndex")))
+        if obj is None:
+            raise BusError("read: DL_FAILED (Ecat SDO: Object does not exist)")
+        if node == "object_description":
+            return answer(obj["desc"])
+        sub = str(req.get("subIndex", 0))
+        if node == "entry_description":
+            if sub not in obj["entries"]:
+                raise BusError("read: DL_FAILED (Ecat SDO: Subindex does not exist)")
+            return answer(obj["entries"][sub])
+        if sub not in obj["values"]:
+            raise BusError("read: DL_FAILED (Ecat SDO: Subindex does not exist)")
+        return answer(obj["values"][sub])
+
+    def write_json(self, address: str, value):
+        """SDO downloads (device_access/coe/sdo): the new bytes become the object's value, if it is writable."""
+        with self.lock:
+            self.calls.append(("write_json", address, value))
+            if address != MASTER + "device_access/coe/sdo":
+                raise BusError(f"write {address}: DL_INVALID_ADDRESS")
+            req = (value or {}).get("request", {})
+            self._slave(req)
+            dev = self.coe.get(req.get("address"))
+            if dev is None or "__error__" in dev["list"]["all"]:
+                raise BusError("write: DL_FAILED (Ecat CoE: Protocol not supported)")
+            obj = dev["objects"].get(str(req.get("objectIndex")))
+            sub = str(req.get("subIndex", 0))
+            if obj is None or sub not in obj["entries"]:
+                raise BusError("write: DL_FAILED (Ecat SDO: Subindex does not exist)")
+            access = bytes(obj["entries"][sub]["response"]["data"])[8] if "response" in obj["entries"][sub] else 0
+            if not access & 0x38:
+                raise BusError("write: DL_FAILED (Ecat SDO: Attempt to write a read only object)")
+            obj["values"][sub] = {"response": {"data": list(req.get("data") or [])}}
 
     def write(self, address: str, value):
         """The EtherCAT master's writable nodes: master_state (state requests) and fieldbus_config (only in Init,
@@ -125,6 +200,14 @@ class FakeBus:
                     {"id": "eniCrc32", "checksum": checksum(eni)}, {"id": "iniCrc32", "checksum": checksum(ini)}]}}
                 self.written.append((eni, ini))
                 return
+            if address.startswith(MASTER + "realtime_data/output/data/") and address in self.nodes:
+                old = self.nodes[address]
+                if isinstance(old, bool) != isinstance(value, bool) or isinstance(old, list) != isinstance(value, list):
+                    raise BusError(f"write {address}: DL_TYPE_MISMATCH")
+                self.nodes[address] = value
+                return
+            if address.startswith(MASTER + "realtime_data/input/data/") and address in self.nodes:
+                raise BusError(f"write {address}: DL_PERMISSION_DENIED")
             raise BusError(f"write {address}: the fake only simulates the EtherCAT master's configuration")
 
     def create(self, address: str, value):

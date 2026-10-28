@@ -23,7 +23,7 @@ import shutil
 import threading
 import time
 
-from app import compare, configure, eni, generate, sii
+from app import coe, compare, configure, edits, eni, generate, sii
 from app.esi import EsiLibrary
 
 DEFAULTS = {"instance": "ethercatmaster"}
@@ -76,6 +76,8 @@ class Core:
         # the active configuration: io-config/config.json is in it, and the master's files too
         self.active_dir = os.path.dirname(os.path.dirname(os.path.abspath(config_path)))
         self.backup_dir = os.path.join(os.path.dirname(os.path.abspath(config_path)), "backups")
+        self.edits_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "edits.json")
+        self.od_cache = {}           # (position, identity) -> object list
 
     # --- configuration file ------------------------------------------------------------------------
 
@@ -289,7 +291,7 @@ class Core:
             if cycle_us is not None and (not isinstance(cycle_us, int) or isinstance(cycle_us, bool)
                                          or not 125 <= cycle_us <= 100000):
                 raise ConfigError("cycle time must be 125 to 100000 µs")
-            p = configure.build_plan(self.sources, self.current, self.config["instance"], cycle_us)
+            p = configure.build_plan(self.sources, self.current, self.config["instance"], cycle_us, self.load_edits())
             self.plan_id += 1
             self.plan_data = dict(p, id=self.plan_id)
             return self.plan_summary()
@@ -360,6 +362,205 @@ class Core:
             self.download_state = {"running": False, "steps": steps, "finished": time.time(), "error": error}
             self.plan_data = None
         self.start_scan()
+
+    # --- the user's edits per position (io-config/edits.json in the active configuration) -------------
+
+    def load_edits(self) -> dict:
+        try:
+            with open(self.edits_path, encoding="utf-8") as f:
+                data = json.load(f)
+            return {int(k): v for k, v in data.items() if isinstance(v, dict)}
+        except FileNotFoundError:
+            return {}
+        except (ValueError, OSError) as e:
+            self.log(f"{self.edits_path}: {e}; ignoring the edits")
+            return {}
+
+    def _save_edits(self, data: dict):
+        os.makedirs(os.path.dirname(self.edits_path), exist_ok=True)
+        tmp = self.edits_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({str(k): v for k, v in sorted(data.items())}, f, indent=2)
+        os.replace(tmp, self.edits_path)
+
+    def _source(self, position: int) -> dict:
+        for s in self.sources:
+            if s["pos"] == position:
+                return s
+        raise KeyError(f"no device at position {position} in the last scan")
+
+    def edit_options(self, position: int) -> dict:
+        """What the editor shows: the PDOs the device offers, the selection the configuration would get, the
+        device name and the startup parameters."""
+        with self.lock:
+            src = self._source(position)
+            all_edits = self.load_edits()
+            edit = all_edits.get(position)
+            if edit and not edits.applies(src, edit):
+                edit = None
+            dev = configure.device_for(src, {position: edit} if edit else {})
+            out = edits.options(src, dev, edit)
+            out["startup"] = (edit or {}).get("startup", [])
+            coe_cfg = ((dev or {}).get("mailbox") or {}).get("coe")
+            out["coe"] = coe_cfg is not None
+            out["fixed_startup"] = [c for c in (coe_cfg or {}).get("init", []) if not c.get("user")]
+            out["pdo_assign"] = bool((coe_cfg or {}).get("pdo_assign"))
+            return out
+
+    def save_edit(self, position: int, change: dict) -> dict:
+        with self.lock:
+            src = self._source(position)
+            all_edits = self.load_edits()
+            old = all_edits.get(position) if all_edits.get(position) and edits.applies(src, all_edits[position]) else {}
+            merged = {k: v for k, v in old.items() if k != "identity"}
+            merged.update({k: v for k, v in change.items() if k in ("name", "pdos", "startup")})
+            checked = edits.validate(src, merged)
+            configure.device_for(src, {position: checked})          # raises EditError if it can't be applied
+            all_edits[position] = checked
+            self._save_edits(all_edits)
+            self.plan_data = None
+        return self.edit_options(position)
+
+    def reset_edit(self, position: int) -> dict:
+        with self.lock:
+            all_edits = self.load_edits()
+            all_edits.pop(position, None)
+            self._save_edits(all_edits)
+            self.plan_data = None
+        return self.edit_options(position)
+
+    # --- CoE objects of a device (online, through the master's mailbox) ------------------------------
+
+    def _coe_address(self, position: int) -> dict:
+        self._source(position)
+        return {"addressType": "autoincrement", "address": (-position) & 0xFFFF}
+
+    def _coe_base(self) -> str:
+        return f'{INSTANCES}/{self.config["instance"]}/device_access/coe/'
+
+    def objects(self, position: int, refresh=False) -> dict:
+        """The device's object dictionary: index, name, object code, data type, startup-parameter flag."""
+        a = self._coe_address(position)
+        src = self._source(position)
+        key = (position, json.dumps((src.get("online") or {}).get("response", {}).get("slaveIdentity", {}), sort_keys=True))
+        if refresh or key not in self.od_cache:
+            base = self._coe_base()
+            indices = self.bus.read_args(base + "object_dictionary_list", {"request": {
+                **a, "listType": "all", "maxElements": 4096}}).get("response", {}).get("indices") or []
+            try:
+                startup = set(self.bus.read_args(base + "object_dictionary_list", {"request": {
+                    **a, "listType": "startupParam", "maxElements": 4096}}).get("response", {}).get("indices") or [])
+            except Exception:
+                startup = set()
+            out = []
+            for idx in indices:
+                try:
+                    d = coe.object_description(self.bus.read_args(base + "object_description", {"request": {
+                        **a, "objectIndex": idx, "maxLength": 512}}).get("response", {}).get("data") or [])
+                except Exception as e:
+                    d = {"index": idx, "name": f"({e})", "object_code": "", "data_type": "", "max_subindex": 0}
+                d["startup"] = idx in startup
+                out.append(d)
+            self.od_cache[key] = out
+        return {"position": position, "objects": self.od_cache[key]}
+
+    def object(self, position: int, index: int) -> dict:
+        """One object with all its entries (descriptions and current values)."""
+        a = self._coe_address(position)
+        base = self._coe_base()
+        d = coe.object_description(self.bus.read_args(base + "object_description", {"request": {
+            **a, "objectIndex": index, "maxLength": 512}}).get("response", {}).get("data") or [])
+        entries = []
+        for sub in range(d["max_subindex"] + 1):
+            try:
+                e = coe.entry_description(self.bus.read_args(base + "entry_description", {"request": {
+                    **a, "objectIndex": index, "subIndex": sub, "valueInfo": 0, "maxLength": 512}})
+                    .get("response", {}).get("data") or [])
+            except Exception as ex:
+                entries.append({"subindex": sub, "error": str(ex)})
+                continue
+            if e["readable"]:
+                try:
+                    data = self.bus.read_args(base + "sdo", {"request": {**a, "objectIndex": index, "subIndex": sub,
+                                                                       "flags": "noFlags", "maxLength": 1024}})
+                    raw = data.get("response", {}).get("data") or []
+                    e["value"] = coe.decode(raw, e["data_type"], e["bits"])
+                    e["hex"] = bytes(raw).hex().upper()
+                except Exception as ex:
+                    e["error"] = str(ex)
+            entries.append(e)
+        return {"position": position, **d, "entries": entries}
+
+    def sdo_write(self, position: int, index: int, sub: int, value) -> dict:
+        """Writes one object entry on the device (online; not kept over a restart, see startup parameters)."""
+        a = self._coe_address(position)
+        base = self._coe_base()
+        e = coe.entry_description(self.bus.read_args(base + "entry_description", {"request": {
+            **a, "objectIndex": index, "subIndex": sub, "valueInfo": 0, "maxLength": 512}}).get("response", {}).get("data") or [])
+        if not e["writable"]:
+            raise ConfigError(f"{index:#06x}:{sub} is read-only")
+        state = self._device_state(position)
+        allowed = {"PreOp": "write_preop", "SafeOp": "write_safeop", "Op": "write_op"}.get(state)
+        if allowed and not e["access"][allowed]:
+            when = [s for s, k in (("PreOp", "write_preop"), ("SafeOp", "write_safeop"), ("Op", "write_op")) if e["access"][k]]
+            raise ConfigError(f'{index:#06x}:{sub} "{e["name"]}" can only be written in {" / ".join(when)}; the device is in '
+                              f"{state}. Add it as a startup parameter: the master writes it at every start-up.")
+        data = coe.encode(value, e["data_type"], e["bits"])
+        self.bus.write_json(base + "sdo", {"request": {**a, "objectIndex": index, "subIndex": sub, "flags": "noFlags",
+                                                         "data": list(data), "maxLength": len(data)}})
+        self.log(f"SDO write position {position} {index:#06x}:{sub} = {data.hex().upper()}")
+        raw = self.bus.read_args(base + "sdo", {"request": {**a, "objectIndex": index, "subIndex": sub, "flags": "noFlags",
+                                                            "maxLength": 1024}}).get("response", {}).get("data") or []
+        return {**e, "value": coe.decode(raw, e["data_type"], e["bits"]), "hex": bytes(raw).hex().upper()}
+
+    def _device_state(self, position: int) -> str:
+        """The device's EtherCAT state now (Init/PreOp/SafeOp/Op), read online."""
+        a = self._coe_address(position)
+        info = self.bus.read_args(f'{INSTANCES}/{self.config["instance"]}/device_access/slave_online_info',
+                                  {"request": a}).get("response", {})
+        return compare.al_state(info.get("alStatus")).split(" ")[0]
+
+    def startup_entry(self, position: int, index: int, sub: int, value, comment="") -> dict:
+        """A startup parameter for the edit: the value encoded for the entry's data type (read from the device)."""
+        a = self._coe_address(position)
+        e = coe.entry_description(self.bus.read_args(self._coe_base() + "entry_description", {"request": {
+            **a, "objectIndex": index, "subIndex": sub, "valueInfo": 0, "maxLength": 512}}).get("response", {}).get("data") or [])
+        if not e["writable"]:
+            raise ConfigError(f"{index:#06x}:{sub} is read-only")
+        data = coe.encode(value, e["data_type"], e["bits"])
+        return {"index": index, "subindex": sub, "data": data.hex().upper(), "transitions": ["PS"],
+                "comment": comment or f'{e["name"]} = {value}'}
+
+    # --- process data (the running configuration's realtime_data variables) -------------------------
+
+    def process_data(self) -> dict:
+        with self.lock:
+            parsed = (self.current or {}).get("parsed")
+        if not parsed:
+            raise ConfigError("scan the bus first (no configuration known)")
+        base = f'{INSTANCES}/{self.config["instance"]}/realtime_data/'
+        out = []
+        for s in parsed["slaves"]:
+            for v in s["variables"]:
+                item = {"device": s["name"], "name": v["name"], "dir": v["dir"], "type": v["type"], "bits": v["bits"]}
+                try:
+                    item["value"] = self.bus.read(f'{base}{v["dir"]}/data/{v["name"]}')
+                except Exception as e:
+                    item["error"] = str(e)
+                out.append(item)
+        return {"variables": out, "time": time.time()}
+
+    def write_output(self, name: str, value):
+        with self.lock:
+            parsed = (self.current or {}).get("parsed")
+        var = next((v for s in (parsed or {}).get("slaves", []) for v in s["variables"] if v["name"] == name), None)
+        if var is None:
+            raise KeyError(f"no variable {name} in the running configuration")
+        if var["dir"] != "output":
+            raise ConfigError(f"{name} is an input")
+        address = f'{INSTANCES}/{self.config["instance"]}/realtime_data/output/data/{name}'
+        self.bus.write(address, coe.process_value(value, var["type"], var["bits"]))
+        return {"name": name, "value": self.bus.read(address)}
 
     # --- backups (in the active configuration: io-config/backups/<time>/) ----------------------------
 

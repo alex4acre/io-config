@@ -97,7 +97,14 @@ visible.
    `comm.ethercat.master/config/<instance>/ethercat.xml|.ini` in the active configuration (loaded at boot).
    Restore from a backup the same way. Tried on the X3 2026-10-28 with the identical configuration: ~10 s,
    checksums match, back in Op, and the master rewrote its active-configuration files itself.
-5. **Next:** editing (PDO selection, device names, DC mode), devices without a mailbox, more than one frame.
+5. **Editing and online access (1.2.0):** per position (io-config/edits.json, kept with the device identity):
+   name, PDO selection (ESI rules: mandatory, exclusions; locked when the device has no CoE PDO
+   assignment), startup parameters (CoE SDO writes at PS, added from the object view with the value encoded
+   for the entry's data type). CoE object dictionary online (list, descriptions, values), SDO write now
+   (refused when the entry isn't writable in the device's current state, e.g. 0x8000 settings are PreOp-only),
+   process data read/write through realtime_data (outputs only, range-checked by ENI type).
+6. **Next:** drives (modules/slots, PDO mapping content, SoE startup), DC mode choice, devices without a
+   mailbox, more than one frame.
 
 ## Open questions
 

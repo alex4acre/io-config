@@ -18,6 +18,7 @@ loads comm.ethercat.master/config/<instance>/ethercat.xml + ethercat.ini at boot
 import os
 import time
 
+from app import edits
 from app import eni as eni_mod
 from app import generate
 
@@ -36,51 +37,81 @@ def _variables(parsed) -> dict:
     return out
 
 
-def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = None) -> dict:
+def describe(src: dict, used: set = None):
+    """(device, notes, warning, error) for one scanned position, before the user's edits: the ESI, else the
+    current configuration, else the EEPROM; the current configuration's choices on top."""
+    info = (src.get("online") or {}).get("response", {})
+    idn = info.get("slaveIdentity", {})
+    vendor, product, revision = idn.get("vendorId"), idn.get("productCode"), idn.get("revisionNumber")
+    esi, slave = src.get("esi_device"), src.get("eni_slave")
+    note, warning = [], None
+    if esi is not None and src.get("esi_match") in ("exact", "nearest"):
+        name = esi["type"]
+        dev = generate.device_from_esi(esi, "")
+        if src["esi_match"] == "nearest":
+            dev["revision"] = revision
+            note.append(f'ESI of revision {esi["revision"]:#x}')
+    elif slave is not None and (slave["vendor"], slave["product"], slave["revision"]) == (vendor, product, revision):
+        name = slave["name"]
+        dev = generate.device_from_eni(slave)
+        note.append("no ESI: taken from the current configuration")
+    elif src.get("eeprom"):
+        name = src["eeprom"].get("order") or src["eeprom"].get("name") or "Device"
+        dev = generate.device_from_eeprom(src["eeprom"], "")
+        note.append("learned from the EEPROM (no ESI)")
+        warning = f'Position {src["pos"]}: no ESI, described from its EEPROM only (default PDOs, no DC)'
+    else:
+        return None, [], None, f'Position {src["pos"]}: no ESI and no EEPROM data, the device can\'t be described'
+    if slave is not None and (slave["vendor"], slave["product"]) == (vendor, product):
+        dev = generate.apply_eni(dev, slave)
+        dev["revision"] = revision
+        note.insert(0, "kept from the current configuration")
+    else:
+        base = generate.device_name(name)
+        dev["name"], i = base, 1
+        while used is not None and dev["name"] in used:
+            i += 1
+            dev["name"] = f"{base}_{i}"
+        note.insert(0, "new: ESI defaults" if dev["source"] == "esi" else "new")
+    return dev, note, warning, None
+
+
+def device_for(src: dict, user_edits: dict, used: set = None) -> dict:
+    """The device as the configuration gets it, the user's edit for its position applied (None if it can't be described)."""
+    dev, _note, _warning, _error = describe(src, used)
+    edit = (user_edits or {}).get(src["pos"])
+    if dev is not None and edit and edits.applies(src, edit):
+        dev = edits.apply_edit(dev, src, edit)
+    return dev
+
+
+def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = None, user_edits: dict = None) -> dict:
     """sources: per present device {"pos", "online", "eeprom", "eni_slave", "esi_match", "esi_device"};
-    current: {"eni": bytes, "ini": bytes, "parsed": parse_eni() or None}."""
+    current: {"eni": bytes, "ini": bytes, "parsed": parse_eni() or None}; user_edits: position -> edit."""
     devices, rows, errors, warnings = [], [], [], []
     used = set()
     ports = {}
     for src in sources:
         pos = src["pos"]
         info = (src.get("online") or {}).get("response", {})
-        idn = info.get("slaveIdentity", {})
-        vendor, product, revision = idn.get("vendorId"), idn.get("productCode"), idn.get("revisionNumber")
         if pos > 0 and info.get("previousPort") is not None and 0 <= info["previousPort"] < 4:
             ports[pos] = PORTS[info["previousPort"]]
-        esi, slave = src.get("esi_device"), src.get("eni_slave")
-        note = []
-        if esi is not None and src.get("esi_match") in ("exact", "nearest"):
-            name = esi["type"]
-            dev = generate.device_from_esi(esi, "")
-            if src["esi_match"] == "nearest":
-                dev["revision"] = revision
-                note.append(f'ESI of revision {esi["revision"]:#x}')
-        elif slave is not None and (slave["vendor"], slave["product"], slave["revision"]) == (vendor, product, revision):
-            name = slave["name"]
-            dev = generate.device_from_eni(slave)
-            note.append("no ESI: taken from the current configuration")
-        elif src.get("eeprom"):
-            name = src["eeprom"].get("order") or src["eeprom"].get("name") or "Device"
-            dev = generate.device_from_eeprom(src["eeprom"], "")
-            note.append("learned from the EEPROM (no ESI)")
-            warnings.append(f"Position {pos}: no ESI, described from its EEPROM only (default PDOs, no DC)")
-        else:
-            errors.append(f"Position {pos}: no ESI and no EEPROM data, the device can't be described")
+        dev, note, warning, error = describe(src, used)
+        if error:
+            errors.append(error)
             rows.append({"position": pos, "name": "?", "source": None, "note": "", "inputs": 0, "outputs": 0})
             continue
-        if slave is not None and (slave["vendor"], slave["product"]) == (vendor, product):
-            dev = generate.apply_eni(dev, slave)
-            dev["revision"] = revision
-            note.insert(0, "kept from the current configuration")
-        else:
-            base = generate.device_name(name)
-            dev["name"], i = base, 1
-            while dev["name"] in used:
-                i += 1
-                dev["name"] = f"{base}_{i}"
-            note.insert(0, "new: ESI defaults" if dev["source"] == "esi" else "new")
+        if warning:
+            warnings.append(warning)
+        edit = (user_edits or {}).get(pos)
+        if edit and edits.applies(src, edit):
+            try:
+                dev = edits.apply_edit(dev, src, edit)
+                note.append("edited")
+            except edits.EditError as e:
+                errors.append(f"Position {pos}: {e}")
+        elif edit:
+            warnings.append(f"Position {pos}: the saved edit was made for another device and is not used")
         used.add(dev["name"])
         devices.append(dev)
         rows.append({"position": pos, "name": dev["name"], "source": dev["source"], "note": "; ".join(note),

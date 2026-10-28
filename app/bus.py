@@ -94,6 +94,14 @@ class DatalayerBus:
                     self._check(result, f"read {address}")
                     return self._to_python(address, out)
 
+    def write_json(self, address: str, value):
+        """Write a flatbuffers node from JSON without reading it first (a "Method" node such as the EtherCAT
+        master's coe/sdo can't be read without arguments)."""
+        with self.lock:
+            result, err = self.client.write_json_sync(self.converter, address, json.dumps(value))
+            with err:
+                self._check(result, f"write {address} ({err.get_string() or ''})")
+
     def write(self, address: str, value):
         """Writes in the node's current type (read first, as the ctrlX samples do)."""
         with self.lock:

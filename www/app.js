@@ -67,7 +67,7 @@ function row(tbody, cells, attrs) {
 
 const SOURCE_TEXT = {
   esi: { exact: ["exact", "ok"], nearest: ["other rev.", "warn"], none: ["missing", "bad"], error: ["error", "bad"] },
-  eni: { same: ["same", "ok"], different: ["different", "bad"], none: ["not configured", "warn"] },
+  eni: { same: ["same", "ok"], different: ["different", "bad"], none: ["not configured", "warn"], "not found": ["not on bus", "bad"] },
   eeprom: { read: ["read", "ok"], error: ["error", "warn"], "not read": ["not read", "muted"] },
 };
 
@@ -86,11 +86,14 @@ function levelBadge(level, count) {
 // --- views --------------------------------------------------------------------------------------
 
 function show(view) {
+  banner("");
   for (const t of document.querySelectorAll(".tab")) t.classList.toggle("active", t.dataset.view === view);
   $("view-bus").hidden = view !== "bus";
   $("view-esi").hidden = view !== "esi";
+  $("view-pd").hidden = view !== "pd";
   try { sessionStorage.setItem("view", view); } catch (e) { /* not needed */ }
   if (view === "esi") loadEsi();
+  if (view === "pd") loadPd();
 }
 
 for (const t of document.querySelectorAll(".tab")) t.onclick = () => show(t.dataset.view);
@@ -370,6 +373,282 @@ async function loadBackups() {
 }
 
 $("backups-box").ontoggle = () => { if ($("backups-box").open) loadBackups(); };
+
+// --- writes switch ----------------------------------------------------------------------------------
+
+const writesAllowed = () => $("allow-writes").checked;
+$("allow-writes").onchange = () => {
+  document.body.classList.toggle("writes", writesAllowed());
+  if ($("view-pd").hidden === false) loadPd();
+  if (currentObject) openObject(currentObject);
+};
+
+// --- editor: name, PDOs, startup parameters -------------------------------------------------------
+
+let editPos = null;
+let editData = null;
+
+function pdoBytes(sel) {
+  let tx = 0;
+  let rx = 0;
+  for (const p of editData.pdos) {
+    if (!sel.includes(p.index)) continue;
+    if (p.dir === "tx") tx += p.bits; else rx += p.bits;
+  }
+  return [tx / 8, rx / 8];
+}
+
+function selectedPdos() {
+  return [...$("e-pdos").querySelectorAll("input[type=checkbox]")].filter((c) => c.checked).map((c) => Number(c.dataset.index));
+}
+
+function renderEditor() {
+  const d = editData;
+  $("e-title").textContent = `Edit position ${d.position}`;
+  $("e-name").value = d.name;
+  $("e-reason").textContent = d.editable ? "" : "PDOs can't be changed: " + d.reason;
+  const tb = $("e-pdos").tBodies[0];
+  tb.replaceChildren();
+  for (const p of d.pdos) {
+    const box = el("input", { type: "checkbox" });
+    box.dataset.index = p.index;
+    box.checked = d.selected.includes(p.index);
+    box.disabled = !d.editable || p.mandatory;
+    box.onchange = updateEditorRules;
+    const rules = [p.mandatory ? "mandatory" : "", p.fixed ? "fixed content" : "",
+      p.excludes.length ? "excludes " + p.excludes.map((x) => hex(x)).join(" ") : ""].filter(Boolean).join(", ");
+    const tr = row(tb, [el("td", {}, box), p.dir === "rx" ? "out" : "in", hex(p.index), p.name, p.bits / 8 + " B", rules],
+      { class: d.default.includes(p.index) ? "default" : "" });
+    tr.title = p.entries.map((e) => (e.index ? `${hex(e.index)}:${e.subindex} ${e.name} (${e.bits} bit)` : `padding ${e.bits} bit`)).join("\n");
+  }
+  updateEditorRules();
+  const sb = $("e-startup").tBodies[0];
+  sb.replaceChildren();
+  for (const c of d.fixed_startup) {
+    row(sb, [`${hex(c.index)}:${c.subindex}`, el("code", {}, c.data), c.transitions.join(" "), c.comment,
+      el("span", { class: "muted" }, "from ESI/configuration")]);
+  }
+  for (const [i, c] of d.startup.entries()) {
+    const del = el("button", { class: "small" }, "Remove");
+    del.onclick = () => saveEdit({ startup: d.startup.filter((_, j) => j !== i) });
+    row(sb, [`${hex(c.index)}:${c.subindex}`, el("code", {}, c.data), c.transitions.join(" "), c.comment, del]);
+  }
+  if (!d.fixed_startup.length && !d.startup.length) row(sb, [el("span", { class: "muted" }, "none"), "", "", "", ""]);
+  $("e-msg").textContent = d.edited ? "This position has saved changes." : "Defaults (no saved changes).";
+}
+
+function updateEditorRules() {
+  const sel = selectedPdos();
+  const problems = [];
+  for (const p of editData.pdos) {
+    for (const x of p.excludes) if (sel.includes(p.index) && sel.includes(x) && p.index < x) problems.push(`${hex(p.index)} and ${hex(x)} exclude each other`);
+  }
+  const [inB, outB] = pdoBytes(sel);
+  $("e-sizes").textContent = `${inB} B inputs, ${outB} B outputs` + (problems.length ? " - " + problems.join("; ") : "");
+  $("e-sizes").className = problems.length ? "error" : "muted";
+  $("e-save").disabled = problems.length > 0;
+}
+
+async function openEditor(pos) {
+  try {
+    editData = await api("GET", `/devices/${pos}/edit`);
+    editPos = pos;
+    $("editor").hidden = false;
+    renderEditor();
+    $("editor").scrollIntoView({ behavior: "smooth" });
+  } catch (e) {
+    banner(e.message);
+  }
+}
+
+async function saveEdit(change) {
+  try {
+    banner("");
+    editData = await api("PUT", `/devices/${editPos}/edit`, change);
+    renderEditor();
+    $("e-msg").textContent = "Saved. Build the configuration to see and write the result.";
+    $("e-msg").className = "ok";
+  } catch (e) {
+    banner(e.message);
+  }
+}
+
+$("e-save").onclick = () => {
+  const change = { name: $("e-name").value.trim() };
+  if (editData.editable) change.pdos = selectedPdos();
+  saveEdit(change);
+};
+$("e-reset").onclick = async () => {
+  if (!confirm("Forget the saved name, PDO choice and startup parameters of this position?")) return;
+  try {
+    editData = await api("DELETE", `/devices/${editPos}/edit`);
+    renderEditor();
+  } catch (e) {
+    banner(e.message);
+  }
+};
+$("e-close").onclick = () => { $("editor").hidden = true; editPos = null; };
+$("d-edit").onclick = () => { if (selected !== null) openEditor(selected); };
+
+// --- CoE objects ----------------------------------------------------------------------------------
+
+let objPos = null;
+let objList = [];
+let currentObject = null;
+
+function renderObjectList() {
+  const f = $("o-filter").value.trim().toLowerCase();
+  const tb = $("o-list").tBodies[0];
+  tb.replaceChildren();
+  for (const o of objList) {
+    if (f && !(`${hex(o.index)} ${o.name}`.toLowerCase().includes(f))) continue;
+    const tr = row(tb, [hex(o.index), o.name, [o.object_code, o.startup ? "startup" : ""].filter(Boolean).join(", ")],
+      { class: "click" + (o.index === currentObject ? " selected" : "") });
+    tr.onclick = () => openObject(o.index);
+  }
+}
+
+async function openObjects(pos, refresh) {
+  objPos = pos;
+  currentObject = null;
+  $("objects").hidden = false;
+  $("o-title").textContent = `Objects of position ${pos}`;
+  $("o-obj-title").textContent = "Loading the object list ...";
+  $("o-entries").tBodies[0].replaceChildren();
+  $("o-list").tBodies[0].replaceChildren();
+  $("objects").scrollIntoView({ behavior: "smooth" });
+  try {
+    objList = (await api("GET", `/devices/${pos}/objects` + (refresh ? "?refresh=1" : ""))).objects;
+    $("o-obj-title").textContent = `${objList.length} objects - choose one`;
+    renderObjectList();
+  } catch (e) {
+    objList = [];
+    $("o-obj-title").textContent = "Not available: " + e.message;
+  }
+}
+
+function accessText(a) {
+  const r = ["PreOp", "SafeOp", "Op"].filter((s) => a["read_" + s.toLowerCase()]);
+  const w = ["PreOp", "SafeOp", "Op"].filter((s) => a["write_" + s.toLowerCase()]);
+  return (r.length ? "R" : "") + (w.length ? "W" : "") + (w.length && w.length < 3 ? ` (write ${w.join("/")})` : "");
+}
+
+async function openObject(index) {
+  currentObject = index;
+  renderObjectList();
+  let o;
+  try {
+    o = await api("GET", `/devices/${objPos}/objects/${index}`);
+  } catch (e) {
+    $("o-obj-title").textContent = e.message;
+    return;
+  }
+  $("o-obj-title").textContent = `${hex(o.index)} ${o.name} (${o.object_code})`;
+  const tb = $("o-entries").tBodies[0];
+  tb.replaceChildren();
+  for (const e of o.entries) {
+    if (e.data_type === undefined) {
+      row(tb, [e.subindex, el("span", { class: "muted" }, e.error || "-"), "", "", "", "", ""]);
+      continue;
+    }
+    const value = e.error ? el("span", { class: "muted" }, "-") : (typeof e.value === "string" && e.value === e.hex ? el("code", {}, e.hex) : String(e.value));
+    let input = "";
+    let actions = "";
+    if (e.writable) {
+      input = el("input", { type: "text", value: e.error ? "" : String(e.value) });
+      const now = el("button", { class: "small" }, "Write now");
+      now.disabled = !writesAllowed();
+      now.title = writesAllowed() ? "" : "Turn on \"Allow writes\" first";
+      now.onclick = async () => {
+        if (!confirm(`Write ${input.value} to ${hex(o.index)}:${e.subindex} "${e.name}" on the device now?`)) return;
+        try {
+          await api("PUT", `/devices/${objPos}/objects/${o.index}/${e.subindex}`, { value: input.value, confirm: true });
+          openObject(o.index);
+        } catch (err) {
+          banner(err.message);
+        }
+      };
+      const keep = el("button", { class: "small" }, "Startup");
+      keep.title = "Keep this value as a startup parameter in the configuration";
+      keep.onclick = async () => {
+        try {
+          await api("POST", `/devices/${objPos}/edit/startup`, { index: o.index, subindex: e.subindex, value: input.value });
+          banner(`Startup parameter ${hex(o.index)}:${e.subindex} = ${input.value} saved for position ${objPos}. ` +
+            "Build the configuration to apply it.", true);
+          if (editPos === objPos) openEditor(objPos);
+        } catch (err) {
+          banner(err.message);
+        }
+      };
+      actions = el("span", {}, now, " ", keep);
+    }
+    row(tb, [e.subindex, e.name, `${e.data_type} (${e.bits})`, accessText(e.access), value, input, actions]);
+  }
+}
+
+$("o-filter").oninput = renderObjectList;
+$("o-refresh").onclick = () => { if (objPos !== null) openObjects(objPos, true); };
+$("o-close").onclick = () => { $("objects").hidden = true; objPos = null; currentObject = null; };
+$("d-objects").onclick = () => { if (selected !== null) openObjects(selected); };
+
+// --- process data --------------------------------------------------------------------------------
+
+let pdBusy = false;
+
+function pdValue(v) {
+  if (v.error) return el("span", { class: "muted", title: v.error }, "?");
+  if (Array.isArray(v.value)) return el("code", {}, v.value.map((b) => b.toString(16).padStart(2, "0")).join(" ").toUpperCase());
+  return String(v.value);
+}
+
+function pdSetter(v) {
+  if (v.dir !== "output" || !writesAllowed()) return "";
+  const send = async (value) => {
+    try {
+      await api("PUT", "/process-data", { name: v.name, value });
+      loadPd();
+    } catch (e) {
+      banner(e.message);
+    }
+  };
+  if (typeof v.value === "boolean") {
+    const b = el("button", { class: "small" }, v.value ? "Set false" : "Set true");
+    b.onclick = () => send(!v.value);
+    return b;
+  }
+  const input = el("input", { type: "text", placeholder: Array.isArray(v.value) ? "hex bytes" : "value" });
+  const b = el("button", { class: "small" }, "Set");
+  b.onclick = () => send(input.value);
+  input.onkeydown = (ev) => { if (ev.key === "Enter") send(input.value); };
+  return el("span", {}, input, " ", b);
+}
+
+async function loadPd() {
+  if (pdBusy) return;
+  const focused = document.activeElement && document.activeElement.closest && document.activeElement.closest("#pd");
+  if (focused) return;                          // don't replace a field the user is typing in
+  pdBusy = true;
+  try {
+    const r = await api("GET", "/process-data");
+    const f = $("pd-filter").value.trim().toLowerCase();
+    const tb = $("pd").tBodies[0];
+    tb.replaceChildren();
+    let n = 0;
+    for (const v of r.variables) {
+      if (f && !v.name.toLowerCase().includes(f)) continue;
+      n++;
+      row(tb, [v.name, v.dir === "output" ? "out" : "in", v.type, el("td", { class: "num" }, pdValue(v)), pdSetter(v)]);
+    }
+    $("pd-info").textContent = `${n} of ${r.variables.length} variables, ${new Date(r.time * 1000).toLocaleTimeString()}`;
+  } catch (e) {
+    $("pd-info").textContent = e.message;
+  } finally {
+    pdBusy = false;
+  }
+}
+
+$("pd-filter").oninput = loadPd;
+setInterval(() => { if (!$("view-pd").hidden && $("pd-live").checked) loadPd(); }, 1000);
 
 $("d-close").onclick = () => {
   selected = null;

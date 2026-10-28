@@ -237,6 +237,7 @@ class CompareTest(unittest.TestCase):
         s = self.eni["slaves"][3]
         r = compare.device_report(3, None, None, None, s, "exact", None, None)
         self.assertEqual((r["present"], r["level"], r["name"]), (False, "error", "XI522001"))
+        self.assertEqual(r["sources"]["eni"]["match"], "not found")
 
 
 class CoreTest(unittest.TestCase):

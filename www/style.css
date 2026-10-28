@@ -137,3 +137,11 @@ code { font-size: 12px; }
 button.danger { background: var(--bad); border-color: transparent; color: #fff; }
 p.error { color: var(--bad); }
 .check input[type="number"] { width: 90px; }
+
+.warnlabel { color: var(--warn); }
+.cols2 { display: grid; grid-template-columns: minmax(260px, 1fr) 2fr; gap: 16px; }
+@media (max-width: 900px) { .cols2 { grid-template-columns: 1fr; } }
+td input[type="text"] { height: 26px; width: 120px; }
+tr.default td:first-child::after { content: " (default)"; color: var(--muted); font-size: 12px; }
+td.num { font-variant-numeric: tabular-nums; }
+.badge.small { font-size: 11px; }

@@ -11,8 +11,10 @@
     <h1>I/O Config</h1>
     <nav class="tabs">
       <button id="tab-bus" class="tab active" data-view="bus">Bus</button>
+      <button id="tab-pd" class="tab" data-view="pd">Process data</button>
       <button id="tab-esi" class="tab" data-view="esi">ESI library</button>
     </nav>
+    <label class="check warnlabel" title="Writing outputs and CoE objects changes real hardware"><input id="allow-writes" type="checkbox"> Allow writes</label>
     <span id="conn" class="chip">...</span>
   </header>
   <div id="banner" class="banner" hidden></div>
@@ -85,6 +87,8 @@
     <section class="card" id="detail" hidden>
       <div class="row head">
         <h2 id="d-title"></h2>
+        <button id="d-edit">Edit name, PDOs &amp; startup</button>
+        <button id="d-objects">Objects (CoE)</button>
         <button id="d-close">Close</button>
       </div>
       <p id="d-ident" class="muted"></p>
@@ -105,6 +109,69 @@
 
       <h3>Distributed clocks</h3>
       <dl id="d-dc" class="grid"></dl>
+    </section>
+
+    <section class="card" id="editor" hidden>
+      <div class="row head">
+        <h2 id="e-title"></h2>
+        <button id="e-close">Close</button>
+      </div>
+      <p class="hint">Saved choices are used the next time you build the configuration; nothing is written to the master here.</p>
+      <div class="row">
+        <label class="check">Name <input id="e-name" type="text" maxlength="64"></label>
+      </div>
+      <h3>PDOs</h3>
+      <p id="e-reason" class="hint"></p>
+      <div class="scroll"><table id="e-pdos"><thead><tr><th>Use</th><th>Dir</th><th>Index</th><th>Name</th><th>Size</th>
+        <th>Rules</th></tr></thead><tbody></tbody></table></div>
+      <p id="e-sizes" class="muted"></p>
+      <h3>Startup parameters</h3>
+      <p class="hint">CoE objects the master writes at every start-up (PreOp → SafeOp). Add them from "Objects (CoE)".
+        The PDO assignment (0x1C12/0x1C13) is added automatically.</p>
+      <div class="scroll"><table id="e-startup"><thead><tr><th>Object</th><th>Data</th><th>Transition</th><th>Comment</th>
+        <th></th></tr></thead><tbody></tbody></table></div>
+      <div class="row">
+        <button id="e-save" class="primary">Save</button>
+        <button id="e-reset">Back to defaults</button>
+        <span id="e-msg" class="muted"></span>
+      </div>
+    </section>
+
+    <section class="card" id="objects" hidden>
+      <div class="row head">
+        <h2 id="o-title"></h2>
+        <button id="o-refresh">Reload list</button>
+        <button id="o-close">Close</button>
+      </div>
+      <p class="hint">Read online from the device through the master (CoE mailbox). "Write now" changes the device until its
+        next start; "Startup" keeps the value in the configuration.</p>
+      <div class="row"><input id="o-filter" type="search" placeholder="Filter by index or name"></div>
+      <div class="cols2">
+        <div class="scroll tall"><table id="o-list"><thead><tr><th>Index</th><th>Name</th><th>Kind</th></tr></thead>
+          <tbody></tbody></table></div>
+        <div>
+          <h3 id="o-obj-title" class="muted">Choose an object</h3>
+          <div class="scroll"><table id="o-entries"><thead><tr><th>Sub</th><th>Name</th><th>Type</th><th>Access</th>
+            <th>Value</th><th>New value</th><th></th></tr></thead><tbody></tbody></table></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <main id="view-pd" hidden>
+    <section class="card">
+      <div class="row head">
+        <h2>Process data</h2>
+        <span id="pd-info" class="muted"></span>
+        <label class="check"><input id="pd-live" type="checkbox" checked> Live</label>
+      </div>
+      <p class="hint">The variables of the configuration the master runs (from the last scan), read through the Data Layer
+        (<code>realtime_data</code>). Outputs can be set with "Allow writes" on; the PLC or another app may overwrite them
+        in its next cycle.</p>
+      <div class="row"><input id="pd-filter" type="search" placeholder="Filter by device or variable"></div>
+      <div class="scroll tall">
+        <table id="pd"><thead><tr><th>Variable</th><th>Dir</th><th>Type</th><th>Value</th><th>Set</th></tr></thead><tbody></tbody></table>
+      </div>
     </section>
   </main>
 

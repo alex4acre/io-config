@@ -34,6 +34,15 @@ ROUTES = [
     ("GET", r"/instances", "get_instances"),
     ("POST", r"/scan", "post_scan"),
     ("GET", r"/devices/(\d+)", "get_device"),
+    ("GET", r"/devices/(\d+)/edit", "get_edit"),
+    ("PUT", r"/devices/(\d+)/edit", "put_edit"),
+    ("DELETE", r"/devices/(\d+)/edit", "delete_edit"),
+    ("POST", r"/devices/(\d+)/edit/startup", "post_startup"),
+    ("GET", r"/devices/(\d+)/objects", "get_objects"),
+    ("GET", r"/devices/(\d+)/objects/(\d+)", "get_object"),
+    ("PUT", r"/devices/(\d+)/objects/(\d+)/(\d+)", "put_sdo"),
+    ("GET", r"/process-data", "get_process_data"),
+    ("PUT", r"/process-data", "put_process_data"),
     ("POST", r"/plan", "post_plan"),
     ("GET", r"/plan", "get_plan"),
     ("GET", r"/plan/(eni|ini)", "get_plan_file"),
@@ -184,6 +193,54 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
     def get_device(self, position):
         self.send_json(200, core.device(int(position)))
+
+    # --- edits: name, PDO selection, startup parameters ---------------------------------------------
+
+    def get_edit(self, position):
+        self.send_json(200, core.edit_options(int(position)))
+
+    def put_edit(self, position):
+        self.send_json(200, core.save_edit(int(position), self.read_json()))
+
+    def delete_edit(self, position):
+        self.send_json(200, core.reset_edit(int(position)))
+
+    def post_startup(self, position):
+        """Adds a startup parameter from a value typed for an object entry (encoded with the entry's data type)."""
+        d = self.read_json()
+        try:
+            index, sub = int(d["index"]), int(d["subindex"])
+        except (KeyError, TypeError, ValueError) as e:
+            raise HttpError(400, '{"index", "subindex", "value"} are needed') from e
+        entry = core.startup_entry(int(position), index, sub, d.get("value"), d.get("comment", ""))
+        current = core.edit_options(int(position))["startup"]
+        current = [x for x in current if (x["index"], x["subindex"]) != (index, sub)] + [entry]
+        self.send_json(200, core.save_edit(int(position), {"startup": current}))
+
+    # --- CoE objects ---------------------------------------------------------------------------------
+
+    def get_objects(self, position):
+        self.send_json(200, core.objects(int(position), refresh=self.q("refresh") == "1"))
+
+    def get_object(self, position, index):
+        self.send_json(200, core.object(int(position), int(index)))
+
+    def put_sdo(self, position, index, sub):
+        d = self.read_json()
+        if "value" not in d or d.get("confirm") is not True:
+            raise HttpError(400, '{"value": ..., "confirm": true} is needed')
+        self.send_json(200, core.sdo_write(int(position), int(index), int(sub), d["value"]))
+
+    # --- process data --------------------------------------------------------------------------------
+
+    def get_process_data(self):
+        self.send_json(200, core.process_data())
+
+    def put_process_data(self):
+        d = self.read_json()
+        if not isinstance(d.get("name"), str) or "value" not in d:
+            raise HttpError(400, '{"name": <variable>, "value": ...} is needed')
+        self.send_json(200, core.write_output(d["name"], d["value"]))
 
     # --- new configuration, download, backups -------------------------------------------------------
 

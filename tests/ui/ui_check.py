@@ -116,6 +116,52 @@ try:
     check(until("document.querySelectorAll('#backups tbody tr button').length === 2"), "one backup listed")
     shot("written")
 
+    # editor: XI422202 -> compact state PDO, rename, a startup parameter from the objects view
+    js("document.querySelectorAll('#devices tbody tr')[2].click();")
+    check(until("document.getElementById('d-title').textContent === '2: XI422202'"), "detail of XI422202 again")
+    js("document.getElementById('d-edit').click();")
+    check(until("!document.getElementById('editor').hidden && document.querySelectorAll('#e-pdos tbody tr').length === 6"),
+          "editor lists 6 PDOs")
+    js("""const boxes = [...document.querySelectorAll('#e-pdos input[type=checkbox]')];
+          for (const b of boxes) { const i = Number(b.dataset.index); if ([0x1a00, 0x1a01, 0x1a02].includes(i)) b.checked = false;
+            if (i === 0x1a03) b.checked = true; b.onchange && b.onchange(); }
+          document.getElementById('e-name').value = 'AO1';""")
+    check("2 B inputs, 4 B outputs" in text("e-sizes"), f"editor sizes: {text('e-sizes')}")
+    js("document.getElementById('e-save').click();")
+    check(until("document.getElementById('e-msg').textContent.startsWith('Saved')"), "edit saved")
+    js("document.getElementById('d-objects').click();")
+    check(until("document.querySelectorAll('#o-list tbody tr').length === 30", 15), "30 objects listed")
+    js("[...document.querySelectorAll('#o-list tbody tr')].find(r => r.cells[0].textContent === '#x8000').click();")
+    check(until("document.getElementById('o-obj-title').textContent.includes('Channel 1 settings')", 15), "object 0x8000 opens")
+    js("""const r = [...document.querySelectorAll('#o-entries tbody tr')].find(r => r.cells[1].textContent === 'User gain');
+          r.querySelector('input').value = '1000'; [...r.querySelectorAll('button')].find(b => b.textContent === 'Startup').click();""")
+    check(until("document.getElementById('banner').textContent.includes('Startup parameter #x8000:1 = 1000 saved')"),
+          "startup parameter added")
+    shot("objects")
+    check(until("[...document.querySelectorAll('#e-startup tbody tr')].some(r => r.cells[0].textContent === '#x8000:1')"),
+          "editor shows the startup parameter")
+    js("document.getElementById('plan-devices').tBodies[0].replaceChildren(); document.getElementById('build').click();")
+    check(until("document.querySelector('#plan-devices tbody').textContent.includes('AO1')"), "plan uses the new name")
+    check(js("return document.getElementById('plan-summary').textContent").startswith("Differs"), "edited configuration differs")
+    shot("editor")
+    js("document.getElementById('allow-writes').click();")
+    js("""const r = [...document.querySelectorAll('#o-entries tbody tr')].find(r => r.cells[1].textContent === 'User gain');
+          window.confirm = () => true; [...r.querySelectorAll('button')].find(b => b.textContent === 'Write now').click();""")
+    check(until("document.getElementById('banner').textContent.includes('can only be written in PreOp')"),
+          "online write of a PreOp-only object is explained")
+
+    # process data
+    js("document.getElementById('tab-pd').click();")
+    check(until("document.querySelectorAll('#pd tbody tr').length === 44"), "44 process data variables")
+    js("document.getElementById('pd-filter').value = 'Channel_1.Value'; document.getElementById('pd-filter').oninput();")
+    check(until("document.querySelectorAll('#pd tbody tr').length === 1"), "filter finds the analog output")
+    js("""const r = document.querySelector('#pd tbody tr'); r.querySelector('input').value = '1234';
+          r.querySelector('button').click();""")
+    check(until("document.querySelector('#pd tbody tr') && document.querySelector('#pd tbody tr').cells[3].textContent === '1234'"),
+          "output written and read back")
+    shot("process-data")
+    js("document.getElementById('allow-writes').click(); document.getElementById('tab-bus').click();")
+
     js("document.getElementById('tab-esi').click();")
     check(until("document.getElementById('esi-count').textContent.startsWith('3 files, 5 devices')"), "library shows 3 files")
     if UPLOAD:

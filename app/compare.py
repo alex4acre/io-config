@@ -172,8 +172,8 @@ def device_report(position, online, eeprom, eeprom_error, eni_slave, esi_match, 
                     "file": (esi_entry or {}).get("file"), "revision": (esi_entry or {}).get("revision"),
                     "group": (esi_entry or {}).get("group"),
                     "dc_modes": (esi_device or {}).get("dc_modes", []), "coe_init": (esi_device or {}).get("coe_init", [])},
-            "eni": {"match": "none" if eni_slave is None else
-                    ("same" if info and (eni_slave["vendor"], eni_slave["product"], eni_slave["revision"]) == (vendor, product, revision)
+            "eni": {"match": "none" if eni_slave is None else "not found" if not info else
+                    ("same" if (eni_slave["vendor"], eni_slave["product"], eni_slave["revision"]) == (vendor, product, revision)
                      else "different"),
                     "name": (eni_slave or {}).get("name"), "address": (eni_slave or {}).get("address"),
                     "dc": (eni_slave or {}).get("dc"), "coe_init": (eni_slave or {}).get("coe_init", []),
