@@ -41,6 +41,9 @@ ROUTES = [
     ("GET", r"/devices/(\d+)/objects", "get_objects"),
     ("GET", r"/devices/(\d+)/objects/(\d+)", "get_object"),
     ("PUT", r"/devices/(\d+)/objects/(\d+)/(\d+)", "put_sdo"),
+    ("GET", r"/devices/(\d+)/soe", "get_soe_list"),
+    ("GET", r"/devices/(\d+)/soe/(\d+)", "get_soe"),
+    ("PUT", r"/devices/(\d+)/soe/(\d+)", "put_soe"),
     ("GET", r"/process-data", "get_process_data"),
     ("PUT", r"/process-data", "put_process_data"),
     ("POST", r"/plan", "post_plan"),
@@ -208,13 +211,17 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     def post_startup(self, position):
         """Adds a startup parameter from a value typed for an object entry (encoded with the entry's data type)."""
         d = self.read_json()
-        try:
-            index, sub = int(d["index"]), int(d["subindex"])
-        except (KeyError, TypeError, ValueError) as e:
-            raise HttpError(400, '{"index", "subindex", "value"} are needed') from e
-        entry = core.startup_entry(int(position), index, sub, d.get("value"), d.get("comment", ""))
         current = core.edit_options(int(position))["startup"]
-        current = [x for x in current if (x["index"], x["subindex"]) != (index, sub)] + [entry]
+        if "idn" in d:                   # SoE drive parameter
+            entry = core.soe_startup_entry(int(position), d["idn"], d.get("value"))
+            current = [x for x in current if x.get("idn") != entry["idn"]] + [entry]
+        else:
+            try:
+                index, sub = int(d["index"]), int(d["subindex"])
+            except (KeyError, TypeError, ValueError) as e:
+                raise HttpError(400, '{"index", "subindex", "value"} or {"idn", "value"} are needed') from e
+            entry = core.startup_entry(int(position), index, sub, d.get("value"), d.get("comment", ""))
+            current = [x for x in current if "idn" in x or (x["index"], x["subindex"]) != (index, sub)] + [entry]
         self.send_json(200, core.save_edit(int(position), {"startup": current}))
 
     # --- CoE objects ---------------------------------------------------------------------------------
@@ -230,6 +237,20 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         if "value" not in d or d.get("confirm") is not True:
             raise HttpError(400, '{"value": ..., "confirm": true} is needed')
         self.send_json(200, core.sdo_write(int(position), int(index), int(sub), d["value"]))
+
+    # --- SoE parameters ------------------------------------------------------------------------------
+
+    def get_soe_list(self, position):
+        self.send_json(200, core.soe_parameters(int(position), self.q("q"), self.q("mapping"), int(self.q("limit", "400"))))
+
+    def get_soe(self, position, idn):
+        self.send_json(200, core.soe_read(int(position), int(idn)))
+
+    def put_soe(self, position, idn):
+        d = self.read_json()
+        if "value" not in d or d.get("confirm") is not True:
+            raise HttpError(400, '{"value": ..., "confirm": true} is needed')
+        self.send_json(200, core.soe_write(int(position), int(idn), d["value"]))
 
     # --- process data --------------------------------------------------------------------------------
 
@@ -270,7 +291,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         d = self.read_json()
         if not isinstance(d.get("plan_id"), int) or d.get("confirm") is not True:
             raise HttpError(400, '{"plan_id": <id of the built configuration>, "confirm": true} is needed')
-        self.send_json(202, core.start_download(d["plan_id"]))
+        self.send_json(202, core.start_download(d["plan_id"], allow_draft=d.get("allow_draft") is True))
 
     def get_backups(self):
         self.send_json(200, {"backups": core.backups()})

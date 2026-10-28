@@ -37,6 +37,23 @@ def _variables(parsed) -> dict:
     return out
 
 
+def topology(sources: list) -> dict:
+    """position -> (port letter, upstream position) from the master's online info: a device's port A leads to
+    its upstream device (portSlaveHandles[0]), previousPort is the port it is plugged into there."""
+    by_handle = {}
+    for src in sources:
+        info = (src.get("online") or {}).get("response", {})
+        if info.get("slaveHandle") is not None:
+            by_handle[info["slaveHandle"]] = src["pos"]
+    out = {}
+    for src in sources:
+        info = (src.get("online") or {}).get("response", {})
+        handles, port = info.get("portSlaveHandles") or [], info.get("previousPort")
+        if src["pos"] > 0 and handles and handles[0] in by_handle and port is not None and 0 <= port < 4:
+            out[src["pos"]] = (PORTS[port], by_handle[handles[0]])
+    return out
+
+
 def describe(src: dict, used: set = None):
     """(device, notes, warning, error) for one scanned position, before the user's edits: the ESI, else the
     current configuration, else the EEPROM; the current configuration's choices on top."""
@@ -88,14 +105,11 @@ def device_for(src: dict, user_edits: dict, used: set = None) -> dict:
 def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = None, user_edits: dict = None) -> dict:
     """sources: per present device {"pos", "online", "eeprom", "eni_slave", "esi_match", "esi_device"};
     current: {"eni": bytes, "ini": bytes, "parsed": parse_eni() or None}; user_edits: position -> edit."""
-    devices, rows, errors, warnings = [], [], [], []
+    devices, rows, errors, warnings, drafts = [], [], [], [], []
     used = set()
-    ports = {}
+    ports = topology(sources)
     for src in sources:
         pos = src["pos"]
-        info = (src.get("online") or {}).get("response", {})
-        if pos > 0 and info.get("previousPort") is not None and 0 <= info["previousPort"] < 4:
-            ports[pos] = PORTS[info["previousPort"]]
         dev, note, warning, error = describe(src, used)
         if error:
             errors.append(error)
@@ -112,6 +126,10 @@ def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = N
                 errors.append(f"Position {pos}: {e}")
         elif edit:
             warnings.append(f"Position {pos}: the saved edit was made for another device and is not used")
+        if (dev.get("mailbox") or {}).get("soe") is not None:
+            drafts.append(pos)
+            warnings.append(f'Position {pos} ({dev["name"]}): SoE drive support is a DRAFT - not yet checked against a '
+                            "configuration from ctrlX I/O Engineering. Writing it needs an extra confirmation.")
         used.add(dev["name"])
         devices.append(dev)
         rows.append({"position": pos, "name": dev["name"], "source": dev["source"], "note": "; ".join(note),
@@ -144,6 +162,7 @@ def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = N
         "warnings": warnings,
         "variables": diff,
         "identical": bool(eni_bytes) and eni_bytes == current.get("eni") and ini_bytes == current.get("ini"),
+        "draft": drafts,
         "eni": eni_bytes,
         "ini": ini_bytes,
     }

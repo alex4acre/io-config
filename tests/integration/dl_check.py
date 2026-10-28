@@ -144,14 +144,18 @@ def main():
     provider = system.factory().create_provider("ipc://")
     check(provider.start() == Result.OK, "provider started with a local broker")
     methods = {}
-    for name, answer in (("slave_online_info", online), ("slave_eeprom", eeprom)):
+    def soe_parameter(req):
+        return {"response": {"elementFlags": req.get("elementFlags"), "data": [0xD0, 0x07]}}
+
+    for name, answer in (("slave_online_info", online), ("slave_eeprom", eeprom), ("parameter", soe_parameter)):
         type_address = f"types/ethercat/master/{name}"
         bfbs = os.path.join(HERE, "bfbs", name + ".bfbs")
         check(provider.register_type(type_address, bfbs) == Result.OK, f"type {type_address} registered")
         m = MethodNode(system, type_address, answer)
         with open(bfbs, "rb") as f:
             m.bfbs = f.read()
-        check(provider.register_node(MASTER + "device_access/" + name, m.node) == Result.OK, f"node {name} registered")
+        node = MASTER + "device_access/" + ("soe/parameter" if name == "parameter" else name)
+        check(provider.register_node(node, m.node) == Result.OK, f"node {name} registered")
         methods[name] = m
     variables = {}
     for name, path, value in (("master_state", "admin/fieldbus_status/master_state",
@@ -201,6 +205,13 @@ def main():
             if not chunk or sii.end_reached(words):
                 break
         check(sii.decode(words)["order"] == "XI422202", f"EEPROM read in chunks and decoded ({len(words)} words)")
+        for flags in ("value", "attribute"):
+            ans = bus.read_args(MASTER + "device_access/soe/parameter", {"request": {
+                "addressType": "autoincrement", "address": 65532, "driveNumber": 0, "elementFlags": flags, "idn": 1,
+                "maxLength": 16}})
+            seen = methods["parameter"].seen[-1].get("request", {})
+            check(seen.get("elementFlags") == flags and seen.get("idn") == 1 and ans.get("response", {}).get("data") == [0xD0, 0x07],
+                  f"SoE parameter read with elementFlags {flags!r}: request {seen}, answer {ans}")
         try:
             bus.read_args(MASTER + "device_access/slave_online_info",
                           {"request": {"addressType": "autoincrement", "address": 65532}})
@@ -215,7 +226,7 @@ def main():
     finally:
         bus.close()
         for name in methods:
-            provider.unregister_node(MASTER + "device_access/" + name)
+            provider.unregister_node(MASTER + "device_access/" + ("soe/parameter" if name == "parameter" else name))
         for path, _v in variables.values():
             provider.unregister_node(MASTER + path)
         provider.stop()

@@ -88,6 +88,9 @@ def device_from_esi(esi: dict, name: str) -> dict:
             "coe": {"pdo_assign": esi.get("pdo_assign", False), "profile_no": esi.get("profile_no"),
                     "timeout": esi.get("mailbox_timeout", 2000), "init": list(esi.get("coe_init", []))}
             if "CoE" in esi["mailbox"] else None,
+            "soe": {"timeout": esi.get("mailbox_timeout", 2000), "init": list(esi.get("soe_init", [])),
+                    "dictionary": esi.get("dictionary")}
+            if "SoE" in esi["mailbox"] else None,
         }
     modes = esi.get("dc_modes") or []
     return {
@@ -96,7 +99,8 @@ def device_from_esi(esi: dict, name: str) -> dict:
         "timeouts": {**DEFAULT_TIMEOUTS, **(esi.get("timeouts") or {})}, "fmmu": list(esi.get("fmmu") or []),
         "sm": _sm_list(esi["sm"]), "mailbox": mailbox,
         "pdos": [_oversampled(p) for p in esi["pdos"] if p["sm"] is not None],
-        "dc": {"assign_activate": modes[0]["assign_activate"]} if modes and modes[0]["assign_activate"] else None,
+        "dc": {"assign_activate": modes[0]["assign_activate"], "shift": modes[0].get("shift_sync0") or 0}
+              if modes and modes[0]["assign_activate"] else None,
         "source": "esi",
     }
 
@@ -374,6 +378,20 @@ def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars):
         if coe.get("profile_no") is not None:
             pr = _sub(_sub(ce, "Profile"), "ChannelInfo")
             _sub(pr, "ProfileNo", coe["profile_no"])
+    if mbx.get("soe") is not None:
+        ic = _sub(_sub(m, "SoE"), "InitCmds")
+        for x in soe_commands(dev, cycle_ns // 1000):
+            c = _sub(ic, "InitCmd")
+            for tr in x["transitions"]:
+                _sub(c, "Transition", tr)
+            _sub(c, "Comment", x.get("comment", ""))
+            _sub(c, "Timeout", mbx["soe"].get("timeout", 2000))
+            _sub(c, "OpCode", 3)                     # write request
+            _sub(c, "DriveNo", x.get("drive", 0))
+            _sub(c, "IDN", x["idn"])
+            _sub(c, "Elements", 64)                  # the value
+            _sub(c, "Attribute", 0)
+            _sub(c, "Data", x["data"])
 
     # state machine
     ic = _sub(s, "InitCmds")
@@ -461,6 +479,35 @@ def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars):
     return s
 
 
+SOE_CONTROL_WORD, SOE_STATUS_WORD = 134, 135
+SOE_CYCLE_IDNS = (1, 2)              # NC cycle time, SoE cycle time: in µs, from the bus cycle
+
+
+def _idn_list(idns) -> str:
+    body = "".join(le(i, 2) for i in idns)
+    n = len(idns) * 2
+    return le(n, 2) + le(n, 2) + body
+
+
+def soe_commands(dev: dict, cycle_us: int) -> list:
+    """The SoE startup commands of a drive (DRAFT - not checked against an I/O Engineering ENI yet):
+    telegram type 7 (configurable), the AT and MDT configuration lists from the PDO entries (without the
+    status / control word that always lead the telegrams), then the ESI's commands with the cycle times
+    set from the bus cycle, then the user's."""
+    soe = dev["mailbox"]["soe"]
+    at = [e["index"] for p in dev["pdos"] if p["dir"] == "tx" for e in p["entries"] if e["index"] != SOE_STATUS_WORD]
+    mdt = [e["index"] for p in dev["pdos"] if p["dir"] == "rx" for e in p["entries"] if e["index"] != SOE_CONTROL_WORD]
+    out = [{"transitions": ["PS"], "idn": 15, "data": le(7, 2), "comment": "Telegram type: configurable"},
+           {"transitions": ["PS"], "idn": 16, "data": _idn_list(at), "comment": "Configuration list of AT"},
+           {"transitions": ["PS"], "idn": 24, "data": _idn_list(mdt), "comment": "Configuration list of MDT"}]
+    for x in soe.get("init", []):
+        x = dict(x)
+        if x["idn"] in SOE_CYCLE_IDNS:
+            x["data"] = le(cycle_us, 2)
+        out.append(x)
+    return out
+
+
 def _cyclic(config, lay, out_total, in_total, n_mbx, ref_clock):
     frame = _sub(_sub(config, "Cyclic"), "Frame")
     offset = 0
@@ -506,8 +553,8 @@ def _cyclic(config, lay, out_total, in_total, n_mbx, ref_clock):
 
 
 def generate_eni(devices: list, master_name: str, cycle_us: int, previous_ports: dict = None) -> bytes:
-    """The ENI for devices in bus order. previous_ports: position -> port letter of the previous device
-    the device is connected to (from the online topology); default "B", a line."""
+    """The ENI for devices in bus order. previous_ports: position -> (port letter, position of the upstream
+    device) from the online topology (a letter alone: the device before); default ("B", position - 1), a line."""
     if not devices:
         raise GenerateError("no devices")
     names = [d["name"] for d in devices]
@@ -535,7 +582,9 @@ def generate_eni(devices: list, master_name: str, cycle_us: int, previous_ports:
     for pos, (dev, ly) in enumerate(zip(devices, lay)):
         previous = None
         if pos > 0:
-            previous = ((previous_ports or {}).get(pos, "B"), lay[pos - 1]["address"])
+            port = (previous_ports or {}).get(pos, "B")
+            letter, parent = (port, pos - 1) if isinstance(port, str) else port
+            previous = (letter, lay[parent]["address"])
         s = _slave(config, dev, ly, cycle_ns, previous, inputs_vars, outputs_vars)
         if dev.get("dc"):
             dc = _sub(s, "DC")
@@ -543,7 +592,7 @@ def generate_eni(devices: list, master_name: str, cycle_us: int, previous_ports:
                 _sub(dc, "ReferenceClock", 1)
             _sub(dc, "CycleTime0", cycle_ns)
             _sub(dc, "CycleTime1", 0)
-            _sub(dc, "ShiftTime", 0)
+            _sub(dc, "ShiftTime", dev["dc"].get("shift") or 0)
     image_size = _cyclic(config, lay, out_total, in_total, n_mbx, lay[ref]["autoinc"] if ref is not None else None)
 
     image = _sub(config, "ProcessImage")

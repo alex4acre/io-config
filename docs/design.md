@@ -108,8 +108,18 @@ visible.
    back from the device. 1.2.1: an edited startup list replaces the commands kept from the running
    configuration (1.2.0 added them, so a changed value appeared twice and a removed one stayed). Verified on
    the X3: 1000 -> 0 -> removed, the last ENI byte-identical to I/O Engineering's original.
-6. **Next:** drives (modules/slots, PDO mapping content, SoE startup), DC mode choice, devices without a
-   mailbox, more than one frame.
+6. **SoE drives, DRAFT (1.3.0):** for the ctrlX DRIVE XCS2-F/H (SoE) found on the X3 (position 4, at port C of the
+   coupler, rev 0x3 vs ESI 0x06000003). Real topology from the master (portSlaveHandles/previousPort) for
+   PreviousPort. ESI: MDT/AT PDOs, 1 KB mailbox, DC Sync0 0x0300 with ShiftTime 60000, SoE startup commands.
+   Generated (guessed, no reference yet): S-0-0015 = 7, S-0-0016 / S-0-0024 from the AT/MDT entries without
+   the status/control word, S-0-0001/0002 = bus cycle in µs, then the ESI's and the user's SoE commands, as ENI
+   Mailbox/SoE/InitCmds (OpCode 3, DriveNo, IDN, Elements 64, Attribute 0, Data). Plans with a drive are marked
+   draft and need allow_draft to be written. SoE dictionaries (EtherCATDict) are kept in the ESI library; units
+   repaired (UTF-8 shown as code page 850). Editor: MDT/AT content from mappable IDNs; SoE startup
+   parameters. SoE parameter read/write via device_access/soe/parameter (needs the drive in PreOp+, i.e.
+   configured). The FSoE slot (MinInstances 0) is not configured.
+   **Needed:** an ENI from ctrlX I/O Engineering with this drive to replace the guesses with facts.
+7. **Next:** DC mode choice, devices without a mailbox, more than one frame, slots/modules.
 
 ## Open questions
 

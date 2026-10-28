@@ -25,7 +25,6 @@ MAX_UNZIPPED = 512 * 1024 * 1024
 NOT_ESI = {
     "IODevice": "IO-Link device description (IODD)",
     "ExternalTextDocument": "IO-Link IODD texts",
-    "EtherCATDict": "SoE/CoE dictionary (not used yet)",
     "EtherCATModule": "module description (not used yet)",
     "EtherCATDiag": "diagnosis texts (not used yet)",
     "safety_device_facet": "safety description (not used yet)",
@@ -119,7 +118,11 @@ def parse_device(path: str, vendor: int, product: int, revision: int) -> dict:
                             "size": num(sm.get("DefaultSize"), 0), "control": num(sm.get("ControlByte"), 0),
                             "enable": flag(sm.get("Enable"))})
             dc_modes = [{"name": (m.findtext("Name") or "").strip(), "desc": (m.findtext("Desc") or "").strip(),
-                         "assign_activate": num(m.findtext("AssignActivate"), 0)} for m in dev.findall("Dc/OpMode")]
+                         "assign_activate": num(m.findtext("AssignActivate"), 0),
+                         "shift_sync0": num(m.findtext("ShiftTimeSync0"), 0)} for m in dev.findall("Dc/OpMode")]
+            soe_init = [{"transitions": [t.text for t in c.findall("Transition")], "idn": num(c.findtext("IDN"), 0),
+                         "data": (c.findtext("Data") or "").strip().upper(), "comment": (c.findtext("Comment") or "").strip(),
+                         "drive": num(c.get("Chn"), 0)} for c in dev.findall("Mailbox/SoE/InitCmd")]
             coe = mailbox.find("CoE") if mailbox is not None else None
             sm_timeouts = dev.find("Info/StateMachine/Timeout")
             timeouts = {key: num(sm_timeouts.findtext(tag), default) if sm_timeouts is not None else default
@@ -139,6 +142,10 @@ def parse_device(path: str, vendor: int, product: int, revision: int) -> dict:
                 "bootstrap": bytes.fromhex(bootstrap) if len(bootstrap) == 16 else None,
                 "pdo_assign": coe is not None and flag(coe.get("PdoAssign")),
                 "profile_no": num(dev.findtext("Profile/ProfileNo")),
+                "dictionary": (dev.findtext("Profile/DictionaryFile") or "").strip() or None,
+                "soe_init": soe_init,
+                "slots": [{"name": (s.findtext("Name") or "").strip(), "min": num(s.get("MinInstances"), 0),
+                           "max": num(s.get("MaxInstances"), 1)} for s in dev.findall("Slots/Slot")],
                 "sm": sms,
                 "pdos": [parse_pdo(p, "tx") for p in dev.findall("TxPdo")] +
                         [parse_pdo(p, "rx") for p in dev.findall("RxPdo")],
@@ -157,6 +164,7 @@ class EsiLibrary:
         self.log = log
         self.lock = threading.RLock()
         self._cache = {}             # (file, vendor, product, revision) -> parsed device
+        self._dict_cache = {}        # dictionary file -> parsed dictionary
         os.makedirs(folder, exist_ok=True)
         self.entries = self._load_index()
 
@@ -237,6 +245,11 @@ class EsiLibrary:
                 tag = root_tag(tmp)
                 if tag in NOT_ESI:
                     raise ValueError(NOT_ESI[tag])
+                if tag == "EtherCATDict":        # an SoE/CoE dictionary that ESI files refer to by name
+                    os.replace(tmp, os.path.join(self.folder, name))
+                    self._dict_cache.pop(name, None)
+                    result["added"].append({"file": name, "devices": 0, "dictionary": True})
+                    return
                 entries = index_file(tmp)
             except (XmlError, ValueError) as e:
                 os.unlink(tmp)
@@ -295,6 +308,19 @@ class EsiLibrary:
                     self._cache.clear()
                 self._cache[key] = parse_device(os.path.join(self.folder, entry["file"]), *key[1:])
             return self._cache[key]
+
+    def dictionary(self, filename: str) -> dict:
+        """A device dictionary (EtherCATDict) the library holds, parsed; KeyError if it isn't there."""
+        from app.soe import parse_dictionary
+        name = _safe_filename(filename)
+        with self.lock:
+            if name not in self._dict_cache:
+                path = os.path.join(self.folder, name)
+                if not os.path.isfile(path):
+                    raise KeyError(f"dictionary {name} is not in the ESI library (upload it)")
+                with open(path, "rb") as f:
+                    self._dict_cache = {name: parse_dictionary(f.read())}      # one at a time: they are large
+            return self._dict_cache[name]
 
     def summary(self) -> dict:
         return {"files": len({e["file"] for e in self.entries}), "devices": len(self.entries)}

@@ -89,6 +89,7 @@
         <h2 id="d-title"></h2>
         <button id="d-edit">Edit name, PDOs &amp; startup</button>
         <button id="d-objects">Objects (CoE)</button>
+        <button id="d-soe">Parameters (SoE)</button>
         <button id="d-close">Close</button>
       </div>
       <p id="d-ident" class="muted"></p>
@@ -125,15 +126,58 @@
       <div class="scroll"><table id="e-pdos"><thead><tr><th>Use</th><th>Dir</th><th>Index</th><th>Name</th><th>Size</th>
         <th>Rules</th></tr></thead><tbody></tbody></table></div>
       <p id="e-sizes" class="muted"></p>
+      <div id="e-soe" hidden>
+        <h3>Drive telegrams (SoE)</h3>
+        <p class="hint">The cyclic data of the drive: MDT = commands to the drive, AT = actual values from it. Add
+          IDNs the drive allows in that telegram (from its dictionary); the control / status word always comes first.</p>
+        <div class="cols2 even">
+          <div><h3>MDT</h3><table id="e-mdt"><tbody></tbody></table>
+            <div class="row"><input id="e-mdt-add" type="text" list="e-mdt-list" placeholder="S-0-0036 or a name"><button id="e-mdt-btn">Add</button></div>
+            <datalist id="e-mdt-list"></datalist></div>
+          <div><h3>AT</h3><table id="e-at"><tbody></tbody></table>
+            <div class="row"><input id="e-at-add" type="text" list="e-at-list" placeholder="S-0-0051 or a name"><button id="e-at-btn">Add</button></div>
+            <datalist id="e-at-list"></datalist></div>
+        </div>
+        <details><summary>SoE commands the configuration sends (generated)</summary>
+          <div class="scroll"><table id="e-soe-cmds"><thead><tr><th>IDN</th><th>Data</th><th>Comment</th></tr></thead><tbody></tbody></table></div>
+        </details>
+      </div>
       <h3>Startup parameters</h3>
-      <p class="hint">CoE objects the master writes at every start-up (PreOp → SafeOp). Add them from "Objects (CoE)".
-        The PDO assignment (0x1C12/0x1C13) is added automatically.</p>
+      <p class="hint">Parameters the master writes at every start-up (PreOp → SafeOp). Add them from "Objects (CoE)" or
+        "Parameters (SoE)". The PDO assignment (0x1C12/0x1C13) is added automatically.</p>
       <div class="scroll"><table id="e-startup"><thead><tr><th>Object</th><th>Data</th><th>Transition</th><th>Comment</th>
         <th></th></tr></thead><tbody></tbody></table></div>
       <div class="row">
         <button id="e-save" class="primary">Save</button>
         <button id="e-reset">Back to defaults</button>
         <span id="e-msg" class="muted"></span>
+      </div>
+    </section>
+
+    <section class="card" id="soe" hidden>
+      <div class="row head">
+        <h2 id="s-title"></h2>
+        <button id="s-close">Close</button>
+      </div>
+      <p class="hint">The drive's parameters from its SoE dictionary; values are read online (the drive must be in
+        PreOp or higher, i.e. configured). "Write now" changes the drive until its next start; "Startup" keeps the value
+        in the configuration.</p>
+      <div class="row">
+        <input id="s-filter" type="search" placeholder="Filter by IDN or name">
+        <select id="s-mapping"><option value="">all</option><option value="r">MDT-mappable</option><option value="t">AT-mappable</option></select>
+      </div>
+      <div class="cols2">
+        <div class="scroll tall"><table id="s-list"><thead><tr><th>IDN</th><th>Name</th><th>Unit</th></tr></thead>
+          <tbody></tbody></table></div>
+        <div>
+          <h3 id="s-param-title" class="muted">Choose a parameter</h3>
+          <dl id="s-param" class="grid"></dl>
+          <div class="row" id="s-edit" hidden>
+            <input id="s-value" type="text">
+            <button id="s-write">Write now</button>
+            <button id="s-startup">Startup</button>
+          </div>
+        </div>
       </div>
     </section>
 

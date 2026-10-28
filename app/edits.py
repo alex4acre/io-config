@@ -10,7 +10,7 @@ fixed PDOs, only its name can be changed.
 
 import re
 
-from app import generate
+from app import generate, soe
 
 NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}")
 TRANSITIONS = ("IP", "PS", "SO")          # CoE startup commands can be sent on these state changes
@@ -99,6 +99,20 @@ def validate(src: dict, edit: dict) -> dict:
             rows = []
         clean = []
         for i, x in enumerate(rows, 1):
+            if "idn" in x:                       # an SoE parameter (drives)
+                try:
+                    idn = soe.parse_idn(x["idn"])
+                    data = str(x["data"]).replace(" ", "").upper()
+                    bytes.fromhex(data)
+                except (KeyError, TypeError, ValueError):
+                    problems.append(f"startup parameter {i}: idn and data (hex) are needed")
+                    continue
+                if not data or len(data) > 2048:
+                    problems.append(f"startup parameter {i}: data empty or too long")
+                    continue
+                clean.append({"idn": idn, "data": data, "transitions": ["PS"],
+                              "comment": str(x.get("comment") or soe.idn_text(idn))[:120]})
+                continue
             try:
                 index, sub = int(x["index"]), int(x["subindex"])
                 data = str(x["data"]).replace(" ", "").upper()
@@ -115,9 +129,40 @@ def validate(src: dict, edit: dict) -> dict:
                 clean.append({"index": index, "subindex": sub, "data": data, "transitions": transitions,
                               "comment": str(x.get("comment") or f"{index:#06x}:{sub}")[:120]})
         out["startup"] = clean
+    for key, direction, mark, lead in (("soe_mdt", "rx", "r", SOE_CONTROL_WORD), ("soe_at", "tx", "t", SOE_STATUS_WORD)):
+        if edit.get(key) is None:
+            continue
+        dictionary = src.get("soe_dict")
+        if not dictionary:
+            problems.append("the drive's SoE dictionary is not in the ESI library")
+            continue
+        try:
+            idns = [soe.parse_idn(x) for x in edit[key]]
+        except soe.SoeError as e:
+            problems.append(str(e))
+            continue
+        bad = [soe.idn_text(i) for i in idns if mark not in (dictionary.get(i) or {}).get("mapping", "")]
+        if bad:
+            problems.append(f'not mappable into the {"MDT" if mark == "r" else "AT"}: {", ".join(bad)}')
+        if not idns or idns[0] != lead:
+            problems.append(f'the {"MDT" if mark == "r" else "AT"} must start with {soe.idn_text(lead)}')
+        if len(set(idns)) != len(idns):
+            problems.append(f'{"MDT" if mark == "r" else "AT"}: an IDN appears twice')
+        if sum(dictionary.get(i, {}).get("bits", 0) for i in idns) > 8 * 512:
+            problems.append(f'{"MDT" if mark == "r" else "AT"}: more than 512 bytes')
+        out[key] = idns
     if problems:
         raise EditError("; ".join(problems))
     return out
+
+
+SOE_CONTROL_WORD, SOE_STATUS_WORD = 134, 135
+
+
+def soe_type(dict_type: str) -> str:
+    """Dictionary types like UINT_bin / UDINT_hex as the ENI's data types (UINT / UDINT)."""
+    base = dict_type.split("_", 1)[0]
+    return base if base in ("SINT", "INT", "DINT", "LINT", "USINT", "UINT", "UDINT", "ULINT", "REAL", "LREAL") else ""
 
 
 def applies(src: dict, edit: dict) -> bool:
@@ -146,17 +191,39 @@ def apply_edit(dev: dict, src: dict, edit: dict) -> dict:
             chosen.append(dict(p, sm=sm))
         out["pdos"] = chosen
         out["source"] = "edited"
+    for key, direction, name in (("soe_mdt", "rx", "MDT"), ("soe_at", "tx", "AT")):
+        if edit.get(key) is None:
+            continue
+        dictionary = src.get("soe_dict") or {}
+        pdos = []
+        for p in out["pdos"]:
+            if p["dir"] == direction:
+                entries = [{"index": i, "subindex": 0, "name": dictionary.get(i, {}).get("name", soe.idn_text(i)),
+                            "bits": dictionary.get(i, {}).get("bits", 0), "type": soe_type(dictionary.get(i, {}).get("type", ""))}
+                           for i in edit[key]]
+                p = dict(p, entries=entries)
+            pdos.append(p)
+        out["pdos"] = pdos
+        out["source"] = "edited"
     if "startup" in edit:
         # the user's list replaces the startup commands kept from the current configuration (it starts as a
         # copy of them in the editor); the ESI's own commands stay
         mbx = out.get("mailbox")
-        if not mbx or mbx.get("coe") is None:
+        if not mbx or (mbx.get("coe") is None and mbx.get("soe") is None):
             if edit["startup"]:
                 raise EditError("the device has no CoE mailbox for startup parameters")
             return out
-        init = [c for c in mbx["coe"].get("init", []) if not c.get("from_eni")]
-        coe = dict(mbx["coe"], init=init + [dict(x, complete_access=False, user=True) for x in edit["startup"]])
-        out["mailbox"] = dict(mbx, coe=coe)
+        coe_rows = [x for x in edit["startup"] if "idn" not in x]
+        soe_rows = [x for x in edit["startup"] if "idn" in x]
+        if coe_rows and mbx.get("coe") is None or soe_rows and mbx.get("soe") is None:
+            raise EditError("the device has no " + ("CoE" if coe_rows and mbx.get("coe") is None else "SoE")
+                            + " mailbox for these startup parameters")
+        if mbx.get("coe") is not None:
+            init = [c for c in mbx["coe"].get("init", []) if not c.get("from_eni")]
+            mbx = dict(mbx, coe=dict(mbx["coe"], init=init + [dict(x, complete_access=False, user=True) for x in coe_rows]))
+        if mbx.get("soe") is not None:
+            mbx = dict(mbx, soe=dict(mbx["soe"], init=list(mbx["soe"].get("init", [])) + [dict(x, user=True) for x in soe_rows]))
+        out["mailbox"] = mbx
     return out
 
 

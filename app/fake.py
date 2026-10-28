@@ -61,18 +61,36 @@ def recorded_coe(data_dir: str = DATA) -> dict:
         return {int(k): v for k, v in json.load(f).items()}
 
 
+def add_drive(nodes: dict, slaves: list, data_dir: str = DATA):
+    """The ctrlX DRIVE XCS2-F/H (SoE) as it joined the X3's bus: at port C of the coupler, in Init (not
+    configured). tests/data/x3-drive.json holds its real online info and EEPROM."""
+    with open(os.path.join(data_dir, "x3-drive.json"), encoding="utf-8") as f:
+        drive = json.load(f)
+    slaves[0] = json.loads(json.dumps(slaves[0]))
+    slaves[0]["online_info"]["response"]["portSlaveHandles"][2] = drive["online_info"]["response"]["slaveHandle"]
+    slaves.append({"autoinc": drive["autoinc"], "online_info": drive["online_info"], "eeprom": drive["eeprom"]})
+    nodes[MASTER + "admin/fieldbus_status/num_connected_slaves"] = {"response": {"numSlaves": len(slaves)}}
+
+
 class FakeBus:
 
-    def __init__(self, nodes: dict = None, slaves: list = None):
+    def __init__(self, nodes: dict = None, slaves: list = None, drive: bool = False):
         self.lock = threading.RLock()
         if nodes is None:
             nodes, slaves = recorded_nodes()
+            if drive:
+                add_drive(nodes, slaves)
+                from app.soe import parse_dictionary
+                with open(os.path.join(DATA, "esi-drive", "BoschRexroth_ctrlX_DRIVE_XCS2_F_H_SoE_Dictionary.xml"), "rb") as f:
+                    self.soe_attributes = {i: p["attribute"] for i, p in parse_dictionary(f.read()).items()
+                                           if p["attribute"] is not None}
         self.nodes = dict(nodes)
         self.slaves = list(slaves or [])    # [{"autoinc", "online_info", "eeprom"}] in bus order
         self.calls = []                     # (operation, address, args) for tests
         self.written = []                   # (eni, ini) of each configuration write
         self.coe = recorded_coe() if self.slaves else {}       # autoinc address -> object dictionary
         self.fail_op = False                # True: the master stays in PreOp after requesting Op
+        self.soe = {}                       # (autoinc, idn) -> value bytes written (SoE), see _soe
 
     def is_connected(self) -> bool:
         return True
@@ -127,6 +145,8 @@ class FakeBus:
                 return {"response": {"data": s["eeprom"][offset:offset + length]}}
             if address.startswith(MASTER + "device_access/coe/"):
                 return self._coe(address.rsplit("/", 1)[1], request)
+            if address == MASTER + "device_access/soe/parameter":
+                return self._soe(request)
             raise BusError(f"read {address}: DL_INVALID_ADDRESS")
 
     def _coe(self, node, req):
@@ -155,10 +175,47 @@ class FakeBus:
             raise BusError("read: DL_FAILED (Ecat SDO: Subindex does not exist)")
         return answer(obj["values"][sub])
 
+    def _configured(self, s) -> bool:
+        """A device is past Init when the configuration in the fake master lists its identity."""
+        from app.eni import parse_eni
+        idn = s["online_info"]["response"]["slaveIdentity"]
+        eni = bytes(self.nodes[MASTER + "admin/fieldbus_config"]["response"]["eni"])
+        return any((x["vendor"], x["product"]) == (idn["vendorId"], idn["productCode"]) for x in parse_eni(eni)["slaves"])
+
+    def _soe(self, req):
+        """SoE parameters of the drive - SYNTHETIC (an SoE drive was never in PreOp on the X3 yet): the
+        attribute from its dictionary, values 0 or what was written."""
+        s = self._slave(req)
+        if not s["online_info"]["response"].get("mbxProtocols", 0) & 0x10:       # bit 4: SoE
+            raise BusError("read: DL_FAILED (Ecat SoE: Protocol not supported)")
+        if not self._configured(s):
+            raise BusError("read: DL_FAILED (Ecat: Device not found)")
+        idn = req.get("idn")
+        attr = self.soe_attributes.get(idn)
+        if attr is None:
+            raise BusError("read: DL_FAILED (Ecat SoE: IDN not existing)")
+        flags = req.get("elementFlags")
+        if flags == "attribute":
+            return {"response": {"elementFlags": flags, "data": list(attr.to_bytes(4, "little"))}}
+        if flags == "value":
+            size = {0b001: 2, 0b010: 4, 0b011: 8}.get((attr >> 16) & 7)
+            default = bytes(size) if size else bytes(4)
+            return {"response": {"elementFlags": flags, "data": list(self.soe.get((req["address"], idn), default))}}
+        raise BusError("read: DL_FAILED (Ecat SoE: element not supported by the fake)")
+
+    soe_attributes = {}                     # idn -> attribute (from the drive's dictionary when drive=True)
+
     def write_json(self, address: str, value):
         """SDO downloads (device_access/coe/sdo): the new bytes become the object's value, if it is writable."""
         with self.lock:
             self.calls.append(("write_json", address, value))
+            if address == MASTER + "device_access/soe/parameter":
+                req = (value or {}).get("request", {})
+                s = self._slave(req)
+                if not self._configured(s):
+                    raise BusError("write: DL_FAILED (Ecat: Device not found)")
+                self.soe[(req["address"], req["idn"])] = bytes(req.get("data") or [])
+                return
             if address != MASTER + "device_access/coe/sdo":
                 raise BusError(f"write {address}: DL_INVALID_ADDRESS")
             req = (value or {}).get("request", {})

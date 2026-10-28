@@ -145,6 +145,8 @@ try:
     check(js("return document.getElementById('plan-summary').textContent").startswith("Differs"), "edited configuration differs")
     shot("editor")
     js("document.getElementById('allow-writes').click();")
+    until("""[...document.querySelectorAll('#o-entries tbody tr')].some(r => r.cells[1].textContent === 'User gain' &&
+             [...r.querySelectorAll('button')].some(b => b.textContent === 'Write now' && !b.disabled))""")
     js("""const r = [...document.querySelectorAll('#o-entries tbody tr')].find(r => r.cells[1].textContent === 'User gain');
           window.confirm = () => true; [...r.querySelectorAll('button')].find(b => b.textContent === 'Write now').click();""")
     check(until("document.getElementById('banner').textContent.includes('can only be written in PreOp')"),

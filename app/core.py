@@ -23,7 +23,7 @@ import shutil
 import threading
 import time
 
-from app import coe, compare, configure, edits, eni, generate, sii
+from app import coe, compare, configure, edits, eni, generate, sii, soe
 from app.esi import EsiLibrary
 
 DEFAULTS = {"instance": "ethercatmaster"}
@@ -250,6 +250,11 @@ class Core:
             devices.append(report)
             sources.append({"pos": pos, "online": online, "eeprom": eeprom, "eni_slave": eni_slaves.get(pos),
                             "esi_match": match, "esi_device": device})
+            if device and device.get("dictionary"):          # SoE drives: their parameter dictionary
+                try:
+                    sources[-1]["soe_dict"] = self.esi.dictionary(device["dictionary"])
+                except KeyError as e:
+                    self.log(str(e))
         for pos in sorted(p for p in eni_slaves if p >= connected):
             devices.append(self._report(pos, None, None, None, eni_slaves[pos], master_op)[0])
         return master, devices, sources, {"eni": eni_bytes, "ini": ini_bytes, "parsed": config}
@@ -309,7 +314,7 @@ class Core:
             raise KeyError("no configuration built")
         return p[which]
 
-    def start_download(self, plan_id: int) -> dict:
+    def start_download(self, plan_id: int, allow_draft=False) -> dict:
         with self.lock:
             if self._busy():
                 raise ConfigError("a scan or download is already running")
@@ -318,6 +323,9 @@ class Core:
                 raise ConfigError("the configuration changed; build it again")
             if p["errors"] or not p["eni"]:
                 raise ConfigError("the configuration has errors: " + "; ".join(p["errors"]))
+            if p.get("draft") and not allow_draft:
+                raise ConfigError("the configuration contains draft drive support (positions "
+                                  f'{", ".join(map(str, p["draft"]))}); confirm writing a draft explicitly')
             self.download_state = {"running": True, "steps": [], "finished": None, "error": None}
             self._thread = threading.Thread(target=self._download_thread, args=(p["eni"], p["ini"], "download"),
                                             name="download", daemon=True)
@@ -408,6 +416,20 @@ class Core:
             out["coe"] = coe_cfg is not None
             out["fixed_startup"] = [c for c in (coe_cfg or {}).get("init", []) if not c.get("user") and not c.get("from_eni")]
             out["pdo_assign"] = bool((coe_cfg or {}).get("pdo_assign"))
+            soe_cfg = ((dev or {}).get("mailbox") or {}).get("soe")
+            out["soe"] = None
+            if soe_cfg is not None:
+                cycle = (self.master or {}).get("cycle_us") or 2000
+                dictionary = src.get("soe_dict") or {}
+                out["soe"] = {
+                    "dictionary": bool(dictionary),
+                    "mdt": [{"idn": e["index"], "text": soe.idn_text(e["index"]), "name": e["name"], "bits": e["bits"]}
+                            for p in dev["pdos"] if p["dir"] == "rx" for e in p["entries"]],
+                    "at": [{"idn": e["index"], "text": soe.idn_text(e["index"]), "name": e["name"], "bits": e["bits"]}
+                           for p in dev["pdos"] if p["dir"] == "tx" for e in p["entries"]],
+                    "commands": [dict(c, text=soe.idn_text(c["idn"])) for c in generate.soe_commands(dev, cycle)
+                                 if not c.get("user")],
+                }
             return out
 
     def save_edit(self, position: int, change: dict) -> dict:
@@ -416,7 +438,7 @@ class Core:
             all_edits = self.load_edits()
             old = all_edits.get(position) if all_edits.get(position) and edits.applies(src, all_edits[position]) else {}
             merged = {k: v for k, v in old.items() if k != "identity"}
-            merged.update({k: v for k, v in change.items() if k in ("name", "pdos", "startup")})
+            merged.update({k: v for k, v in change.items() if k in ("name", "pdos", "startup", "soe_mdt", "soe_at")})
             checked = edits.validate(src, merged)
             configure.device_for(src, {position: checked})          # raises EditError if it can't be applied
             all_edits[position] = checked
@@ -526,7 +548,8 @@ class Core:
 
     def _device_state(self, position: int) -> str:
         """The device's EtherCAT state now (Init/PreOp/SafeOp/Op), read online."""
-        a = self._coe_address(position)
+        self._source(position)
+        a = {"addressType": "autoincrement", "address": (-position) & 0xFFFF}
         info = self.bus.read_args(f'{INSTANCES}/{self.config["instance"]}/device_access/slave_online_info',
                                   {"request": a}).get("response", {})
         return compare.al_state(info.get("alStatus")).split(" ")[0]
@@ -541,6 +564,96 @@ class Core:
         data = coe.encode(value, e["data_type"], e["bits"])
         return {"index": index, "subindex": sub, "data": data.hex().upper(), "transitions": ["PS"],
                 "comment": comment or f'{e["name"]} = {value}'}
+
+    # --- SoE parameters of a drive (online, through the master's mailbox) ----------------------------
+
+    def _soe_device(self, position: int):
+        src = self._source(position)
+        esi = src.get("esi_device")
+        protocols = (esi or {}).get("mailbox") or (src.get("eeprom") or {}).get("mailbox") or []
+        if "SoE" not in protocols:
+            raise ConfigError(f"the device at position {position} has no SoE mailbox")
+        return src, esi
+
+    def soe_dictionary(self, position: int) -> dict:
+        src, esi = self._soe_device(position)
+        name = (esi or {}).get("dictionary")
+        if not name:
+            raise ConfigError("the device's ESI names no SoE dictionary")
+        return self.esi.dictionary(name)
+
+    def soe_parameters(self, position: int, text: str = "", mapping: str = "", limit: int = 400) -> dict:
+        """The drive's parameters from its dictionary (offline): filter by IDN/name text and r (MDT) / t (AT)."""
+        words = text.lower().split()
+        out = []
+        for p in self.soe_dictionary(position).values():
+            if mapping and mapping not in p["mapping"]:
+                continue
+            if all(w in f'{p["text"]} {p["name"]}'.lower() for w in words):
+                out.append(p)
+                if len(out) >= limit:
+                    break
+        return {"position": position, "parameters": out}
+
+    def _soe_request(self, position: int, idn: int, flags: str, data=None, length=1024) -> dict:
+        req = {"addressType": "autoincrement", "address": (-position) & 0xFFFF, "driveNumber": 0,
+               "elementFlags": flags, "idn": idn, "maxLength": length}
+        if data is not None:
+            req["data"] = list(data)
+        return {"request": req}
+
+    def _soe_attribute(self, position: int, idn: int) -> int:
+        try:
+            p = self.soe_dictionary(position).get(idn)
+            if p and p["attribute"] is not None:
+                return p["attribute"]
+        except (ConfigError, KeyError):
+            pass
+        raw = self.bus.read_args(f'{INSTANCES}/{self.config["instance"]}/device_access/soe/parameter',
+                                 self._soe_request(position, idn, "attribute")).get("response", {}).get("data") or []
+        return int.from_bytes(bytes(raw[:4]), "little")
+
+    def soe_read(self, position: int, idn) -> dict:
+        self._soe_device(position)
+        idn = soe.parse_idn(idn)
+        attr = soe.attribute(self._soe_attribute(position, idn))
+        raw = self.bus.read_args(f'{INSTANCES}/{self.config["instance"]}/device_access/soe/parameter',
+                                 self._soe_request(position, idn, "value")).get("response", {}).get("data") or []
+        info = {}
+        try:
+            info = self.soe_dictionary(position).get(idn) or {}
+        except (ConfigError, KeyError):
+            pass
+        return {"idn": idn, "text": soe.idn_text(idn), "name": info.get("name", ""), "unit": info.get("unit", ""),
+                "attribute": attr, "value": soe.decode(raw, attr), "hex": bytes(raw).hex().upper()}
+
+    def soe_write(self, position: int, idn, value) -> dict:
+        self._soe_device(position)
+        idn = soe.parse_idn(idn)
+        attr = soe.attribute(self._soe_attribute(position, idn))
+        state = self._device_state(position)
+        if attr["command"]:
+            raise ConfigError(f"{soe.idn_text(idn)} is a procedure command; starting commands is not supported")
+        if attr["write_protected"].get(state):
+            free = [s for s, p in attr["write_protected"].items() if not p]
+            raise ConfigError(f"{soe.idn_text(idn)} is write-protected in {state}"
+                              + (f" (writable in {' / '.join(free)}); add it as a startup parameter" if free else ""))
+        data = soe.encode(value, attr)
+        self.bus.write_json(f'{INSTANCES}/{self.config["instance"]}/device_access/soe/parameter',
+                            self._soe_request(position, idn, "value", data, len(data)))
+        self.log(f"SoE write position {position} {soe.idn_text(idn)} = {data.hex().upper()}")
+        return self.soe_read(position, idn)
+
+    def soe_startup_entry(self, position: int, idn, value) -> dict:
+        idn = soe.parse_idn(idn)
+        attr = soe.attribute(self._soe_attribute(position, idn))
+        if attr["command"]:
+            raise ConfigError(f"{soe.idn_text(idn)} is a procedure command")
+        if attr["write_protected"].get("PreOp"):
+            raise ConfigError(f"{soe.idn_text(idn)} is write-protected in PreOp, a startup parameter can't set it")
+        name = (self.soe_dictionary(position).get(idn) or {}).get("name", "")
+        return {"idn": idn, "data": soe.encode(value, attr).hex().upper(), "transitions": ["PS"],
+                "comment": f"{soe.idn_text(idn)} {name} = {value}"[:120]}
 
     # --- process data (the running configuration's realtime_data variables) -------------------------
 

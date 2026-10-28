@@ -182,6 +182,9 @@ async function openDevice(pos) {
     return;
   }
   selected = pos;
+  const protocols = d.sources.eeprom.mailbox || [];
+  $("d-objects").hidden = protocols.length > 0 && !protocols.includes("CoE");
+  $("d-soe").hidden = !protocols.includes("SoE");
   for (const tr of $("devices").tBodies[0].rows) tr.classList.toggle("selected", Number(tr.cells[0].textContent) === pos);
   $("detail").hidden = false;
   $("d-title").textContent = `${d.position}: ${d.name}`;
@@ -335,9 +338,12 @@ $("write").onclick = async () => {
   if (!plan) return;
   const what = plan.identical ? "The new configuration is identical to the current one.\n\n" : "";
   if (!confirm(what + WRITE_WARNING + "\n\nWrite the configuration now?")) return;
+  const draft = plan.draft && plan.draft.length > 0;
+  if (draft && !confirm(`Position ${plan.draft.join(", ")}: the drive part of this configuration is a DRAFT that was ` +
+    "not checked against a configuration from ctrlX I/O Engineering. The drive may not reach Op.\n\nWrite it anyway?")) return;
   try {
     banner("");
-    await api("POST", "/download", { plan_id: plan.id, confirm: true });
+    await api("POST", "/download", { plan_id: plan.id, confirm: true, allow_draft: draft });
     $("write").disabled = true;
     poll();
   } catch (e) {
@@ -431,11 +437,61 @@ function renderEditor() {
   for (const [i, c] of d.startup.entries()) {
     const del = el("button", { class: "small" }, "Remove");
     del.onclick = () => saveEdit({ startup: d.startup.filter((_, j) => j !== i) });
-    row(sb, [`${hex(c.index)}:${c.subindex}`, el("code", {}, c.data), c.transitions.join(" "), c.comment, del]);
+    row(sb, [c.idn !== undefined ? idnText(c.idn) : `${hex(c.index)}:${c.subindex}`, el("code", {}, c.data),
+      c.transitions.join(" "), c.comment, del]);
   }
+  renderSoeEditor();
   if (!d.fixed_startup.length && !d.startup.length) row(sb, [el("span", { class: "muted" }, "none"), "", "", "", ""]);
   $("e-msg").textContent = d.edited ? "This position has saved changes." : "Defaults (no saved changes).";
 }
+
+function idnText(n) {
+  return `${n & 0x8000 ? "P" : "S"}-${(n >> 12) & 7}-${String(n & 0xfff).padStart(4, "0")}`;
+}
+
+let soeLists = null;
+
+function renderSoeEditor() {
+  const s = editData.soe;
+  $("e-soe").hidden = !s;
+  if (!s) return;
+  if (!soeLists) soeLists = { mdt: s.mdt.map((x) => x.idn), at: s.at.map((x) => x.idn), names: {} };
+  for (const x of [...s.mdt, ...s.at]) soeLists.names[x.idn] = `${x.name} (${x.bits} bit)`;
+  for (const key of ["mdt", "at"]) {
+    const tb = $("e-" + key).tBodies[0];
+    tb.replaceChildren();
+    soeLists[key].forEach((idn, i) => {
+      const del = el("button", { class: "small" }, "Remove");
+      del.disabled = i === 0;
+      del.onclick = () => { soeLists[key].splice(i, 1); renderSoeEditor(); };
+      row(tb, [idnText(idn), soeLists.names[idn] || "", del]);
+    });
+  }
+  const cmds = $("e-soe-cmds").tBodies[0];
+  cmds.replaceChildren();
+  for (const c of s.commands) row(cmds, [c.text, el("code", {}, c.data), c.comment]);
+}
+
+async function fillSoeSuggestions(key) {
+  const mark = key === "mdt" ? "r" : "t";
+  try {
+    const r = await api("GET", `/devices/${editPos}/soe?mapping=${mark}&limit=1000`);
+    $(`e-${key}-list`).replaceChildren(...r.parameters.map((p) => el("option", { value: `${p.text} ${p.name}` })));
+    for (const p of r.parameters) soeLists.names[p.idn] = `${p.name} (${p.bits} bit)`;
+  } catch (e) { /* no dictionary */ }
+}
+
+function addSoe(key) {
+  const text = $(`e-${key}-add`).value.trim();
+  const m = text.match(/^([SP])-(\d)-(\d{1,4})/i);
+  if (!m) { banner("Enter an IDN like S-0-0036 (pick one from the list)"); return; }
+  const idn = (m[1].toUpperCase() === "P" ? 0x8000 : 0) | (Number(m[2]) << 12) | Number(m[3]);
+  if (!soeLists[key].includes(idn)) soeLists[key].push(idn);
+  $(`e-${key}-add`).value = "";
+  renderSoeEditor();
+}
+$("e-mdt-btn").onclick = () => addSoe("mdt");
+$("e-at-btn").onclick = () => addSoe("at");
 
 function updateEditorRules() {
   const sel = selectedPdos();
@@ -453,8 +509,10 @@ async function openEditor(pos) {
   try {
     editData = await api("GET", `/devices/${pos}/edit`);
     editPos = pos;
+    soeLists = null;
     $("editor").hidden = false;
     renderEditor();
+    if (editData.soe) { fillSoeSuggestions("mdt"); fillSoeSuggestions("at"); }
     $("editor").scrollIntoView({ behavior: "smooth" });
   } catch (e) {
     banner(e.message);
@@ -476,12 +534,18 @@ async function saveEdit(change) {
 $("e-save").onclick = () => {
   const change = { name: $("e-name").value.trim() };
   if (editData.editable) change.pdos = selectedPdos();
+  if (editData.soe && soeLists) {
+    change.soe_mdt = soeLists.mdt;
+    change.soe_at = soeLists.at;
+  }
+  soeLists = null;
   saveEdit(change);
 };
 $("e-reset").onclick = async () => {
   if (!confirm("Forget the saved name, PDO choice and startup parameters of this position?")) return;
   try {
     editData = await api("DELETE", `/devices/${editPos}/edit`);
+    soeLists = null;
     renderEditor();
   } catch (e) {
     banner(e.message);
@@ -590,6 +654,89 @@ $("o-filter").oninput = renderObjectList;
 $("o-refresh").onclick = () => { if (objPos !== null) openObjects(objPos, true); };
 $("o-close").onclick = () => { $("objects").hidden = true; objPos = null; currentObject = null; };
 $("d-objects").onclick = () => { if (selected !== null) openObjects(selected); };
+
+// --- SoE parameters ------------------------------------------------------------------------------
+
+let soePos = null;
+let soeIdn = null;
+let soeTimer = null;
+
+async function loadSoeList() {
+  try {
+    const r = await api("GET", `/devices/${soePos}/soe?q=${encodeURIComponent($("s-filter").value.trim())}&mapping=${$("s-mapping").value}`);
+    const tb = $("s-list").tBodies[0];
+    tb.replaceChildren();
+    for (const p of r.parameters) {
+      const tr = row(tb, [p.text, p.name, p.unit], { class: "click" + (p.idn === soeIdn ? " selected" : "") });
+      tr.onclick = () => openSoe(p.idn);
+    }
+    $("s-param-title").textContent = soeIdn === null ? `${r.parameters.length} parameters - choose one` : $("s-param-title").textContent;
+  } catch (e) {
+    $("s-param-title").textContent = e.message;
+  }
+}
+
+async function openSoeList(pos) {
+  soePos = pos;
+  soeIdn = null;
+  $("soe").hidden = false;
+  $("s-title").textContent = `Parameters of position ${pos}`;
+  $("s-param").replaceChildren();
+  $("s-edit").hidden = true;
+  $("soe").scrollIntoView({ behavior: "smooth" });
+  loadSoeList();
+}
+
+async function openSoe(idn) {
+  soeIdn = idn;
+  for (const tr of $("s-list").tBodies[0].rows) tr.classList.toggle("selected", tr.cells[0].textContent === idnText(idn));
+  $("s-param-title").textContent = idnText(idn);
+  const dl = $("s-param");
+  dl.replaceChildren();
+  const add = (k, v) => dl.append(el("dt", {}, k), el("dd", {}, v));
+  try {
+    const p = await api("GET", `/devices/${soePos}/soe/${idn}`);
+    $("s-param-title").textContent = `${p.text} ${p.name}`;
+    add("Value", `${Array.isArray(p.value) ? p.value.join(", ") : p.value} ${p.unit || ""}`);
+    const a = p.attribute;
+    add("Type", `${a.display}${a.list ? " list" : ""}, ${a.size} byte(s)${a.decimals ? `, ${a.decimals} decimals` : ""}`);
+    const prot = Object.entries(a.write_protected).filter(([, v]) => v).map(([k]) => k);
+    add("Write-protected in", prot.length ? prot.join(", ") : "-");
+    add("Raw", el("code", {}, p.hex));
+    $("s-edit").hidden = a.command;
+    $("s-value").value = Array.isArray(p.value) ? p.value.join(" ") : String(p.value);
+    $("s-write").disabled = !writesAllowed();
+    $("s-write").title = writesAllowed() ? "" : "Turn on \"Allow writes\" first";
+  } catch (e) {
+    add("Online", el("span", { class: "muted" }, e.message));
+    $("s-edit").hidden = false;               // a startup parameter can still be added from the dictionary
+    $("s-write").disabled = true;
+  }
+}
+
+$("s-write").onclick = async () => {
+  if (!confirm(`Write ${$("s-value").value} to ${idnText(soeIdn)} on the drive now?`)) return;
+  try {
+    await api("PUT", `/devices/${soePos}/soe/${soeIdn}`, { value: $("s-value").value, confirm: true });
+    openSoe(soeIdn);
+  } catch (e) {
+    banner(e.message);
+  }
+};
+$("s-startup").onclick = async () => {
+  try {
+    await api("POST", `/devices/${soePos}/edit/startup`, { idn: soeIdn, value: $("s-value").value });
+    banner(`Startup parameter ${idnText(soeIdn)} = ${$("s-value").value} saved for position ${soePos}. ` +
+      "Build the configuration to apply it.", true);
+    if (editPos === soePos) openEditor(soePos);
+  } catch (e) {
+    banner(e.message);
+  }
+};
+$("s-filter").oninput = () => { clearTimeout(soeTimer); soeTimer = setTimeout(loadSoeList, 250); };
+$("s-mapping").onchange = loadSoeList;
+$("s-close").onclick = () => { $("soe").hidden = true; soePos = null; };
+$("d-soe").onclick = () => { if (selected !== null) openSoeList(selected); };
 
 // --- process data --------------------------------------------------------------------------------
 
