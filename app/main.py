@@ -3,7 +3,8 @@
 """I/O Config: EtherCAT bus scan with ESI, ENI and EEPROM cross-check
 
 In the snap: UI at https://<ctrlx>/io-config, configuration in the app data of the active
-configuration (io-config/config.json), Data Layer nodes under io-config/...
+configuration (io-config/config.json), ESI library in $SNAP_COMMON/esi (it can be large, so it is not
+part of the active configuration). Phase 1 only reads the Data Layer; the app has no nodes of its own.
 
 Development with a simulated ctrlX:  IO_CONFIG_FAKE=1 python3 -m app.main
                                      -> http://127.0.0.1:12617/io-config/?token=dev
@@ -48,12 +49,18 @@ def config_path() -> str:
     return os.path.join(active, SNAP_NAME, "config.json")
 
 
+def esi_folder() -> str:
+    if IN_SNAP:
+        return os.path.join(os.environ["SNAP_COMMON"], "esi")
+    return os.environ.get("IO_CONFIG_ESI", os.path.join(SRC, "data", "esi"))
+
+
 def start_datalayer():
-    """(system, provider, bus) - the client bus and the provider share one Data Layer system."""
+    """(system, bus)"""
     if not IN_SNAP and os.environ.get("IO_CONFIG_FAKE"):
         from app.fake import FakeBus
         log("Using a simulated ctrlX (development mode)")
-        return None, None, FakeBus()
+        return None, FakeBus()
     # outside the snap, e.g. "tcp://boschrexroth:boschrexroth@192.168.1.1?sslport=443" (needs Ubuntu 24.04)
     connection = "ipc://" if IN_SNAP else os.environ.get("DATALAYER_CONNECTION")
     if not connection:
@@ -62,15 +69,7 @@ def start_datalayer():
     from app.bus import DatalayerBus
     system = ctrlxdatalayer.system.System("")
     system.start(False)
-    bus = DatalayerBus(system, connection)
-    while not __close_app:
-        provider = system.factory().create_provider(connection)
-        if provider.start() == ctrlxdatalayer.variant.Result.OK:
-            return system, provider, bus
-        provider.close()
-        log("Starting the Data Layer provider failed, retrying in 5 s")
-        time.sleep(5)
-    return system, None, bus
+    return system, DatalayerBus(system, connection)
 
 
 def start_webserver():
@@ -99,16 +98,11 @@ def main():
     path = config_path()
     if __close_app:
         return
-    system, provider, bus = start_datalayer()
+    system, bus = start_datalayer()
     if __close_app:
         return
-    registry_factory = None
-    if provider is not None:
-        from app.provider import NodeRegistry
-        registry_factory = lambda core: NodeRegistry(provider, core, log=log)   # noqa: E731
-    core = Core(path, bus, registry_factory=registry_factory, log=log)
-    core.start()
-    log(f"Configuration: {path}")
+    core = Core(path, bus, esi_folder(), log=log)
+    log(f"Configuration: {path}, ESI library: {core.esi.folder} ({core.esi.summary()['devices']} devices)")
     app.web.core = core
     app.web.www_dir = os.path.join(os.environ["SNAP"], "www") if IN_SNAP else os.path.join(SRC, "www")
     server = start_webserver()
@@ -123,9 +117,6 @@ def main():
     server.shutdown()
     server.server_close()
     core.stop()
-    if provider is not None:
-        provider.stop()
-        provider.close()
     if hasattr(bus, "close"):
         bus.close()
     if system is not None:

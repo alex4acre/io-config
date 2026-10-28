@@ -78,6 +78,22 @@ class DatalayerBus:
                 self._check(result, f"read {address}")
                 return self._to_python(address, v)
 
+    def read_args(self, address: str, args: dict):
+        """Read a node that takes input (a "Method" node, e.g. the EtherCAT master's slave_online_info):
+        args in JSON form are converted with the node's read type and sent along with the read."""
+        with self.lock:
+            read_type = self.metadata(address)["references"].get("readType", "")
+            if not read_type:
+                raise BusError(f"read {address}: the node has no read type for arguments")
+            with self._Variant() as tv:
+                tv.set_flatbuffers(bytearray(self._type(read_type)))      # the library needs a writable buffer
+                r, data, err = self.converter.parse_json_complex(json.dumps(args), tv)
+                with data, err:
+                    self._check(r, f"convert for {read_type} ({err.get_string() or ''})")
+                    result, out = self.client.read_sync_args(address, data)   # out is data, now holding the answer
+                    self._check(result, f"read {address}")
+                    return self._to_python(address, out)
+
     def write(self, address: str, value):
         """Writes in the node's current type (read first, as the ctrlX samples do)."""
         with self.lock:

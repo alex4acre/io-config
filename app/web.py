@@ -22,6 +22,7 @@ from app.core import ConfigError
 BASE = "/io-config"
 API = BASE + "/api/v1"
 MAX_BODY = 1024 * 1024
+MAX_UPLOAD = 64 * 1024 * 1024
 
 core = None          # set by main
 www_dir = None       # set by main
@@ -30,9 +31,12 @@ ROUTES = [
     ("GET", r"/state", "get_state"),
     ("GET", r"/config", "get_config"),
     ("PATCH", r"/config", "patch_config"),
-    ("GET", r"/browse", "browse"),
-    ("GET", r"/node", "read_node"),
-    ("PUT", r"/node", "write_node"),
+    ("GET", r"/instances", "get_instances"),
+    ("POST", r"/scan", "post_scan"),
+    ("GET", r"/devices/(\d+)", "get_device"),
+    ("GET", r"/esi", "get_esi"),
+    ("POST", r"/esi", "post_esi"),
+    ("DELETE", r"/esi/([^/]+)", "delete_esi"),
     ("POST", r"/admin/cfg/load", "cfg_load"),
     ("POST", r"/admin/cfg/save", "cfg_save"),
 ]
@@ -162,25 +166,39 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     def patch_config(self):
         self.send_json(200, core.update_config(self.read_json()))
 
-    # --- Data Layer access (an example of using the client bus) ---------------------------------
+    def get_instances(self):
+        self.send_json(200, {"instances": core.instances()})
 
-    def browse(self):
-        path = self.q("path")
-        self.send_json(200, {"path": path, "children": core.bus.browse(path)})
+    # --- bus scan ----------------------------------------------------------------------------------
 
-    def read_node(self):
-        path = self.q("path")
-        if not path:
-            raise HttpError(400, "path is missing")
-        self.send_json(200, {"path": path, "value": core.bus.read(path)})
+    def post_scan(self):
+        d = self.read_json() if int(self.headers.get("Content-Length") or 0) else {}
+        self.send_json(202, core.start_scan(reread_eeprom=bool(d.get("reread_eeprom"))))
 
-    def write_node(self):
-        path = self.q("path")
-        d = self.read_json()
-        if not path or "value" not in d:
-            raise HttpError(400, 'path and {"value": ...} are needed')
-        core.bus.write(path, d["value"])
-        self.send_json(200, {"path": path, "value": core.bus.read(path)})
+    def get_device(self, position):
+        self.send_json(200, core.device(int(position)))
+
+    # --- ESI library -------------------------------------------------------------------------------
+
+    def get_esi(self):
+        self.send_json(200, {"total": core.esi.summary()["devices"], "files": sorted(core.esi.files()),
+                             "devices": core.esi.search(self.q("q"), limit=int(self.q("limit", "300")))})
+
+    def post_esi(self):
+        """The body is the file itself (XML or zip); its name comes in ?name=."""
+        name = self.q("name")
+        if not name:
+            raise HttpError(400, "name is missing")
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_UPLOAD:
+            raise HttpError(413, f"File too large (max {MAX_UPLOAD // (1024 * 1024)} MB)")
+        self._body_read = True
+        data = self.rfile.read(length)
+        self.send_json(200, core.esi.add(name, data))
+
+    def delete_esi(self, name):
+        core.esi.delete(name)
+        self.send_json(200, core.esi.summary())
 
     # --- active configuration (ctrlX calls these when a configuration is loaded or saved) ---------
 

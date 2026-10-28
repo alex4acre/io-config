@@ -9,39 +9,102 @@
 <body>
   <header>
     <h1>I/O Config</h1>
+    <nav class="tabs">
+      <button id="tab-bus" class="tab active" data-view="bus">Bus</button>
+      <button id="tab-esi" class="tab" data-view="esi">ESI library</button>
+    </nav>
     <span id="conn" class="chip">...</span>
   </header>
   <div id="banner" class="banner" hidden></div>
 
-  <main>
+  <main id="view-bus">
     <section class="card">
-      <h2>State</h2>
-      <dl class="grid">
-        <dt>Counter</dt><dd id="counter">-</dd>
-        <dt>Uptime</dt><dd id="uptime">-</dd>
+      <div class="row head">
+        <h2>EtherCAT master <span id="instance" class="muted"></span></h2>
+        <span id="progress" class="muted"></span>
+        <label class="check"><input id="reread" type="checkbox"> Reread EEPROMs</label>
+        <button id="scan" class="primary">Scan bus</button>
+      </div>
+      <p id="noscan" class="hint">Not scanned yet. The scan only reads: master status, the configuration it runs with
+        (ENI), and each device's online info and EEPROM.</p>
+      <dl id="master" class="grid cols" hidden>
+        <dt>State</dt><dd id="m-state"></dd>
+        <dt>Devices</dt><dd id="m-devices"></dd>
+        <dt>Topology</dt><dd id="m-topology"></dd>
+        <dt>Cycle time</dt><dd id="m-cycle"></dd>
+        <dt>Configuration</dt><dd id="m-config"></dd>
+        <dt>Last scan</dt><dd id="m-time"></dd>
       </dl>
     </section>
 
-    <section class="card">
-      <h2>Setpoint</h2>
-      <p class="hint">Also writable as the Data Layer node <code>io-config/setpoint</code>.</p>
-      <div class="row">
-        <input id="setpoint" type="number" step="any">
-        <button id="save" class="primary">Save</button>
+    <section class="card" id="bus-card" hidden>
+      <h2>Devices</h2>
+      <div class="scroll">
+        <table id="devices">
+          <thead><tr><th>Pos</th><th>Name</th><th>Device</th><th>Address</th><th>Revision</th><th>State</th>
+            <th>ESI</th><th>ENI</th><th>EEPROM</th><th>Check</th></tr></thead>
+          <tbody></tbody>
+        </table>
       </div>
+      <p class="hint">Click a device for the sources side by side.</p>
+    </section>
+
+    <section class="card" id="detail" hidden>
+      <div class="row head">
+        <h2 id="d-title"></h2>
+        <button id="d-close">Close</button>
+      </div>
+      <p id="d-ident" class="muted"></p>
+      <ul id="d-findings" class="findings"></ul>
+
+      <h3>Sync managers (process data)</h3>
+      <div class="scroll"><table id="d-sm"><thead><tr><th>Type</th><th>ESI</th><th>ENI</th><th>EEPROM</th></tr></thead><tbody></tbody></table></div>
+
+      <h3>PDOs</h3>
+      <div class="scroll"><table id="d-pdos"><thead><tr><th>Dir</th><th>Index</th><th>Name</th><th>ESI</th><th>ENI</th><th>EEPROM</th><th>Entries</th></tr></thead><tbody></tbody></table></div>
+
+      <h3>Process image variables (ENI)</h3>
+      <p class="hint">Data Layer: <code id="d-dlpath"></code></p>
+      <div class="scroll"><table id="d-vars"><thead><tr><th>Variable</th><th>Dir</th><th>Type</th><th>Bits</th><th>Offset</th></tr></thead><tbody></tbody></table></div>
+
+      <h3>Startup parameters</h3>
+      <div class="scroll"><table id="d-init"><thead><tr><th>Source</th><th>Transition</th><th>Object</th><th>Data</th><th>Comment</th></tr></thead><tbody></tbody></table></div>
+
+      <h3>Distributed clocks</h3>
+      <dl id="d-dc" class="grid"></dl>
+    </section>
+  </main>
+
+  <main id="view-esi" hidden>
+    <section class="card">
+      <h2>Add ESI files</h2>
+      <p class="hint">EtherCAT device descriptions (XML), or a zip of them. Other files in a zip (IO-Link IODD,
+        dictionaries, ...) are skipped.</p>
+      <div class="row">
+        <input id="esi-files" type="file" accept=".xml,.zip" multiple>
+        <button id="esi-upload" class="primary">Upload</button>
+      </div>
+      <div id="esi-result"></div>
     </section>
 
     <section class="card">
-      <h2>Data Layer node</h2>
-      <div class="row">
-        <input id="path" type="text" placeholder="e.g. framework/metrics/system/cpu-utilisation-percent">
-        <button id="read">Read</button>
+      <div class="row head">
+        <h2>Library</h2>
+        <span id="esi-count" class="muted"></span>
       </div>
       <div class="row">
-        <input id="value" type="text" placeholder="value as JSON, e.g. true, 1.5, &quot;text&quot;, [1,2]">
-        <button id="write">Write</button>
+        <input id="esi-search" type="search" placeholder="Search type, name, group, vendor, file or product code">
       </div>
-      <pre id="result"></pre>
+      <div class="scroll tall">
+        <table id="esi-devices">
+          <thead><tr><th>Type</th><th>Name</th><th>Group</th><th>Vendor</th><th>Product</th><th>Revision</th><th>File</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <details id="esi-files-box">
+        <summary>Files</summary>
+        <ul id="esi-filelist" class="files"></ul>
+      </details>
     </section>
   </main>
   <script src="app.js"></script>
