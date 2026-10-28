@@ -120,10 +120,25 @@ def parse_device(path: str, vendor: int, product: int, revision: int) -> dict:
                             "enable": flag(sm.get("Enable"))})
             dc_modes = [{"name": (m.findtext("Name") or "").strip(), "desc": (m.findtext("Desc") or "").strip(),
                          "assign_activate": num(m.findtext("AssignActivate"), 0)} for m in dev.findall("Dc/OpMode")]
+            coe = mailbox.find("CoE") if mailbox is not None else None
+            sm_timeouts = dev.find("Info/StateMachine/Timeout")
+            timeouts = {key: num(sm_timeouts.findtext(tag), default) if sm_timeouts is not None else default
+                        for key, tag, default in (("preop", "PreopTimeout", 3000), ("safeop_op", "SafeopOpTimeout", 10000),
+                                                  ("back_to_init", "BackToInitTimeout", 5000),
+                                                  ("back_to_safeop", "BackToSafeopTimeout", 200))}
+            bootstrap = (dev.findtext("Eeprom/BootStrap") or "").strip()
             return {
                 "vendor": vendor, "product": product, "revision": revision,
                 "type": (dev.findtext("Type") or "").strip(), "name": _name(dev),
                 "group": (dev.findtext("GroupType") or "").strip(),
+                "physics": dev.get("Physics") or "",
+                "check_revision": dev.find("Type").get("CheckRevisionNo") or "",
+                "timeouts": timeouts,
+                "mailbox_timeout": num(dev.findtext("Info/Mailbox/Timeout/ResponseTimeout"), 2000),
+                "fmmu": [(f.text or "").strip() for f in dev.findall("Fmmu")],
+                "bootstrap": bytes.fromhex(bootstrap) if len(bootstrap) == 16 else None,
+                "pdo_assign": coe is not None and flag(coe.get("PdoAssign")),
+                "profile_no": num(dev.findtext("Profile/ProfileNo")),
                 "sm": sms,
                 "pdos": [parse_pdo(p, "tx") for p in dev.findall("TxPdo")] +
                         [parse_pdo(p, "rx") for p in dev.findall("RxPdo")],

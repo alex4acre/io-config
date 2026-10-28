@@ -92,7 +92,7 @@ def decode(words) -> dict:
     vendor, product, revision, serial = struct.unpack_from("<IIII", b, 0x10)
     mailbox = struct.unpack_from("<H", b, 0x1C * 2)[0]
     out = {"vendor": vendor, "product": product, "revision": revision, "serial": serial,
-           "name": "", "order": "", "group": "", "sm": [], "pdos": [], "dc": False,
+           "name": "", "order": "", "group": "", "sm": [], "pdos": [], "dc": False, "coe": None, "fmmu": [],
            "mailbox": [name for bit, name in MAILBOX_BITS if mailbox & bit]}
     cats = list(_categories(b))
     strings = []
@@ -104,8 +104,13 @@ def decode(words) -> dict:
         return strings[i - 1] if 0 < i <= len(strings) else ""
 
     for cat, body in cats:
-        if cat == CAT_GENERAL and len(body) >= 4:
+        if cat == CAT_GENERAL and len(body) >= 6:
             out["group"], out["order"], out["name"] = text(body[0]), text(body[2]), text(body[3])
+            coe = body[5]       # bit 0 SDO, 1 SDO info, 2 PDO assign, 3 PDO config, 4 upload at start, 5 complete access
+            out["coe"] = {"sdo_info": bool(coe & 0x02), "pdo_assign": bool(coe & 0x04), "pdo_config": bool(coe & 0x08),
+                          "complete_access": bool(coe & 0x20)}
+        elif cat == CAT_FMMU:
+            out["fmmu"] = [{1: "Outputs", 2: "Inputs", 3: "MBoxState"}.get(x, "") for x in body if x not in (0, 0xFF)]
         elif cat == CAT_SYNCM:
             for i in range(0, len(body) - 7, 8):
                 start, length, control, _status, enable, sm_type = struct.unpack_from("<HHBBBB", body, i)

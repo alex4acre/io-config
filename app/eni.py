@@ -41,10 +41,14 @@ def parse_pdo(el, direction: str) -> dict:
                         "name": _text(e, "Name"), "bits": num(e.findtext("BitLen"), 0),
                         "type": _text(e, "DataType")})
     sm = el.get("Sm")
-    return {"dir": direction, "index": num(el.findtext("Index"), 0), "name": _text(el, "Name"),
-            "sm": num(sm) if sm is not None else None, "fixed": flag(el.get("Fixed")),
-            "mandatory": flag(el.get("Mandatory")),
-            "excludes": [num(x.text, 0) for x in el.findall("Exclude")], "entries": entries}
+    out = {"dir": direction, "index": num(el.findtext("Index"), 0),
+           "name": (el.findtext("Name") or "").strip("\r\n\t"),     # spaces count: "Channel 1 Sample " + " 0"
+           "sm": num(sm) if sm is not None else None, "fixed": flag(el.get("Fixed")),
+           "mandatory": flag(el.get("Mandatory")),
+           "excludes": [num(x.text, 0) for x in el.findall("Exclude")], "entries": entries}
+    if el.get("OSFac") is not None:          # oversampling (ESI only)
+        out["oversampling"] = {"factor": num(el.get("OSFac"), 1), "index_inc": num(el.get("OSIndexInc"), 1)}
+    return out
 
 
 def _slave(el, position: int) -> dict:
@@ -68,6 +72,10 @@ def _slave(el, position: int) -> dict:
                              "index": num(c.findtext("Index"), 0), "subindex": num(c.findtext("SubIndex"), 0),
                              "data": _text(c, "Data"), "complete_access": flag(c.get("CompleteAccess"))})
     dc = el.find("DC")
+    dc_activate = None
+    for c in el.findall("InitCmds/InitCmd"):
+        if num(c.findtext("Ado")) == 0x0980 and "PS" in [t.text for t in c.findall("Transition")]:
+            dc_activate = int.from_bytes(bytes.fromhex((c.findtext("Data") or "").strip()), "little")
     return {
         "position": position,
         "name": _text(info, "Name"),
@@ -82,6 +90,8 @@ def _slave(el, position: int) -> dict:
         "mailbox": protocols,
         "coe_init": coe_init,
         "dc": {c.tag: (c.text or "").strip() for c in dc.iter() if c is not dc and not len(c)} if dc is not None else None,
+        "dc_activate": dc_activate,
+        "physics": _text(info, "Physics"),
         "variables": [],
     }
 
