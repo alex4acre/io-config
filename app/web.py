@@ -34,6 +34,13 @@ ROUTES = [
     ("GET", r"/instances", "get_instances"),
     ("POST", r"/scan", "post_scan"),
     ("GET", r"/devices/(\d+)", "get_device"),
+    ("POST", r"/plan", "post_plan"),
+    ("GET", r"/plan", "get_plan"),
+    ("GET", r"/plan/(eni|ini)", "get_plan_file"),
+    ("POST", r"/download", "post_download"),
+    ("GET", r"/backups", "get_backups"),
+    ("GET", r"/backups/(\d{8}-\d{6})/(eni|ini)", "get_backup_file"),
+    ("POST", r"/backups/(\d{8}-\d{6})/restore", "post_restore"),
     ("GET", r"/esi", "get_esi"),
     ("POST", r"/esi", "post_esi"),
     ("DELETE", r"/esi/([^/]+)", "delete_esi"),
@@ -177,6 +184,51 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
     def get_device(self, position):
         self.send_json(200, core.device(int(position)))
+
+    # --- new configuration, download, backups -------------------------------------------------------
+
+    def post_plan(self):
+        d = self.read_json() if int(self.headers.get("Content-Length") or 0) else {}
+        self.send_json(200, core.plan(d.get("cycle_us")))
+
+    def get_plan(self):
+        self.send_json(200, core.plan_summary())
+
+    def send_file(self, data: bytes, filename: str, content_type: str):
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def get_plan_file(self, which):
+        if which == "eni":
+            self.send_file(core.plan_file("eni"), "ethercat.xml", "application/xml")
+        else:
+            self.send_file(core.plan_file("ini"), "ethercat.ini", "text/plain")
+
+    def post_download(self):
+        d = self.read_json()
+        if not isinstance(d.get("plan_id"), int) or d.get("confirm") is not True:
+            raise HttpError(400, '{"plan_id": <id of the built configuration>, "confirm": true} is needed')
+        self.send_json(202, core.start_download(d["plan_id"]))
+
+    def get_backups(self):
+        self.send_json(200, {"backups": core.backups()})
+
+    def get_backup_file(self, name, which):
+        folder = core._backup_folder(name)
+        file = "ethercat.xml" if which == "eni" else "ethercat.ini"
+        with open(os.path.join(folder, file), "rb") as f:
+            self.send_file(f.read(), f"{name}-{file}", "application/xml" if which == "eni" else "text/plain")
+
+    def post_restore(self, name):
+        d = self.read_json()
+        if d.get("confirm") is not True:
+            raise HttpError(400, '{"confirm": true} is needed')
+        self.send_json(202, core.start_restore(name))
 
     # --- ESI library -------------------------------------------------------------------------------
 

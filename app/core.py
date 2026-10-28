@@ -19,16 +19,18 @@ File handling as in the ctrlx-app-starter template:
 import json
 import os
 import re
+import shutil
 import threading
 import time
 
-from app import compare, eni, sii
+from app import compare, configure, eni, generate, sii
 from app.esi import EsiLibrary
 
 DEFAULTS = {"instance": "ethercatmaster"}
 INSTANCES = "fieldbuses/ethercat/master/instances"
 EEPROM_CHUNK_WORDS = 64
 EEPROM_MAX_WORDS = 8192
+MAX_BACKUPS = 20
 
 
 class ConfigError(ValueError):
@@ -64,8 +66,16 @@ class Core:
         self.scan_state = {"running": False, "progress": "", "finished": None, "error": None}
         self.master = None           # status of the master at the last scan
         self.devices = []            # compare.device_report() per position
+        self.sources = []            # per device on the bus: online info, EEPROM, ENI slave, ESI device
+        self.current = None          # {"eni", "ini", "parsed"}: the configuration the master ran at the last scan
         self.eeprom_cache = {}       # (position, vendor, product, revision, serial) -> words
+        self.plan_data = None        # the last configuration built from a scan (what a download writes)
+        self.plan_id = 0
+        self.download_state = {"running": False, "steps": [], "finished": None, "error": None}
         self._thread = None
+        # the active configuration: io-config/config.json is in it, and the master's files too
+        self.active_dir = os.path.dirname(os.path.dirname(os.path.abspath(config_path)))
+        self.backup_dir = os.path.join(os.path.dirname(os.path.abspath(config_path)), "backups")
 
     # --- configuration file ------------------------------------------------------------------------
 
@@ -124,6 +134,7 @@ class Core:
                 "connected": self.bus.is_connected(),
                 "instance": self.config["instance"],
                 "scan": dict(self.scan_state),
+                "download": dict(self.download_state, steps=list(self.download_state["steps"])),
                 "master": self.master,
                 "devices": [self._summary(d) for d in self.devices],
                 "esi": self.esi.summary(),
@@ -145,10 +156,13 @@ class Core:
                     return d
         raise KeyError(f"no device at position {position}")
 
+    def _busy(self) -> bool:
+        return self.scan_state["running"] or self.download_state["running"]
+
     def start_scan(self, reread_eeprom=False) -> dict:
         with self.lock:
-            if self.scan_state["running"]:
-                raise ConfigError("a scan is already running")
+            if self._busy():
+                raise ConfigError("a scan or download is already running")
             self.scan_state = {"running": True, "progress": "starting", "finished": None, "error": None}
             if reread_eeprom:
                 self.eeprom_cache.clear()
@@ -173,9 +187,10 @@ class Core:
     def _scan_thread(self):
         error = None
         try:
-            master, devices = self._scan()
+            master, devices, sources, current = self._scan()
             with self.lock:
-                self.master, self.devices = master, devices
+                self.master, self.devices, self.sources, self.current = master, devices, sources, current
+                self.plan_data = None
         except Exception as e:      # shown in the UI; the last good scan stays
             error = str(e)
             self.log(f"scan failed: {e}")
@@ -198,9 +213,10 @@ class Core:
 
         self._progress("configuration (ENI)")
         config = None
+        eni_bytes = ini_bytes = b""
         try:
             cfg = self.bus.read(base + "admin/fieldbus_config").get("response", {})
-            eni_bytes = _bytes(cfg.get("eni"))
+            eni_bytes, ini_bytes = _bytes(cfg.get("eni")), _bytes(cfg.get("ini"))
             if eni_bytes:
                 config = eni.parse_eni(eni_bytes)
                 master["eni"] = {"slaves": len(config["slaves"]), "inputs_bytes": config["inputs_bytes"],
@@ -212,7 +228,7 @@ class Core:
         master["cycle_us"] = int(cycle) if cycle and cycle.isdigit() else None
         eni_slaves = {s["position"]: s for s in (config or {}).get("slaves", [])}
 
-        devices = []
+        devices, sources = [], []
         master_op = master["state"] == "op"
         for pos in range(connected):
             self._progress(f"device {pos + 1} of {connected}")
@@ -228,10 +244,13 @@ class Core:
                 eeprom = sii.decode(self.eeprom_cache[key])
             except Exception as e:
                 eeprom_error = str(e)
-            devices.append(self._report(pos, online, eeprom, eeprom_error, eni_slaves.get(pos), master_op))
+            report, match, device = self._report(pos, online, eeprom, eeprom_error, eni_slaves.get(pos), master_op)
+            devices.append(report)
+            sources.append({"pos": pos, "online": online, "eeprom": eeprom, "eni_slave": eni_slaves.get(pos),
+                            "esi_match": match, "esi_device": device})
         for pos in sorted(p for p in eni_slaves if p >= connected):
-            devices.append(self._report(pos, None, None, None, eni_slaves[pos], master_op))
-        return master, devices
+            devices.append(self._report(pos, None, None, None, eni_slaves[pos], master_op)[0])
+        return master, devices, sources, {"eni": eni_bytes, "ini": ini_bytes, "parsed": config}
 
     def _read_eeprom(self, base: str, address: dict) -> list:
         words = []
@@ -258,4 +277,121 @@ class Core:
             except Exception as e:
                 esi_error = str(e)
         return compare.device_report(pos, online, eeprom, eeprom_error, eni_slave, match, entry, device,
-                                     esi_error=esi_error, master_op=master_op)
+                                     esi_error=esi_error, master_op=master_op), match, device
+
+    # --- new configuration and download -------------------------------------------------------------
+
+    def plan(self, cycle_us=None) -> dict:
+        """The configuration the last scan's bus gets (not written yet)."""
+        with self.lock:
+            if self.current is None or self._busy():
+                raise ConfigError("scan the bus first" if self.current is None else "a scan or download is running")
+            if cycle_us is not None and (not isinstance(cycle_us, int) or isinstance(cycle_us, bool)
+                                         or not 125 <= cycle_us <= 100000):
+                raise ConfigError("cycle time must be 125 to 100000 µs")
+            p = configure.build_plan(self.sources, self.current, self.config["instance"], cycle_us)
+            self.plan_id += 1
+            self.plan_data = dict(p, id=self.plan_id)
+            return self.plan_summary()
+
+    def plan_summary(self) -> dict:
+        p = self.plan_data
+        if p is None:
+            raise KeyError("no configuration built")
+        return {k: v for k, v in p.items() if k not in ("eni", "ini")} | {
+            "eni_size": len(p["eni"] or b""), "ini_text": (p["ini"] or b"").decode("latin-1")}
+
+    def plan_file(self, which: str) -> bytes:
+        p = self.plan_data
+        if p is None or not p.get(which):
+            raise KeyError("no configuration built")
+        return p[which]
+
+    def start_download(self, plan_id: int) -> dict:
+        with self.lock:
+            if self._busy():
+                raise ConfigError("a scan or download is already running")
+            p = self.plan_data
+            if p is None or p["id"] != plan_id:
+                raise ConfigError("the configuration changed; build it again")
+            if p["errors"] or not p["eni"]:
+                raise ConfigError("the configuration has errors: " + "; ".join(p["errors"]))
+            self.download_state = {"running": True, "steps": [], "finished": None, "error": None}
+            self._thread = threading.Thread(target=self._download_thread, args=(p["eni"], p["ini"], "download"),
+                                            name="download", daemon=True)
+            self._thread.start()
+            return dict(self.download_state)
+
+    def start_restore(self, name: str) -> dict:
+        folder = self._backup_folder(name)
+        with open(os.path.join(folder, "ethercat.xml"), "rb") as f:
+            eni_bytes = f.read()
+        with open(os.path.join(folder, "ethercat.ini"), "rb") as f:
+            ini_bytes = f.read()
+        with self.lock:
+            if self._busy():
+                raise ConfigError("a scan or download is already running")
+            self.download_state = {"running": True, "steps": [], "finished": None, "error": None}
+            self._thread = threading.Thread(target=self._download_thread, args=(eni_bytes, ini_bytes, f"restore {name}"),
+                                            name="download", daemon=True)
+            self._thread.start()
+            return dict(self.download_state)
+
+    def _download_thread(self, eni_bytes, ini_bytes, what):
+        base = f'{INSTANCES}/{self.config["instance"]}/'
+        error = None
+        steps = self.download_state["steps"]
+        try:
+            # never overwrite a configuration someone else downloaded since the last scan
+            sums = {c["id"]: c["checksum"] for c in
+                    self.bus.read(base + "admin/fieldbus_config/checksum").get("response", {}).get("checksums", [])}
+            if self.current and self.current["eni"] and sums.get("eniCrc32") != generate.checksum(self.current["eni"]):
+                raise configure.DownloadError("the master's configuration changed since the last scan; scan again")
+            if self.current and self.current["eni"]:
+                steps.append(f'backup {self._backup(self.current["eni"], self.current["ini"], what)}')
+            folder = os.path.join(self.active_dir, "comm.ethercat.master", "config", self.config["instance"])
+            steps += configure.write_config(self.bus, base, eni_bytes, ini_bytes,
+                                            (os.path.join(folder, "ethercat.xml"), os.path.join(folder, "ethercat.ini")),
+                                            self.log)
+        except Exception as e:
+            error = str(e)
+            self.log(f"{what} failed: {e}")
+        with self.lock:
+            self.download_state = {"running": False, "steps": steps, "finished": time.time(), "error": error}
+            self.plan_data = None
+        self.start_scan()
+
+    # --- backups (in the active configuration: io-config/backups/<time>/) ----------------------------
+
+    def _backup(self, eni_bytes, ini_bytes, why) -> str:
+        name = time.strftime("%Y%m%d-%H%M%S")
+        folder = os.path.join(self.backup_dir, name)
+        os.makedirs(folder, exist_ok=True)
+        for file, data in (("ethercat.xml", eni_bytes), ("ethercat.ini", ini_bytes)):
+            with open(os.path.join(folder, file), "wb") as f:
+                f.write(data)
+        with open(os.path.join(folder, "info.json"), "w", encoding="utf-8") as f:
+            json.dump({"time": time.time(), "before": why,
+                       "devices": [s["name"] for s in eni.parse_eni(eni_bytes)["slaves"]]}, f)
+        for old in self.backups()[MAX_BACKUPS:]:
+            shutil.rmtree(os.path.join(self.backup_dir, old["name"]), ignore_errors=True)
+        return name
+
+    def backups(self) -> list:
+        out = []
+        try:
+            names = sorted(os.listdir(self.backup_dir), reverse=True)
+        except FileNotFoundError:
+            return []
+        for name in names:
+            try:
+                with open(os.path.join(self.backup_dir, name, "info.json"), encoding="utf-8") as f:
+                    out.append({"name": name, **json.load(f)})
+            except (OSError, ValueError):
+                continue
+        return out
+
+    def _backup_folder(self, name: str) -> str:
+        if not re.fullmatch(r"\d{8}-\d{6}", name) or not os.path.isdir(os.path.join(self.backup_dir, name)):
+            raise KeyError(f"no backup {name}")
+        return os.path.join(self.backup_dir, name)

@@ -6,7 +6,8 @@ on a machine without the Data Layer library (it needs Ubuntu 24.04) and without 
 The EtherCAT master is replayed from a recording of a real ctrlX CORE X3 (tests/data: x3-bus.json with
 the status nodes, each device's online info and EEPROM; controller-eni.xml and controller-ini.txt).
 Values have the shape the real Data Layer gives ({"response": {...}}), and the surprises are simulated:
-asking past the last device fails, and one EEPROM read longer than 64 words times out.
+asking past the last device fails, and one EEPROM read longer than 64 words times out. Writing a new
+configuration works as on the device (master to Init, fieldbus_config, checksums, master to Op).
 """
 
 import json
@@ -14,6 +15,7 @@ import os
 import threading
 
 from app.bus import BusError
+from app.generate import checksum
 
 DATA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "data")
 MASTER = "fieldbuses/ethercat/master/instances/ethercatmaster/"
@@ -42,6 +44,8 @@ class FakeBus:
         self.nodes = dict(nodes)
         self.slaves = list(slaves or [])    # [{"autoinc", "online_info", "eeprom"}] in bus order
         self.calls = []                     # (operation, address, args) for tests
+        self.written = []                   # (eni, ini) of each configuration write
+        self.fail_op = False                # True: the master stays in PreOp after requesting Op
 
     def is_connected(self) -> bool:
         return True
@@ -97,7 +101,31 @@ class FakeBus:
             raise BusError(f"read {address}: DL_INVALID_ADDRESS")
 
     def write(self, address: str, value):
-        raise BusError(f"write {address}: the fake is read-only")
+        """The EtherCAT master's writable nodes: master_state (state requests) and fieldbus_config (only in Init,
+        the checksums follow). Configuration writes are kept in self.written for tests."""
+        with self.lock:
+            self.calls.append(("write", address, value))
+            if address == MASTER + "admin/fieldbus_status/master_state":
+                new = (value or {}).get("request", {}).get("newState")
+                if new not in ("init", "preop", "safeop", "op"):
+                    raise BusError(f"write {address}: DL_INVALID_VALUE")
+                if new == "op" and self.fail_op:
+                    self.nodes[address] = {"response": {"currentState": "preop", "requestedState": "op"}}
+                    return
+                self.nodes[address] = {"response": {"currentState": new, "requestedState": new}}
+                return
+            if address == MASTER + "admin/fieldbus_config":
+                state = self.nodes[MASTER + "admin/fieldbus_status/master_state"]["response"]["currentState"]
+                if state != "init":
+                    raise BusError(f"write {address}: DL_FAILED (master not in Init)")
+                req = (value or {}).get("request", {})
+                eni, ini = bytes(req.get("eni") or []), bytes(req.get("ini") or [])
+                self.nodes[address] = {"response": {"eni": list(eni), "ini": list(ini)}}
+                self.nodes[MASTER + "admin/fieldbus_config/checksum"] = {"response": {"checksums": [
+                    {"id": "eniCrc32", "checksum": checksum(eni)}, {"id": "iniCrc32", "checksum": checksum(ini)}]}}
+                self.written.append((eni, ini))
+                return
+            raise BusError(f"write {address}: the fake only simulates the EtherCAT master's configuration")
 
     def create(self, address: str, value):
         raise BusError(f"create {address}: the fake is read-only")

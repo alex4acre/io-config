@@ -32,6 +32,7 @@ SM_BASE, FMMU_BASE = 0x800, 0x600
 DC_ACTIVATION, DC_START_TIME, DC_CYCLE_TIME, DC_SYSTEM_TIME = 0x980, 0x990, 0x9A0, 0x910
 
 DATA_TYPE_NAMES = {"BOOL": "BIT"}       # the ENI writes BIT where ESI/EEPROM say BOOL
+DEFAULT_TIMEOUTS = {"preop": 3000, "safeop_op": 10000, "back_to_init": 5000, "back_to_safeop": 200}   # ms, ESI defaults
 
 
 class GenerateError(ValueError):
@@ -92,7 +93,7 @@ def device_from_esi(esi: dict, name: str) -> dict:
     return {
         "name": name, "vendor": esi["vendor"], "product": esi["product"], "revision": esi["revision"],
         "check_revision": esi.get("check_revision", ""), "physics": esi.get("physics", "YY"),
-        "timeouts": dict(esi.get("timeouts") or {}), "fmmu": list(esi.get("fmmu") or []),
+        "timeouts": {**DEFAULT_TIMEOUTS, **(esi.get("timeouts") or {})}, "fmmu": list(esi.get("fmmu") or []),
         "sm": _sm_list(esi["sm"]), "mailbox": mailbox,
         "pdos": [_oversampled(p) for p in esi["pdos"] if p["sm"] is not None],
         "dc": {"assign_activate": modes[0]["assign_activate"]} if modes and modes[0]["assign_activate"] else None,
