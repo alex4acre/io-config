@@ -137,7 +137,13 @@ visible.
    through the app (tests/data/x3-drive-soe.json). Only changed MDT/AT content is still unverified (draft).
    1.3.1 installed on the X3 2026-10-29: plan identical to the running I/O Engineering file, identical write
    through the app OK, SoE read/write through the app on the real drive OK.
-7. **Next:** DC mode choice, devices without a mailbox, more than one frame, slots/modules.
+7. **Edited telegrams (1.3.2, 2026-10-29):** reference from I/O Engineering 4.6.1 read from the X3 (MDT +S-0-0041 before
+   P-0-2250, AT -S-0-0084 +S-0-0011; tests/data/x3-drive-ioe-telegram.xml). The generator matched the layout already
+   (S-0-0016/0024, SM2 26 bytes, frame 62 bytes, offsets); the only rule missing: entries already in the telegram keep
+   the ESI's name and type (e.g. "Signal control word", WORD), only added IDNs take the SoE dictionary's. Now byte for
+   byte; the draft gate is gone. The drive stays in SafeOp with any config until a MOTION axis uses it (the master's
+   requestedState for the drive is safeop; no AL error). Installed on the X3; device write with the drive not yet tested.
+8. **Next:** DC mode choice, devices without a mailbox, more than one frame, slots/modules.
 
 ## Open questions
 
