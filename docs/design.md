@@ -151,7 +151,11 @@ visible.
    lose its edited telegram (rebuilt from ESI). Now pair_in_order (LCS of vendor/product) pairs the running ENI
    and saved edits (which keep the bus they were made for) with their devices. 1.3.4 installed; plan on the X3
    correct, not written yet.
-9. **Next:** offline add from the ESI library, DC mode choice, devices without a mailbox, more than one frame, slots/modules.
+9. **Device card + saved configurations (1.3.5 / 1.4.0, 2026-10-29):** clicking a device opens its card (Process
+   data first, 200 ms, per device). Saved configurations: running ENI+ini + edits under a name; activate by button,
+   REST or Data Layer (io-config/activate, io-config/activation/*), the app's first own nodes; activation backs up,
+   writes without a scan check and restores the edits. 1.4.0 installed on the X3, save/activate not yet tried there.
+10. **Next:** offline add from the ESI library, DC mode choice, devices without a mailbox, more than one frame, slots/modules.
 
 ## Open questions
 
