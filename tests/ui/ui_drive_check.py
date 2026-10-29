@@ -109,6 +109,8 @@ try:
     check(until("document.querySelector('#plan-devices tbody').textContent.includes('Drive1')"), "plan lists Drive1")
     js("window.confirm = () => true; document.getElementById('write').click();")
     check(until("document.getElementById('dl-title').textContent === 'Written'", 30), "edited drive configuration written")
+    js("document.getElementById('d-soe').click();")
+    check(until("!document.getElementById('p-soe').hidden"), "Parameters tab")
     js("document.querySelector('#s-list tbody tr').click();")
     check(until("document.getElementById('s-param').textContent.includes('Value')", 15), "S-0-0047 read online once configured")
     shot("soe-configured")

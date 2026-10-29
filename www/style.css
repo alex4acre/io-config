@@ -147,3 +147,7 @@ td.num { font-variant-numeric: tabular-nums; }
 .badge.small { font-size: 11px; }
 .cols2.even { grid-template-columns: 1fr 1fr; }
 select { height: 32px; border: 1px solid var(--line); border-radius: 4px; font: inherit; padding: 0 6px; }
+
+/* device card: tabs for its panels */
+.subtabs { border-bottom: 1px solid var(--line); margin: 4px 0 10px; flex-wrap: wrap; }
+.subtabs .tab { border-radius: 4px 4px 0 0; }

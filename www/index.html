@@ -11,7 +11,6 @@
     <h1>I/O Config</h1>
     <nav class="tabs">
       <button id="tab-bus" class="tab active" data-view="bus">Bus</button>
-      <button id="tab-pd" class="tab" data-view="pd">Process data</button>
       <button id="tab-esi" class="tab" data-view="esi">ESI library</button>
     </nav>
     <label class="check warnlabel" title="Writing outputs and CoE objects changes real hardware"><input id="allow-writes" type="checkbox"> Allow writes</label>
@@ -48,7 +47,138 @@
           <tbody></tbody>
         </table>
       </div>
-      <p class="hint">Click a device for the sources side by side.</p>
+      <p class="hint">Click a device for its process data, settings, startup parameters and details.</p>
+    </section>
+
+    <section class="card" id="detail" hidden>
+      <div class="row head">
+        <h2 id="d-title"></h2>
+        <button id="d-close">Close</button>
+      </div>
+      <nav class="tabs subtabs">
+        <button id="d-pd" class="tab" data-panel="pd">Process data</button>
+        <button id="d-edit" class="tab" data-panel="settings">Settings</button>
+        <button id="d-startup" class="tab" data-panel="startup">Startup</button>
+        <button id="d-objects" class="tab" data-panel="objects">Objects (CoE)</button>
+        <button id="d-soe" class="tab" data-panel="soe">Parameters (SoE)</button>
+        <button id="d-info" class="tab" data-panel="info">Info</button>
+      </nav>
+
+      <div id="p-pd" class="panel">
+        <div class="row">
+          <span id="pd-info" class="muted"></span>
+          <span class="spacer"></span>
+          <label class="check"><input id="pd-live" type="checkbox" checked> Live</label>
+        </div>
+        <div class="scroll tall">
+          <table id="pd"><thead><tr><th>Variable</th><th>Dir</th><th>Type</th><th>Value</th><th>Set</th></tr></thead><tbody></tbody></table>
+        </div>
+        <p class="hint">Read through the Data Layer (<code>realtime_data</code>) about 5 times a second. Outputs can be set
+          with "Allow writes" on; the PLC or another app may overwrite them in its next cycle.</p>
+      </div>
+
+      <div id="p-settings" class="panel" hidden>
+        <h3 id="e-title"></h3>
+        <p class="hint">Saved choices are used the next time you build the configuration; nothing is written to the master here.</p>
+        <div class="row">
+          <label class="check">Name <input id="e-name" type="text" maxlength="64"></label>
+        </div>
+        <h3>PDOs</h3>
+        <p id="e-reason" class="hint"></p>
+        <div class="scroll"><table id="e-pdos"><thead><tr><th>Use</th><th>Dir</th><th>Index</th><th>Name</th><th>Size</th>
+          <th>Rules</th></tr></thead><tbody></tbody></table></div>
+        <p id="e-sizes" class="muted"></p>
+        <div id="e-soe" hidden>
+          <h3>Drive telegrams (SoE)</h3>
+          <p class="hint">The cyclic data of the drive: MDT = commands to the drive, AT = actual values from it. Add
+            IDNs the drive allows in that telegram (from its dictionary); the control / status word always comes first.</p>
+          <div class="cols2 even">
+            <div><h3>MDT</h3><table id="e-mdt"><tbody></tbody></table>
+              <div class="row"><input id="e-mdt-add" type="text" list="e-mdt-list" placeholder="S-0-0036 or a name"><button id="e-mdt-btn">Add</button></div>
+              <datalist id="e-mdt-list"></datalist></div>
+            <div><h3>AT</h3><table id="e-at"><tbody></tbody></table>
+              <div class="row"><input id="e-at-add" type="text" list="e-at-list" placeholder="S-0-0051 or a name"><button id="e-at-btn">Add</button></div>
+              <datalist id="e-at-list"></datalist></div>
+          </div>
+          <details><summary>SoE commands the configuration sends (generated)</summary>
+            <div class="scroll"><table id="e-soe-cmds"><thead><tr><th>IDN</th><th>Data</th><th>Comment</th></tr></thead><tbody></tbody></table></div>
+          </details>
+        </div>
+        <div class="row">
+          <button id="e-save" class="primary">Save</button>
+          <button id="e-reset">Back to defaults</button>
+          <span id="e-msg" class="muted"></span>
+        </div>
+      </div>
+
+      <div id="p-startup" class="panel" hidden>
+        <p class="hint">Parameters the master writes at every start-up (PreOp → SafeOp). Add them with "Startup" in the
+          "Objects (CoE)" or "Parameters (SoE)" tab; removing one here saves at once. The PDO assignment
+          (0x1C12/0x1C13) is added automatically.</p>
+        <div class="scroll"><table id="e-startup"><thead><tr><th>Object</th><th>Data</th><th>Transition</th><th>Comment</th>
+          <th></th></tr></thead><tbody></tbody></table></div>
+      </div>
+
+      <div id="p-objects" class="panel" hidden>
+        <div class="row head"><h3 id="o-title"></h3><button id="o-refresh">Reload list</button></div>
+        <p class="hint">Read online from the device through the master (CoE mailbox). "Write now" changes the device until its
+          next start; "Startup" keeps the value in the configuration.</p>
+        <div class="row"><input id="o-filter" type="search" placeholder="Filter by index or name"></div>
+        <div class="cols2">
+          <div class="scroll tall"><table id="o-list"><thead><tr><th>Index</th><th>Name</th><th>Kind</th></tr></thead>
+            <tbody></tbody></table></div>
+          <div>
+            <h3 id="o-obj-title" class="muted">Choose an object</h3>
+            <div class="scroll"><table id="o-entries"><thead><tr><th>Sub</th><th>Name</th><th>Type</th><th>Access</th>
+              <th>Value</th><th>New value</th><th></th></tr></thead><tbody></tbody></table></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="p-soe" class="panel" hidden>
+        <h3 id="s-title"></h3>
+        <p class="hint">The drive's parameters from its SoE dictionary; values are read online (the drive must be in
+          PreOp or higher, i.e. configured). "Write now" changes the drive until its next start; "Startup" keeps the value
+          in the configuration.</p>
+        <div class="row">
+          <input id="s-filter" type="search" placeholder="Filter by IDN or name">
+          <select id="s-mapping"><option value="">all</option><option value="r">MDT-mappable</option><option value="t">AT-mappable</option></select>
+        </div>
+        <div class="cols2">
+          <div class="scroll tall"><table id="s-list"><thead><tr><th>IDN</th><th>Name</th><th>Unit</th></tr></thead>
+            <tbody></tbody></table></div>
+          <div>
+            <h3 id="s-param-title" class="muted">Choose a parameter</h3>
+            <dl id="s-param" class="grid"></dl>
+            <div class="row" id="s-edit" hidden>
+              <input id="s-value" type="text">
+              <button id="s-write">Write now</button>
+              <button id="s-startup">Startup</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="p-info" class="panel" hidden>
+        <p id="d-ident" class="muted"></p>
+        <ul id="d-findings" class="findings"></ul>
+
+        <h3>Sync managers (process data)</h3>
+        <div class="scroll"><table id="d-sm"><thead><tr><th>Type</th><th>ESI</th><th>ENI</th><th>EEPROM</th></tr></thead><tbody></tbody></table></div>
+
+        <h3>PDOs</h3>
+        <div class="scroll"><table id="d-pdos"><thead><tr><th>Dir</th><th>Index</th><th>Name</th><th>ESI</th><th>ENI</th><th>EEPROM</th><th>Entries</th></tr></thead><tbody></tbody></table></div>
+
+        <h3>Process image variables (ENI)</h3>
+        <p class="hint">Data Layer: <code id="d-dlpath"></code></p>
+        <div class="scroll"><table id="d-vars"><thead><tr><th>Variable</th><th>Dir</th><th>Type</th><th>Bits</th><th>Offset</th></tr></thead><tbody></tbody></table></div>
+
+        <h3>Startup parameters</h3>
+        <div class="scroll"><table id="d-init"><thead><tr><th>Source</th><th>Transition</th><th>Object</th><th>Data</th><th>Comment</th></tr></thead><tbody></tbody></table></div>
+
+        <h3>Distributed clocks</h3>
+        <dl id="d-dc" class="grid"></dl>
+      </div>
     </section>
 
     <section class="card" id="config-card" hidden>
@@ -58,8 +188,8 @@
         <button id="build" class="primary">Build configuration</button>
       </div>
       <p class="hint">Builds the bus configuration (ENI + ini) for the devices found by the last scan: each device from
-        its ESI (without one: from the current configuration, else from its EEPROM), keeping the current configuration's choices where the same device
-        type sits at that position. Nothing is written until you press "Write to the EtherCAT master".</p>
+        its ESI (without one: from the current configuration, else from its EEPROM), keeping the current configuration's choices for each device
+        (paired by device type in bus order, so inserting a device doesn't lose the others' settings). Nothing is written until you press "Write to the EtherCAT master".</p>
       <div id="plan" hidden>
         <p id="plan-summary"></p>
         <ul id="plan-messages" class="findings"></ul>
@@ -84,139 +214,6 @@
       </details>
     </section>
 
-    <section class="card" id="detail" hidden>
-      <div class="row head">
-        <h2 id="d-title"></h2>
-        <button id="d-edit">Edit name, PDOs &amp; startup</button>
-        <button id="d-objects">Objects (CoE)</button>
-        <button id="d-soe">Parameters (SoE)</button>
-        <button id="d-close">Close</button>
-      </div>
-      <p id="d-ident" class="muted"></p>
-      <ul id="d-findings" class="findings"></ul>
-
-      <h3>Sync managers (process data)</h3>
-      <div class="scroll"><table id="d-sm"><thead><tr><th>Type</th><th>ESI</th><th>ENI</th><th>EEPROM</th></tr></thead><tbody></tbody></table></div>
-
-      <h3>PDOs</h3>
-      <div class="scroll"><table id="d-pdos"><thead><tr><th>Dir</th><th>Index</th><th>Name</th><th>ESI</th><th>ENI</th><th>EEPROM</th><th>Entries</th></tr></thead><tbody></tbody></table></div>
-
-      <h3>Process image variables (ENI)</h3>
-      <p class="hint">Data Layer: <code id="d-dlpath"></code></p>
-      <div class="scroll"><table id="d-vars"><thead><tr><th>Variable</th><th>Dir</th><th>Type</th><th>Bits</th><th>Offset</th></tr></thead><tbody></tbody></table></div>
-
-      <h3>Startup parameters</h3>
-      <div class="scroll"><table id="d-init"><thead><tr><th>Source</th><th>Transition</th><th>Object</th><th>Data</th><th>Comment</th></tr></thead><tbody></tbody></table></div>
-
-      <h3>Distributed clocks</h3>
-      <dl id="d-dc" class="grid"></dl>
-    </section>
-
-    <section class="card" id="editor" hidden>
-      <div class="row head">
-        <h2 id="e-title"></h2>
-        <button id="e-close">Close</button>
-      </div>
-      <p class="hint">Saved choices are used the next time you build the configuration; nothing is written to the master here.</p>
-      <div class="row">
-        <label class="check">Name <input id="e-name" type="text" maxlength="64"></label>
-      </div>
-      <h3>PDOs</h3>
-      <p id="e-reason" class="hint"></p>
-      <div class="scroll"><table id="e-pdos"><thead><tr><th>Use</th><th>Dir</th><th>Index</th><th>Name</th><th>Size</th>
-        <th>Rules</th></tr></thead><tbody></tbody></table></div>
-      <p id="e-sizes" class="muted"></p>
-      <div id="e-soe" hidden>
-        <h3>Drive telegrams (SoE)</h3>
-        <p class="hint">The cyclic data of the drive: MDT = commands to the drive, AT = actual values from it. Add
-          IDNs the drive allows in that telegram (from its dictionary); the control / status word always comes first.</p>
-        <div class="cols2 even">
-          <div><h3>MDT</h3><table id="e-mdt"><tbody></tbody></table>
-            <div class="row"><input id="e-mdt-add" type="text" list="e-mdt-list" placeholder="S-0-0036 or a name"><button id="e-mdt-btn">Add</button></div>
-            <datalist id="e-mdt-list"></datalist></div>
-          <div><h3>AT</h3><table id="e-at"><tbody></tbody></table>
-            <div class="row"><input id="e-at-add" type="text" list="e-at-list" placeholder="S-0-0051 or a name"><button id="e-at-btn">Add</button></div>
-            <datalist id="e-at-list"></datalist></div>
-        </div>
-        <details><summary>SoE commands the configuration sends (generated)</summary>
-          <div class="scroll"><table id="e-soe-cmds"><thead><tr><th>IDN</th><th>Data</th><th>Comment</th></tr></thead><tbody></tbody></table></div>
-        </details>
-      </div>
-      <h3>Startup parameters</h3>
-      <p class="hint">Parameters the master writes at every start-up (PreOp → SafeOp). Add them from "Objects (CoE)" or
-        "Parameters (SoE)". The PDO assignment (0x1C12/0x1C13) is added automatically.</p>
-      <div class="scroll"><table id="e-startup"><thead><tr><th>Object</th><th>Data</th><th>Transition</th><th>Comment</th>
-        <th></th></tr></thead><tbody></tbody></table></div>
-      <div class="row">
-        <button id="e-save" class="primary">Save</button>
-        <button id="e-reset">Back to defaults</button>
-        <span id="e-msg" class="muted"></span>
-      </div>
-    </section>
-
-    <section class="card" id="soe" hidden>
-      <div class="row head">
-        <h2 id="s-title"></h2>
-        <button id="s-close">Close</button>
-      </div>
-      <p class="hint">The drive's parameters from its SoE dictionary; values are read online (the drive must be in
-        PreOp or higher, i.e. configured). "Write now" changes the drive until its next start; "Startup" keeps the value
-        in the configuration.</p>
-      <div class="row">
-        <input id="s-filter" type="search" placeholder="Filter by IDN or name">
-        <select id="s-mapping"><option value="">all</option><option value="r">MDT-mappable</option><option value="t">AT-mappable</option></select>
-      </div>
-      <div class="cols2">
-        <div class="scroll tall"><table id="s-list"><thead><tr><th>IDN</th><th>Name</th><th>Unit</th></tr></thead>
-          <tbody></tbody></table></div>
-        <div>
-          <h3 id="s-param-title" class="muted">Choose a parameter</h3>
-          <dl id="s-param" class="grid"></dl>
-          <div class="row" id="s-edit" hidden>
-            <input id="s-value" type="text">
-            <button id="s-write">Write now</button>
-            <button id="s-startup">Startup</button>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="card" id="objects" hidden>
-      <div class="row head">
-        <h2 id="o-title"></h2>
-        <button id="o-refresh">Reload list</button>
-        <button id="o-close">Close</button>
-      </div>
-      <p class="hint">Read online from the device through the master (CoE mailbox). "Write now" changes the device until its
-        next start; "Startup" keeps the value in the configuration.</p>
-      <div class="row"><input id="o-filter" type="search" placeholder="Filter by index or name"></div>
-      <div class="cols2">
-        <div class="scroll tall"><table id="o-list"><thead><tr><th>Index</th><th>Name</th><th>Kind</th></tr></thead>
-          <tbody></tbody></table></div>
-        <div>
-          <h3 id="o-obj-title" class="muted">Choose an object</h3>
-          <div class="scroll"><table id="o-entries"><thead><tr><th>Sub</th><th>Name</th><th>Type</th><th>Access</th>
-            <th>Value</th><th>New value</th><th></th></tr></thead><tbody></tbody></table></div>
-        </div>
-      </div>
-    </section>
-  </main>
-
-  <main id="view-pd" hidden>
-    <section class="card">
-      <div class="row head">
-        <h2>Process data</h2>
-        <span id="pd-info" class="muted"></span>
-        <label class="check"><input id="pd-live" type="checkbox" checked> Live</label>
-      </div>
-      <p class="hint">The variables of the configuration the master runs (from the last scan), read through the Data Layer
-        (<code>realtime_data</code>). Outputs can be set with "Allow writes" on; the PLC or another app may overwrite them
-        in its next cycle.</p>
-      <div class="row"><input id="pd-filter" type="search" placeholder="Filter by device or variable"></div>
-      <div class="scroll tall">
-        <table id="pd"><thead><tr><th>Variable</th><th>Dir</th><th>Type</th><th>Value</th><th>Set</th></tr></thead><tbody></tbody></table>
-      </div>
-    </section>
   </main>
 
   <main id="view-esi" hidden>

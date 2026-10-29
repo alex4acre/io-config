@@ -87,7 +87,13 @@ try:
     check(js("return document.querySelectorAll('#devices tbody tr')[3].cells[9].textContent") == "Check (1)", "XI522001 flagged")
     js("document.querySelectorAll('#devices tbody tr')[2].click();")
     check(until("!document.getElementById('detail').hidden && "
-                "document.getElementById('d-title').textContent === '2: XI422202'"), "detail of XI422202 opens")
+                "document.getElementById('d-title').textContent === '2: XI422202'"), "device card of XI422202 opens")
+    check(until("!document.getElementById('p-pd').hidden && document.querySelectorAll('#pd tbody tr').length === 8"),
+          "it opens on its 8 process data variables")
+    check(js("return document.querySelector('#pd tbody tr').cells[0].textContent").startswith("Channel_1"),
+          "variable names without the device prefix")
+    js("document.getElementById('d-info').click();")
+    check(until("!document.getElementById('p-info').hidden"), "Info tab")
     check(until("document.querySelectorAll('#d-pdos tbody tr').length === 6"), "6 PDOs side by side")
     check("agree" in text("d-findings"), "no findings for XI422202")
     check(js("return document.querySelectorAll('#d-vars tbody tr').length") == 8, "8 process image variables")
@@ -120,8 +126,8 @@ try:
     js("document.querySelectorAll('#devices tbody tr')[2].click();")
     check(until("document.getElementById('d-title').textContent === '2: XI422202'"), "detail of XI422202 again")
     js("document.getElementById('d-edit').click();")
-    check(until("!document.getElementById('editor').hidden && document.querySelectorAll('#e-pdos tbody tr').length === 6"),
-          "editor lists 6 PDOs")
+    check(until("!document.getElementById('p-settings').hidden && document.querySelectorAll('#e-pdos tbody tr').length === 6"),
+          "Settings tab lists 6 PDOs")
     js("""const boxes = [...document.querySelectorAll('#e-pdos input[type=checkbox]')];
           for (const b of boxes) { const i = Number(b.dataset.index); if ([0x1a00, 0x1a01, 0x1a02].includes(i)) b.checked = false;
             if (i === 0x1a03) b.checked = true; b.onchange && b.onchange(); }
@@ -138,8 +144,10 @@ try:
     check(until("document.getElementById('banner').textContent.includes('Startup parameter #x8000:1 = 1000 saved')"),
           "startup parameter added")
     shot("objects")
-    check(until("[...document.querySelectorAll('#e-startup tbody tr')].some(r => r.cells[0].textContent === '#x8000:1')"),
-          "editor shows the startup parameter")
+    js("document.getElementById('d-startup').click();")
+    check(until("!document.getElementById('p-startup').hidden && "
+                "[...document.querySelectorAll('#e-startup tbody tr')].some(r => r.cells[0].textContent === '#x8000:1')"),
+          "Startup tab shows the startup parameter")
     js("document.getElementById('plan-devices').tBodies[0].replaceChildren(); document.getElementById('build').click();")
     check(until("document.querySelector('#plan-devices tbody').textContent.includes('AO1')"), "plan uses the new name")
     check(js("return document.getElementById('plan-summary').textContent").startswith("Differs"), "edited configuration differs")
@@ -152,15 +160,20 @@ try:
     check(until("document.getElementById('banner').textContent.includes('can only be written in PreOp')"),
           "online write of a PreOp-only object is explained")
 
-    # process data
-    js("document.getElementById('tab-pd').click();")
-    check(until("document.querySelectorAll('#pd tbody tr').length === 44"), "44 process data variables")
-    js("document.getElementById('pd-filter').value = 'Channel_1.Value'; document.getElementById('pd-filter').oninput();")
-    check(until("document.querySelectorAll('#pd tbody tr').length === 1"), "filter finds the analog output")
-    js("""const r = document.querySelector('#pd tbody tr'); r.querySelector('input').value = '1234';
-          r.querySelector('button').click();""")
-    check(until("document.querySelector('#pd tbody tr') && document.querySelector('#pd tbody tr').cells[3].textContent === '1234'"),
-          "output written and read back")
+    # process data of the device (allow writes is on)
+    js("document.getElementById('d-pd').click();")
+    check(until("document.querySelectorAll('#pd tbody tr input').length === 2"), "the 2 outputs can be set")
+    OUT1 = "[...document.querySelectorAll('#pd tbody tr')].find(r => r.cells[0].textContent === 'Channel_1.Value')"
+    js(f"const r = {OUT1}; const i = r.querySelector('input'); i.focus(); i.value = '12';")
+    time.sleep(1.2)                                   # ~6 refreshes while typing
+    check(js(f"return {OUT1}.querySelector('input').value") == "12" and
+          js(f"return document.activeElement === {OUT1}.querySelector('input')"), "refreshes don't disturb typing")
+    js(f"const r = {OUT1}; r.querySelector('input').value = '1234'; r.querySelector('button').click();")
+    check(until(f"{OUT1}.cells[3].textContent === '1234'", 2), "output written, shown at once")
+    t1 = text("pd-info")
+    time.sleep(0.6)
+    check(text("pd-info") != t1 or until("document.getElementById('pd-info').textContent !== " + json.dumps(t1), 2),
+          "values refresh while the button keeps focus")
     shot("process-data")
     js("document.getElementById('allow-writes').click(); document.getElementById('tab-bus').click();")
 

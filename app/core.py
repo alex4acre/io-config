@@ -695,14 +695,20 @@ class Core:
 
     # --- process data (the running configuration's realtime_data variables) -------------------------
 
-    def process_data(self) -> dict:
+    def process_data(self, position: int = None) -> dict:
+        """The running configuration's variables with their values; with a position only that device's (the
+        configuration's device paired with it by the last scan; none if the device isn't configured yet)."""
         with self.lock:
             parsed = (self.current or {}).get("parsed")
+            slaves = parsed["slaves"] if parsed else []
+            if position is not None:
+                slave = self._source(position).get("eni_slave")
+                slaves = [slave] if slave else []
         if not parsed:
             raise ConfigError("scan the bus first (no configuration known)")
         base = f'{INSTANCES}/{self.config["instance"]}/realtime_data/'
         out = []
-        for s in parsed["slaves"]:
+        for s in slaves:
             for v in s["variables"]:
                 item = {"device": s["name"], "name": v["name"], "dir": v["dir"], "type": v["type"], "bits": v["bits"]}
                 try:

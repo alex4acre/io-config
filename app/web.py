@@ -255,7 +255,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     # --- process data --------------------------------------------------------------------------------
 
     def get_process_data(self):
-        self.send_json(200, core.process_data())
+        position = self.q("position")
+        self.send_json(200, core.process_data(int(position) if position is not None else None))
 
     def put_process_data(self):
         d = self.read_json()

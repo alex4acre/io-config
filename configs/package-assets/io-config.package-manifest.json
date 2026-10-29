@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.boschrexroth.com/ctrlx-automation/ctrlx-core/apps/package-manifest/package-manifest.v1.6.schema.json",
-  "version": "1.3.4",
+  "version": "1.3.5",
   "id": "io-config",
   "services": {
     "proxyMapping": [

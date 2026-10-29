@@ -87,16 +87,14 @@ function levelBadge(level, count) {
 
 function show(view) {
   banner("");
-  for (const t of document.querySelectorAll(".tab")) t.classList.toggle("active", t.dataset.view === view);
+  for (const t of document.querySelectorAll("header .tab")) t.classList.toggle("active", t.dataset.view === view);
   $("view-bus").hidden = view !== "bus";
   $("view-esi").hidden = view !== "esi";
-  $("view-pd").hidden = view !== "pd";
   try { sessionStorage.setItem("view", view); } catch (e) { /* not needed */ }
   if (view === "esi") loadEsi();
-  if (view === "pd") loadPd();
 }
 
-for (const t of document.querySelectorAll(".tab")) t.onclick = () => show(t.dataset.view);
+for (const t of document.querySelectorAll("header .tab")) t.onclick = () => show(t.dataset.view);
 
 // --- bus ----------------------------------------------------------------------------------------
 
@@ -172,6 +170,24 @@ function sourceCell(s, fmt) {
   return s ? fmt(s) : el("span", { class: "muted" }, "-");
 }
 
+// --- device card: process data, settings, startup, objects, parameters, info ----------------------
+
+let panel = "pd";
+
+function showPanel(name) {
+  if ($("d-" + (name === "settings" ? "edit" : name)).hidden) name = "pd";
+  panel = name;
+  for (const t of document.querySelectorAll(".subtabs .tab")) t.classList.toggle("active", t.dataset.panel === name);
+  for (const p of document.querySelectorAll("#detail .panel")) p.hidden = p.id !== "p-" + name;
+  banner("");
+  if (name === "pd") loadPd(true);
+  if ((name === "settings" || name === "startup") && editPos !== selected) openEditor(selected);
+  if (name === "objects" && objPos !== selected) openObjects(selected);
+  if (name === "soe" && soePos !== selected) openSoeList(selected);
+}
+
+for (const t of document.querySelectorAll(".subtabs .tab")) t.onclick = () => { if (selected !== null) showPanel(t.dataset.panel); };
+
 async function openDevice(pos) {
   let d;
   try {
@@ -181,10 +197,14 @@ async function openDevice(pos) {
     selected = null;
     return;
   }
+  const other = pos !== selected;
   selected = pos;
+  editPos = null;                             // settings depend on the scan: reloaded when their tab is shown
+  if (other) objPos = soePos = null;
   const protocols = d.sources.eeprom.mailbox || [];
-  $("d-objects").hidden = protocols.length > 0 && !protocols.includes("CoE");
-  $("d-soe").hidden = !protocols.includes("SoE");
+  $("d-objects").hidden = !d.present || (protocols.length > 0 && !protocols.includes("CoE"));
+  $("d-soe").hidden = !d.present || !protocols.includes("SoE");
+  for (const id of ["d-edit", "d-startup"]) $(id).hidden = !d.present;
   for (const tr of $("devices").tBodies[0].rows) tr.classList.toggle("selected", Number(tr.cells[0].textContent) === pos);
   $("detail").hidden = false;
   $("d-title").textContent = `${d.position}: ${d.name}`;
@@ -244,6 +264,13 @@ async function openDevice(pos) {
   const modes = d.sources.esi.dc_modes;
   add("ESI modes", modes.length ? modes.slice(0, 6).map((m) => `${m.name} (${m.desc}, ${hex(m.assign_activate)})`).join("; ") +
     (modes.length > 6 ? `; ... ${modes.length} in all` : "") : "-");
+
+  if (other) {
+    showPanel(d.present ? "pd" : "info");
+    $("detail").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } else {
+    showPanel(panel);
+  }
 }
 
 // --- configuration: build, write, backups -------------------------------------------------------
@@ -382,7 +409,7 @@ $("backups-box").ontoggle = () => { if ($("backups-box").open) loadBackups(); };
 const writesAllowed = () => $("allow-writes").checked;
 $("allow-writes").onchange = () => {
   document.body.classList.toggle("writes", writesAllowed());
-  if ($("view-pd").hidden === false) loadPd();
+  if (!$("detail").hidden && panel === "pd") loadPd(true);
   if (currentObject) openObject(currentObject);
 };
 
@@ -407,7 +434,7 @@ function selectedPdos() {
 
 function renderEditor() {
   const d = editData;
-  $("e-title").textContent = `Edit position ${d.position}`;
+  $("e-title").textContent = "Name, PDOs and drive telegrams";
   $("e-name").value = d.name;
   $("e-reason").textContent = d.editable ? "" : "PDOs can't be changed: " + d.reason;
   const tb = $("e-pdos").tBodies[0];
@@ -507,10 +534,8 @@ async function openEditor(pos) {
     editData = await api("GET", `/devices/${pos}/edit`);
     editPos = pos;
     soeLists = null;
-    $("editor").hidden = false;
     renderEditor();
     if (editData.soe) { fillSoeSuggestions("mdt"); fillSoeSuggestions("at"); }
-    $("editor").scrollIntoView({ behavior: "smooth" });
   } catch (e) {
     banner(e.message);
   }
@@ -548,8 +573,6 @@ $("e-reset").onclick = async () => {
     banner(e.message);
   }
 };
-$("e-close").onclick = () => { $("editor").hidden = true; editPos = null; };
-$("d-edit").onclick = () => { if (selected !== null) openEditor(selected); };
 
 // --- CoE objects ----------------------------------------------------------------------------------
 
@@ -572,12 +595,10 @@ function renderObjectList() {
 async function openObjects(pos, refresh) {
   objPos = pos;
   currentObject = null;
-  $("objects").hidden = false;
-  $("o-title").textContent = `Objects of position ${pos}`;
+  $("o-title").textContent = "Objects (online)";
   $("o-obj-title").textContent = "Loading the object list ...";
   $("o-entries").tBodies[0].replaceChildren();
   $("o-list").tBodies[0].replaceChildren();
-  $("objects").scrollIntoView({ behavior: "smooth" });
   try {
     objList = (await api("GET", `/devices/${pos}/objects` + (refresh ? "?refresh=1" : ""))).objects;
     $("o-obj-title").textContent = `${objList.length} objects - choose one`;
@@ -649,8 +670,6 @@ async function openObject(index) {
 
 $("o-filter").oninput = renderObjectList;
 $("o-refresh").onclick = () => { if (objPos !== null) openObjects(objPos, true); };
-$("o-close").onclick = () => { $("objects").hidden = true; objPos = null; currentObject = null; };
-$("d-objects").onclick = () => { if (selected !== null) openObjects(selected); };
 
 // --- SoE parameters ------------------------------------------------------------------------------
 
@@ -676,11 +695,9 @@ async function loadSoeList() {
 async function openSoeList(pos) {
   soePos = pos;
   soeIdn = null;
-  $("soe").hidden = false;
-  $("s-title").textContent = `Parameters of position ${pos}`;
+  $("s-title").textContent = "Drive parameters";
   $("s-param").replaceChildren();
   $("s-edit").hidden = true;
-  $("soe").scrollIntoView({ behavior: "smooth" });
   loadSoeList();
 }
 
@@ -732,58 +749,79 @@ $("s-startup").onclick = async () => {
 };
 $("s-filter").oninput = () => { clearTimeout(soeTimer); soeTimer = setTimeout(loadSoeList, 250); };
 $("s-mapping").onchange = loadSoeList;
-$("s-close").onclick = () => { $("soe").hidden = true; soePos = null; };
-$("d-soe").onclick = () => { if (selected !== null) openSoeList(selected); };
 
-// --- process data --------------------------------------------------------------------------------
+// --- process data of the open device ----------------------------------------------------------------
 
 let pdBusy = false;
+let pdRows = new Map();                       // variable name -> {v, value cell, setter}
+let pdKey = "";                               // position + variable names + writes switch of the table shown
 
-function pdValue(v) {
-  if (v.error) return el("span", { class: "muted", title: v.error }, "?");
-  if (Array.isArray(v.value)) return el("code", {}, v.value.map((b) => b.toString(16).padStart(2, "0")).join(" ").toUpperCase());
+function pdText(v) {
+  if (v.error) return "?";
+  if (Array.isArray(v.value)) return v.value.map((b) => b.toString(16).padStart(2, "0")).join(" ").toUpperCase();
   return String(v.value);
 }
 
-function pdSetter(v) {
+function pdShow(r) {
+  r.cell.textContent = pdText(r.v);
+  r.cell.title = r.v.error || "";
+  if (r.toggle) r.toggle.textContent = r.v.value ? "Set false" : "Set true";
+}
+
+async function pdSend(r, value) {
+  try {
+    const res = await api("PUT", "/process-data", { name: r.v.name, value });
+    r.v.value = res.value;                     // the value read back right after writing
+    delete r.v.error;
+    pdShow(r);
+  } catch (e) {
+    banner(e.message);
+  }
+}
+
+function pdSetter(r) {
+  const v = r.v;
   if (v.dir !== "output" || !writesAllowed()) return "";
-  const send = async (value) => {
-    try {
-      await api("PUT", "/process-data", { name: v.name, value });
-      loadPd();
-    } catch (e) {
-      banner(e.message);
-    }
-  };
   if (typeof v.value === "boolean") {
-    const b = el("button", { class: "small" }, v.value ? "Set false" : "Set true");
-    b.onclick = () => send(!v.value);
-    return b;
+    r.toggle = el("button", { class: "small" });
+    r.toggle.onclick = () => pdSend(r, !r.v.value);
+    return r.toggle;
   }
   const input = el("input", { type: "text", placeholder: Array.isArray(v.value) ? "hex bytes" : "value" });
   const b = el("button", { class: "small" }, "Set");
-  b.onclick = () => send(input.value);
-  input.onkeydown = (ev) => { if (ev.key === "Enter") send(input.value); };
+  b.onclick = () => pdSend(r, input.value);
+  input.onkeydown = (ev) => { if (ev.key === "Enter") pdSend(r, input.value); };
   return el("span", {}, input, " ", b);
 }
 
-async function loadPd() {
-  if (pdBusy) return;
-  const focused = document.activeElement && document.activeElement.closest && document.activeElement.closest("#pd");
-  if (focused) return;                          // don't replace a field the user is typing in
+async function loadPd(rebuild) {
+  if (pdBusy || selected === null) return;
   pdBusy = true;
+  const pos = selected;
   try {
-    const r = await api("GET", "/process-data");
-    const f = $("pd-filter").value.trim().toLowerCase();
+    const r = await api("GET", "/process-data?position=" + pos);
+    if (pos !== selected) return;
+    const key = `${pos}|${writesAllowed()}|` + r.variables.map((v) => v.name).join(",");
     const tb = $("pd").tBodies[0];
-    tb.replaceChildren();
-    let n = 0;
-    for (const v of r.variables) {
-      if (f && !v.name.toLowerCase().includes(f)) continue;
-      n++;
-      row(tb, [v.name, v.dir === "output" ? "out" : "in", v.type, el("td", { class: "num" }, pdValue(v)), pdSetter(v)]);
+    if (rebuild || key !== pdKey) {           // new device or variables: build the table, else only update values
+      pdKey = key;
+      pdRows = new Map();
+      tb.replaceChildren();
+      const prefix = r.variables.length ? r.variables[0].device + "/" : "";
+      for (const v of r.variables) {
+        const item = { v, cell: el("td", { class: "num" }) };
+        const name = v.name.startsWith(prefix) ? v.name.slice(prefix.length) : v.name;
+        row(tb, [name, v.dir === "output" ? "out" : "in", v.type, item.cell, pdSetter(item)]);
+        pdRows.set(v.name, item);
+      }
+      if (!r.variables.length) {
+        row(tb, [el("span", { class: "muted" }, "Not in the configuration the master runs: build and write the configuration first."), "", "", "", ""]);
+      }
+    } else {
+      for (const v of r.variables) pdRows.get(v.name).v = v;
     }
-    $("pd-info").textContent = `${n} of ${r.variables.length} variables, ${new Date(r.time * 1000).toLocaleTimeString()}`;
+    for (const item of pdRows.values()) pdShow(item);
+    $("pd-info").textContent = r.variables.length ? `${r.variables.length} variables, ${new Date(r.time * 1000).toLocaleTimeString()}` : "";
   } catch (e) {
     $("pd-info").textContent = e.message;
   } finally {
@@ -791,8 +829,9 @@ async function loadPd() {
   }
 }
 
-$("pd-filter").oninput = loadPd;
-setInterval(() => { if (!$("view-pd").hidden && $("pd-live").checked) loadPd(); }, 1000);
+setInterval(() => {
+  if (!document.hidden && !$("view-bus").hidden && !$("detail").hidden && panel === "pd" && $("pd-live").checked) loadPd();
+}, 200);
 
 $("d-close").onclick = () => {
   selected = null;

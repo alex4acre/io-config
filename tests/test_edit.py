@@ -188,6 +188,9 @@ class ProcessDataTest(unittest.TestCase):
         pd = self.core.process_data()["variables"]
         self.assertEqual(len(pd), 44)
         self.assertEqual([v["dir"] for v in pd].count("output"), 8)
+        one = self.core.process_data(2)["variables"]                  # one device: the XI422202
+        self.assertEqual({v["device"] for v in one}, {"XI422202"})
+        self.assertEqual(len(one), len([v for v in pd if v["device"] == "XI422202"]))
         self.assertEqual(self.core.write_output("XI422202/Channel_2.Value", "-100")["value"], -100)
         self.assertEqual(self.core.write_output("XI522001/Control.Transmit_request", True)["value"], True)
         self.assertEqual(self.core.write_output("XI522001/Transmit_data.Value", "414243")["value"][:4], [0x41, 0x42, 0x43, 0])
