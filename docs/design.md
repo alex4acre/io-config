@@ -143,7 +143,15 @@ visible.
    the ESI's name and type (e.g. "Signal control word", WORD), only added IDNs take the SoE dictionary's. Now byte for
    byte; the draft gate is gone. The drive stays in SafeOp with any config until a MOTION axis uses it (the master's
    requestedState for the drive is safeop; no AL error). Installed on the X3; device write with the drive not yet tested.
-8. **Next:** DC mode choice, devices without a mailbox, more than one frame, slots/modules.
+8. **No mailbox + pairing (1.3.3/1.3.4, 2026-10-29):** policy from the user: ESI first, devices never seen before must
+   work; references are checks, not preconditions. XI112108 (8DI/8DO, no mailbox, SM0 outputs at #x0F01 ctrl #x44
+   and FMMUs OpOnly) is built from its ESI: no mailbox section/SMs/state FMMU/bit; OpOnly SMs and FMMUs written
+   inactive in PS, activated in SO, deactivated in OS (ETG.2000). No I/O Engineering reference for it. Found with
+   the real bus: the running ENI was matched by POSITION, so a device inserted before the drive made the drive
+   lose its edited telegram (rebuilt from ESI). Now pair_in_order (LCS of vendor/product) pairs the running ENI
+   and saved edits (which keep the bus they were made for) with their devices. 1.3.4 installed; plan on the X3
+   correct, not written yet.
+9. **Next:** offline add from the ESI library, DC mode choice, devices without a mailbox, more than one frame, slots/modules.
 
 ## Open questions
 
