@@ -107,7 +107,7 @@ try:
 
     js("document.getElementById('plan-devices').tBodies[0].replaceChildren(); document.getElementById('build').click();")
     check(until("document.querySelector('#plan-devices tbody').textContent.includes('Drive1')"), "plan lists Drive1")
-    check("DRAFT" in text("plan-messages"), "plan says the drive part is a draft")
+    check("not yet checked" in text("plan-messages"), "plan says changed drive telegrams are unchecked")
     js("window.confirm = () => true; document.getElementById('write').click();")
     check(until("document.getElementById('dl-title').textContent === 'Written'", 30), "draft written after both confirmations")
     js("document.querySelector('#s-list tbody tr').click();")

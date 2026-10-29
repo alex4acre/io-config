@@ -67,7 +67,7 @@ function row(tbody, cells, attrs) {
 
 const SOURCE_TEXT = {
   esi: { exact: ["exact", "ok"], nearest: ["other rev.", "warn"], none: ["missing", "bad"], error: ["error", "bad"] },
-  eni: { same: ["same", "ok"], different: ["different", "bad"], none: ["not configured", "warn"], "not found": ["not on bus", "bad"] },
+  eni: { same: ["same", "ok"], revision: ["other rev.", "warn"], different: ["different", "bad"], none: ["not configured", "warn"], "not found": ["not on bus", "bad"] },
   eeprom: { read: ["read", "ok"], error: ["error", "warn"], "not read": ["not read", "muted"] },
 };
 

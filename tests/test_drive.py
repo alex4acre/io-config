@@ -17,7 +17,7 @@ from app.configure import topology
 from app.core import ConfigError, Core
 from app.edits import EditError
 from app.esi import EsiLibrary
-from app.fake import DATA, FakeBus
+from app.fake import DATA, MASTER, FakeBus
 from tests.test_app import ESI_DIR, ESI_FILES, read
 
 DRIVE_DIR = os.path.join(DATA, "esi-drive")
@@ -110,17 +110,18 @@ class DriveBusTest(unittest.TestCase):
         self.assertEqual((d["name"], d["state"], d["sources"]["esi"]), ("ctrlX DRIVE XCS2-F/H (SoE)", "Init", "nearest"))
         self.assertEqual(topology(self.core.sources), {1: ("B", 0), 2: ("B", 1), 3: ("B", 2), 4: ("C", 0)})
 
-    def test_plan_is_a_draft_with_the_drive(self):
+    def test_same_file_as_io_engineering_with_the_drive(self):
+        """The acceptance test: ctrlX I/O Engineering 4.6.1 configured this bus with the drive (defaults) on the X3
+        (tests/data/x3-drive-ioe.xml); the app builds the same file from the scan and the ESI files."""
         p = self.core.plan()
-        self.assertEqual((p["errors"], p["draft"]), ([], [4]))
-        self.assertIn("DRAFT", p["warnings"][-1])
+        self.assertEqual((p["errors"], p["draft"]), ([], []))
+        self.assertEqual(self.core.plan_file("eni"), read(os.path.join(DATA, "x3-drive-ioe.xml")))
         x = self.core.plan_file("eni").decode("latin-1")
         drive = x[x.index("<Name>ctrlX_DRIVE"):]
         self.assertIn("<PreviousPort Selected=\"1\"><Port>C</Port><PhysAddr>1001</PhysAddr>", drive)
-        self.assertIn("<ShiftTime>60000</ShiftTime>", drive)
         idns = re.findall(r"<IDN>(\d+)</IDN><Elements>64</Elements><Attribute>0</Attribute><Data>([0-9A-F]+)</Data>", drive)
-        self.assertEqual(idns[:5], [("15", "0700"), ("16", "0C000C009000820117025400CB888601"),
-                                    ("24", "0C000C0091002F0024005000C988CA88"), ("1", "D007"), ("2", "D007")])
+        self.assertEqual(idns[:5], [("15", "0700"), ("24", "0C000C0091002F0024005000C988CA88"),
+                                    ("16", "0C000C009000820117025400CB888601"), ("1", "D007"), ("2", "D007")])
         new = eni.parse_eni(self.core.plan_file("eni"))
         old = eni.parse_eni(REFERENCE)
         for a, b in zip(new["slaves"][:4], old["slaves"][:4]):        # the I/O part stays as it was
@@ -132,8 +133,23 @@ class DriveBusTest(unittest.TestCase):
                           {"no": 3, "type": "Inputs", "start": 0x1A00, "size": 20, "control": 0x22, "enable": True,
                            "pdos": [0x10]}])
 
-    def test_draft_needs_an_extra_confirmation(self):
+    def test_running_configuration_with_the_drive_is_identical(self):
+        """What the app sees on the X3 now: the master runs I/O Engineering's file with the drive."""
+        ref = read(os.path.join(DATA, "x3-drive-ioe.xml"))
+        self.bus.nodes[MASTER + "admin/fieldbus_config"] = {"response": {
+            "eni": list(ref), "ini": list(read(os.path.join(DATA, "controller-ini.txt")))}}
+        self.core.start_scan()
+        self.core.wait_scan()
+        d = self.core.state()["devices"][4]
+        self.assertEqual((d["name"], d["sources"]["eni"]), ("ctrlX_DRIVE_XCS2_F_H_SoE_", "revision"))   # 0x06000003 vs 0x3
         p = self.core.plan()
+        self.assertEqual((p["identical"], p["draft"], p["errors"]), (True, [], []))
+
+    def test_changed_telegrams_need_an_extra_confirmation(self):
+        at = [x["idn"] for x in self.core.edit_options(4)["soe"]["at"]] + [51]
+        self.core.save_edit(4, {"soe_at": at})
+        p = self.core.plan()
+        self.assertEqual(p["draft"], [4])
         with self.assertRaises(ConfigError):
             self.core.start_download(p["id"])
         self.assertEqual(self.bus.written, [])
@@ -170,6 +186,10 @@ class DriveBusTest(unittest.TestCase):
         self.core.wait_scan()
         self.drive_in_op()
         self.assertEqual(self.core.soe_read(4, "S-0-0047")["unit"], "°")
+        self.assertEqual(self.core.soe_read(4, "S-0-0095")["value"], "A0006 Safe-Operational")       # read on the X3
+        self.assertEqual(self.core.soe_read(4, "S-0-0016")["value"],
+                         ["S-0-0144", "S-0-0386", "S-0-0535", "S-0-0084", "P-0-2251", "S-0-0390"])
+        self.assertEqual(self.core.soe_read(4, "S-0-0386")["value"], 30929.3222)
         self.assertEqual(self.core.soe_write(4, "P-0-2249", "123.4567")["value"], 123.4567)
         with self.assertRaises(ConfigError) as cm:
             self.core.soe_write(4, "S-0-0032", 3)                    # write-protected in Op

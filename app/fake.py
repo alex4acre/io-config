@@ -84,6 +84,8 @@ class FakeBus:
                 with open(os.path.join(DATA, "esi-drive", "BoschRexroth_ctrlX_DRIVE_XCS2_F_H_SoE_Dictionary.xml"), "rb") as f:
                     self.soe_attributes = {i: p["attribute"] for i, p in parse_dictionary(f.read()).items()
                                            if p["attribute"] is not None}
+                with open(os.path.join(DATA, "x3-drive-soe.json"), encoding="utf-8") as f:
+                    self.soe_recorded = {int(k): bytes(v["value"]) for k, v in json.load(f).items()}
         self.nodes = dict(nodes)
         self.slaves = list(slaves or [])    # [{"autoinc", "online_info", "eeprom"}] in bus order
         self.calls = []                     # (operation, address, args) for tests
@@ -91,6 +93,8 @@ class FakeBus:
         self.coe = recorded_coe() if self.slaves else {}       # autoinc address -> object dictionary
         self.fail_op = False                # True: the master stays in PreOp after requesting Op
         self.soe = {}                       # (autoinc, idn) -> value bytes written (SoE), see _soe
+        if not hasattr(self, "soe_recorded"):
+            self.soe_recorded = {}          # idn -> value bytes read from the real drive (x3-drive-soe.json)
 
     def is_connected(self) -> bool:
         return True
@@ -183,8 +187,8 @@ class FakeBus:
         return any((x["vendor"], x["product"]) == (idn["vendorId"], idn["productCode"]) for x in parse_eni(eni)["slaves"])
 
     def _soe(self, req):
-        """SoE parameters of the drive - SYNTHETIC (an SoE drive was never in PreOp on the X3 yet): the
-        attribute from its dictionary, values 0 or what was written."""
+        """SoE parameters of the drive: the attribute from its dictionary, values as read from the real drive
+        in SafeOp (tests/data/x3-drive-soe.json), 0 for others, or what was written."""
         s = self._slave(req)
         if not s["online_info"]["response"].get("mbxProtocols", 0) & 0x10:       # bit 4: SoE
             raise BusError("read: DL_FAILED (Ecat SoE: Protocol not supported)")
@@ -199,7 +203,7 @@ class FakeBus:
             return {"response": {"elementFlags": flags, "data": list(attr.to_bytes(4, "little"))}}
         if flags == "value":
             size = {0b001: 2, 0b010: 4, 0b011: 8}.get((attr >> 16) & 7)
-            default = bytes(size) if size else bytes(4)
+            default = self.soe_recorded.get(idn) or (bytes(size) if size else bytes(4))
             return {"response": {"elementFlags": flags, "data": list(self.soe.get((req["address"], idn), default))}}
         raise BusError("read: DL_FAILED (Ecat SoE: element not supported by the fake)")
 

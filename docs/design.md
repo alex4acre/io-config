@@ -124,6 +124,17 @@ visible.
    its requested state to PreOp (gave up on PS). Every SoE read timed out ("Ecat: Timeout" 0C850010) in PreOp;
    mailbox counters: SoE 22 read requests, 0 bytes, 0 writes. The original configuration was restored.
    Suspects: mailbox-state FMMU / SoE InitCmd format / something I/O Engineering adds for drives.
+   **Reference (1.3.1):** after the user fixed the drive profile, I/O Engineering 4.6.1 configured the bus with
+   the drive (tests/data/x3-drive-ioe.xml). The generator now produces it byte for byte from the scan + ESI and
+   from the running configuration. Rules learned: master EoE section (MaxPorts = EoE devices + 1, MaxFrames 120,
+   MaxMACs 0); EoE "set IP parameter" InitCmd per EoE device (MAC 02:60:34:FE:<address>, IP = master EoE network
+   + n, mask, gateway = master, name); device name keeps a trailing "_"; Info RevisionNo = the ESI's revision;
+   no revision check without CheckRevisionNo; protocols ordered AoE, CoE, SoE, FoE, EoE; SoE order 15, 24 (MDT),
+   16 (AT) with comments Telegram type / MDT list / AT list; "BI check INIT" timeout 10000; DC start time = the
+   Sync0 shift; ESI ESC registers -> "set PDI divider" (0x400), "set SM watchdog" (0x420), "set DC latch cfg";
+   FMMUs cleared in index order. My 1.3.0 draft already had the right S-0-0016/S-0-0024 lists.
+   On the X3 the drive then reached SafeOp (S-0-0095 "A0006 Safe-Operational"); its SoE parameters read
+   through the app (tests/data/x3-drive-soe.json). Only changed MDT/AT content is still unverified (draft).
 7. **Next:** DC mode choice, devices without a mailbox, more than one frame, slots/modules.
 
 ## Open questions

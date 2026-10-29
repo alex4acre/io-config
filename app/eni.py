@@ -73,7 +73,7 @@ def _slave(el, position: int) -> dict:
                              "data": _text(c, "Data"), "complete_access": flag(c.get("CompleteAccess"))})
     dc = el.find("DC")
     dc_activate = None
-    sm_control, fmmu, timeouts, check_high = {}, [], {}, False
+    sm_control, fmmu, timeouts, check_high, check_low = {}, [], {}, False, False
     for c in el.findall("InitCmds/InitCmd"):
         ado, comment = num(c.findtext("Ado")), (c.findtext("Comment") or "").strip()
         transitions = [t.text for t in c.findall("Transition")]
@@ -86,6 +86,8 @@ def _slave(el, position: int) -> dict:
             fmmu.append(comment.split("(", 1)[1].rstrip(")"))
         elif "high word" in comment:
             check_high = True
+        elif "revision number (lo word)" in comment:
+            check_low = True
         timeout = num(c.findtext("Validate/Timeout"))
         for key, match in (("back_to_init", ("check device state for INIT", "PI")),
                            ("preop", ("check device state for preop", "IP")),
@@ -120,6 +122,7 @@ def _slave(el, position: int) -> dict:
         "dc_activate": dc_activate,
         "physics": _text(info, "Physics"),
         "harvest": {"sm_control": sm_control, "fmmu": fmmu, "timeouts": timeouts, "check_high": check_high,
+                    "check_low": check_low,
                     "mailbox": mbx},
         "variables": [],
     }

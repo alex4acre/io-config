@@ -65,9 +65,8 @@ def describe(src: dict, used: set = None):
     if esi is not None and src.get("esi_match") in ("exact", "nearest"):
         name = esi["type"]
         dev = generate.device_from_esi(esi, "")
-        if src["esi_match"] == "nearest":
-            dev["revision"] = revision
-            note.append(f'ESI of revision {esi["revision"]:#x}')
+        if src["esi_match"] == "nearest":       # I/O Engineering keeps the ESI's revision (and its checks)
+            note.append(f'ESI of revision {esi["revision"]:#x}, the device has {revision:#x}')
     elif slave is not None and (slave["vendor"], slave["product"], slave["revision"]) == (vendor, product, revision):
         name = slave["name"]
         dev = generate.device_from_eni(slave)
@@ -81,7 +80,7 @@ def describe(src: dict, used: set = None):
         return None, [], None, f'Position {src["pos"]}: no ESI and no EEPROM data, the device can\'t be described'
     if slave is not None and (slave["vendor"], slave["product"]) == (vendor, product):
         dev = generate.apply_eni(dev, slave)
-        dev["revision"] = revision
+        dev["revision"] = slave["revision"]
         note.insert(0, "kept from the current configuration")
     else:
         base = generate.device_name(name)
@@ -126,10 +125,11 @@ def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = N
                 errors.append(f"Position {pos}: {e}")
         elif edit:
             warnings.append(f"Position {pos}: the saved edit was made for another device and is not used")
-        if (dev.get("mailbox") or {}).get("soe") is not None:
+        if (dev.get("mailbox") or {}).get("soe") is not None and edit and edits.applies(src, edit) and \
+                (edit.get("soe_mdt") is not None or edit.get("soe_at") is not None):
             drafts.append(pos)
-            warnings.append(f'Position {pos} ({dev["name"]}): SoE drive support is a DRAFT - not yet checked against a '
-                            "configuration from ctrlX I/O Engineering. Writing it needs an extra confirmation.")
+            warnings.append(f'Position {pos} ({dev["name"]}): changed drive telegrams (MDT/AT) are not yet checked '
+                            "against a configuration from ctrlX I/O Engineering. Writing them needs an extra confirmation.")
         used.add(dev["name"])
         devices.append(dev)
         rows.append({"position": pos, "name": dev["name"], "source": dev["source"], "note": "; ".join(note),
@@ -141,7 +141,8 @@ def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = N
     eni_bytes = ini_bytes = None
     if not errors:
         try:
-            eni_bytes = generate.generate_eni(devices, master_name, cycle, ports)
+            eoe = generate.eoe_addresses(eni_mod.parse_ini(ini_text or generate.DEFAULT_INI), devices)
+            eni_bytes = generate.generate_eni(devices, master_name, cycle, ports, eoe)
             ini_bytes = generate.generate_ini(ini_text, cycle)
         except generate.GenerateError as e:
             errors.append(str(e))

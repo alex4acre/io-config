@@ -143,6 +143,8 @@ def parse_device(path: str, vendor: int, product: int, revision: int) -> dict:
                 "pdo_assign": coe is not None and flag(coe.get("PdoAssign")),
                 "profile_no": num(dev.findtext("Profile/ProfileNo")),
                 "dictionary": (dev.findtext("Profile/DictionaryFile") or "").strip() or None,
+                "esc": {r.tag[3:]: num(r.text) for r in (dev.find("ESC") if dev.find("ESC") is not None else [])
+                        if r.tag.startswith("Reg") and num(r.text) is not None},
                 "soe_init": soe_init,
                 "slots": [{"name": (s.findtext("Name") or "").strip(), "min": num(s.get("MinInstances"), 0),
                            "max": num(s.get("MaxInstances"), 1)} for s in dev.findall("Slots/Slot")],

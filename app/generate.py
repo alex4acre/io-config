@@ -32,6 +32,7 @@ SM_BASE, FMMU_BASE = 0x800, 0x600
 DC_ACTIVATION, DC_START_TIME, DC_CYCLE_TIME, DC_SYSTEM_TIME = 0x980, 0x990, 0x9A0, 0x910
 
 DATA_TYPE_NAMES = {"BOOL": "BIT"}       # the ENI writes BIT where ESI/EEPROM say BOOL
+PROTOCOL_ORDER = ["AoE", "CoE", "SoE", "FoE", "EoE", "VoE"]     # the order the ENI lists mailbox protocols in
 DEFAULT_TIMEOUTS = {"preop": 3000, "safeop_op": 10000, "back_to_init": 5000, "back_to_safeop": 200}   # ms, ESI defaults
 
 
@@ -45,7 +46,8 @@ def variable_name(text: str) -> str:
 
 
 def device_name(text: str) -> str:
-    return variable_name(text) or "Device"
+    """"ctrlX DRIVE XCS2-F/H (SoE)" -> "ctrlX_DRIVE_XCS2_F_H_SoE_" (I/O Engineering keeps the trailing "_")."""
+    return re.sub(r"[^A-Za-z0-9]+", "_", text).lstrip("_") or "Device"
 
 
 def le(value: int, size: int) -> str:
@@ -84,7 +86,7 @@ def device_from_esi(esi: dict, name: str) -> dict:
             "send": (mbx_out["start"], mbx_out["size"]), "recv": (mbx_in["start"], mbx_in["size"]),
             "bootstrap": (int.from_bytes(boot[0:2], "little"), int.from_bytes(boot[2:4], "little"),
                           int.from_bytes(boot[4:6], "little"), int.from_bytes(boot[6:8], "little")) if boot else None,
-            "protocols": list(esi["mailbox"]),
+            "protocols": sorted(esi["mailbox"], key=lambda x: PROTOCOL_ORDER.index(x) if x in PROTOCOL_ORDER else 99),
             "coe": {"pdo_assign": esi.get("pdo_assign", False), "profile_no": esi.get("profile_no"),
                     "timeout": esi.get("mailbox_timeout", 2000), "init": list(esi.get("coe_init", []))}
             if "CoE" in esi["mailbox"] else None,
@@ -95,7 +97,7 @@ def device_from_esi(esi: dict, name: str) -> dict:
     modes = esi.get("dc_modes") or []
     return {
         "name": name, "vendor": esi["vendor"], "product": esi["product"], "revision": esi["revision"],
-        "check_revision": esi.get("check_revision", ""), "physics": esi.get("physics", "YY"),
+        "check_revision": esi.get("check_revision", ""), "physics": esi.get("physics", "YY"), "esc": dict(esi.get("esc") or {}),
         "timeouts": {**DEFAULT_TIMEOUTS, **(esi.get("timeouts") or {})}, "fmmu": list(esi.get("fmmu") or []),
         "sm": _sm_list(esi["sm"]), "mailbox": mailbox,
         "pdos": [_oversampled(p) for p in esi["pdos"] if p["sm"] is not None],
@@ -131,7 +133,8 @@ def device_from_eni(slave: dict) -> dict:
                 "control": h["sm_control"].get(1, 0x22), "enable": True}] + sms
     esi_like = {
         "vendor": slave["vendor"], "product": slave["product"], "revision": slave["revision"],
-        "check_revision": "" if h["check_high"] else "LW_EQ", "physics": slave["physics"] or "YY",
+        "check_revision": "LW_EQ_HW_EQ_OR_G" if h["check_high"] else "LW_EQ" if h["check_low"] else "",
+        "physics": slave["physics"] or "YY",
         "timeouts": h["timeouts"], "fmmu": [{"outputs": "Outputs", "inputs": "Inputs", "mailbox state": "MBoxState"}
                                            .get(k, k) for k in h["fmmu"]],
         "sm": sms, "pdos": slave["pdos"], "mailbox": slave["mailbox"],
@@ -150,7 +153,8 @@ def apply_eni(dev: dict, slave: dict) -> dict:
     for sm in slave["sm"]:
         assigned.update(sm.get("pdos", []))
     out["pdos"] = [p for p in slave["pdos"] if p["index"] in assigned]
-    out["dc"] = {"assign_activate": slave["dc_activate"]} if slave.get("dc_activate") else None
+    shift = int((slave.get("dc") or {}).get("ShiftTime") or 0) or (dev.get("dc") or {}).get("shift") or 0
+    out["dc"] = {"assign_activate": slave["dc_activate"], "shift": shift} if slave.get("dc_activate") else None
     if out.get("mailbox") and out["mailbox"].get("coe") is not None:
         extra = [dict(c, from_eni=True) for c in slave.get("coe_init", []) if c["index"] not in (0x1C12, 0x1C13)]
         out["mailbox"] = dict(out["mailbox"], coe=dict(out["mailbox"]["coe"], init=extra))
@@ -256,13 +260,44 @@ def _revision_checks(parent, dev, ai):
     _cmd(parent, "IP", "assign EEPROM to ECAT", APWR, ai, EEPROM_CONFIG, "00", cnt=1)
     check("check vendor id", "check vendor id", 0x08, le(dev["vendor"], 4))
     check("check product code", "check product id", 0x0A, le(dev["product"], 4))
+    mode = dev.get("check_revision", "")
+    if not mode:                                         # the ESI asks for no revision check
+        return
     check("check revision number (lo word)", "check revision number (lo word)", 0x0C, le(dev["revision"] & 0xFFFF, 2))
-    if dev.get("check_revision", "") != "LW_EQ":         # LW_EQ: the low word only
+    if mode != "LW_EQ":                                  # LW_EQ: the low word only
         check("check revision number (high word >=)", "check revision number (high word >=)", 0x0D,
               le(dev["revision"] >> 16, 2), validate_type="EQ_OR_G")
 
 
-def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars):
+def _ip_bytes(text: str) -> str:
+    return bytes(reversed([int(x) for x in text.split(".")])).hex().upper()
+
+
+def _eoe_ip(name: str, phys: int, eoe: dict) -> str:
+    """EoE "set IP parameter" request (ETG.1000.6): MAC 02:60:34:FE:<station address>, the next address of the
+    master's EoE network, its mask, the master as gateway, no DNS server, the device name as DNS name."""
+    data = (le(2, 4) + le(0x2F, 4) + "026034FE" + phys.to_bytes(2, "big").hex().upper() +
+            _ip_bytes(eoe["ip"]) + _ip_bytes(eoe["mask"]) + _ip_bytes(eoe["gateway"]) + "00000000")
+    return data + name.encode("latin-1")[:31].ljust(32, b"\0").hex().upper()
+
+
+def eoe_addresses(ini: dict, devices: list) -> dict:
+    """position -> EoE IP settings for the devices with EoE, from the master's EoE endpoint in the ini."""
+    ep = ini.get("EtherCAT.Master.EoE.Endpoint", {})
+    if ep.get("Enabled", "").upper() != "TRUE" or not ep.get("IpAddress"):
+        return {}
+    gw = [int(x) for x in ep["IpAddress"].split(".")]
+    mask = ep.get("SubnetMask", "255.255.255.0")
+    out, n = {}, 0
+    for pos, d in enumerate(devices):
+        if "EoE" in ((d.get("mailbox") or {}).get("protocols") or []):
+            n += 1
+            ip = gw[:3] + [n]
+            out[pos] = {"ip": ".".join(map(str, ip)), "mask": mask, "gateway": ep["IpAddress"]}
+    return out
+
+
+def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars, eoe=None):
     pos, phys, ai = lay["pos"], lay["address"], lay["autoinc"]
     t = dev["timeouts"]
     s = _sub(config, "Slave")
@@ -392,13 +427,20 @@ def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars):
             _sub(c, "Elements", 64)                  # the value
             _sub(c, "Attribute", 0)
             _sub(c, "Data", x["data"])
+    if "EoE" in mbx["protocols"] and eoe is not None:
+        c = _sub(_sub(_sub(m, "EoE"), "InitCmds"), "InitCmd", Fixed="1")
+        for tr in ("IP", "PS"):
+            _sub(c, "Transition", tr)
+        _sub(c, "Comment", "eoe init")
+        _sub(c, "Timeout", 0)
+        _sub(c, "Data", _eoe_ip(dev["name"], phys, eoe))
 
     # state machine
     ic = _sub(s, "InitCmds")
     init_v = ("0100", "0F00")
     _cmd(ic, "PI,BI,SI,OI", "set device state to INIT", APWR, ai, AL_CONTROL, "0100")
     _cmd(ic, "PI,SI,OI", "check device state for INIT", APRD, ai, AL_STATUS, "0000", validate=init_v + (t["back_to_init"],))
-    _cmd(ic, "BI", "check device state for INIT", APRD, ai, AL_STATUS, "0000", validate=init_v + (t["safeop_op"],))
+    _cmd(ic, "BI", "check device state for INIT", APRD, ai, AL_STATUS, "0000", validate=init_v + (10000,))
     _cmd(ic, "IP,IB", "set device state to INIT", APWR, ai, AL_CONTROL, "0100", cnt=1)
     _cmd(ic, "IP,IB", "check device state for INIT", APRD, ai, AL_STATUS, "0000", cnt=1, validate=init_v + (t["preop"],))
     _revision_checks(ic, dev, ai)
@@ -408,8 +450,10 @@ def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars):
         _cmd(ic, "SI,OI", "clear DC activation", APWR, ai, DC_ACTIVATION, "0000")
         _cmd(ic, "SP,OP", "clear DC activation", FPWR, phys, DC_ACTIVATION, "0000")
         _cmd(ic, "PS", "set DC cycle time", FPWR, phys, DC_CYCLE_TIME, le(cycle_ns, 4) + le(0, 4), cnt=1)
-        _cmd(ic, "PS", "set DC start time", FPWR, phys, DC_START_TIME, "0" * 16, cnt=1)
+        _cmd(ic, "PS", "set DC start time", FPWR, phys, DC_START_TIME, le(dev["dc"].get("shift") or 0, 8), cnt=1)
         _cmd(ic, "PS", "set DC activation", FPWR, phys, DC_ACTIVATION, le(dev["dc"]["assign_activate"], 2), cnt=1)
+        if dev.get("esc"):                       # devices whose ESI sets ESC registers (seen: ctrlX DRIVE)
+            _cmd(ic, "PS", "set DC latch cfg", FPWR, phys, 0x9A8, "0000")
     zero8 = "0" * 16
     mbx_sms = [(0, "mailbox out", mbx["send"], 0x26), (1, "mailbox in", mbx["recv"], 0x22)]
     sm_by_type = {sm["type"]: sm for sm in dev["sm"]}
@@ -441,6 +485,10 @@ def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars):
             data = _fmmu_data(LOGICAL_MAILBOX_STATE + bit // 8, 1, SM_BASE + 8 + 5, 1, True, bit % 8, bit % 8)
             _cmd(ic, "IP,IB", f"set fmmu {i}(mailbox state)", FPWR, phys, FMMU_BASE + 16 * i, data, cnt=1, requires=False)
             mbx_fmmu = i
+    if "0400" in dev.get("esc", {}):
+        _cmd(ic, "IP", "set PDI divider", FPWR, phys, 0x400, le(dev["esc"]["0400"], 2), cnt=1, requires=False)
+    if "0420" in dev.get("esc", {}):
+        _cmd(ic, "IP", "set SM watchdog", FPWR, phys, 0x420, le(dev["esc"]["0420"], 2), cnt=1, requires=False)
     if mbx["bootstrap"]:
         for no, label, (start, size) in ((0, "bootstrap out", mbx["bootstrap"][0:2]), (1, "bootstrap in", mbx["bootstrap"][2:4])):
             control = sm_by_type.get("MBoxOut" if no == 0 else "MBoxIn", {}).get("control", 0x26 if no == 0 else 0x22)
@@ -461,9 +509,9 @@ def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars):
              validate=("030000000000", "1F0000000000", t["preop"]))
     _cmd(ic, "OS", "set device state to SAFEOP", FPWR, phys, AL_CONTROL, "0400")
     _cmd(ic, "PS", "set device state to SAFEOP", FPWR, phys, AL_CONTROL, "0400", cnt=1)
-    for i in process_fmmus:
-        _cmd(ic, "SP,SI,OP,OI", f"clear fmmu {i}", FPWR, phys, FMMU_BASE + 16 * i, "0" * 32, requires=False)
-    _cmd(ic, "PI,BI,SI,OI", f"clear fmmu {mbx_fmmu}", FPWR, phys, FMMU_BASE + 16 * mbx_fmmu, "0" * 32, requires=False)
+    for i in sorted(process_fmmus + [mbx_fmmu]):             # in FMMU order
+        transitions = "PI,BI,SI,OI" if i == mbx_fmmu else "SP,SI,OP,OI"
+        _cmd(ic, transitions, f"clear fmmu {i}", FPWR, phys, FMMU_BASE + 16 * i, "0" * 32, requires=False)
     _cmd(ic, "PS", "check device state for SAFEOP", FPRD, phys, AL_STATUS, state6, cnt=1,
          validate=("040000000000", "1F0000000000", t["safeop_op"]))
     _cmd(ic, "OS", "check device state for SAFEOP", FPRD, phys, AL_STATUS, state6,
@@ -490,16 +538,16 @@ def _idn_list(idns) -> str:
 
 
 def soe_commands(dev: dict, cycle_us: int) -> list:
-    """The SoE startup commands of a drive (DRAFT - not checked against an I/O Engineering ENI yet):
-    telegram type 7 (configurable), the AT and MDT configuration lists from the PDO entries (without the
-    status / control word that always lead the telegrams), then the ESI's commands with the cycle times
+    """The SoE startup commands of a drive, as ctrlX I/O Engineering writes them (tests/data/x3-drive-ioe.xml):
+    telegram type 7 (configurable), the MDT and AT configuration lists from the PDO entries (without the
+    control / status word that always lead the telegrams), then the ESI's commands with the cycle times
     set from the bus cycle, then the user's."""
     soe = dev["mailbox"]["soe"]
     at = [e["index"] for p in dev["pdos"] if p["dir"] == "tx" for e in p["entries"] if e["index"] != SOE_STATUS_WORD]
     mdt = [e["index"] for p in dev["pdos"] if p["dir"] == "rx" for e in p["entries"] if e["index"] != SOE_CONTROL_WORD]
-    out = [{"transitions": ["PS"], "idn": 15, "data": le(7, 2), "comment": "Telegram type: configurable"},
-           {"transitions": ["PS"], "idn": 16, "data": _idn_list(at), "comment": "Configuration list of AT"},
-           {"transitions": ["PS"], "idn": 24, "data": _idn_list(mdt), "comment": "Configuration list of MDT"}]
+    out = [{"transitions": ["PS"], "idn": 15, "data": le(7, 2), "comment": "Telegram type"},
+           {"transitions": ["PS"], "idn": 24, "data": _idn_list(mdt), "comment": "MDT list"},
+           {"transitions": ["PS"], "idn": 16, "data": _idn_list(at), "comment": "AT list"}]
     for x in soe.get("init", []):
         x = dict(x)
         if x["idn"] in SOE_CYCLE_IDNS:
@@ -552,7 +600,7 @@ def _cyclic(config, lay, out_total, in_total, n_mbx, ref_clock):
     return FRAME_HEADER + offset
 
 
-def generate_eni(devices: list, master_name: str, cycle_us: int, previous_ports: dict = None) -> bytes:
+def generate_eni(devices: list, master_name: str, cycle_us: int, previous_ports: dict = None, eoe: dict = None) -> bytes:
     """The ENI for devices in bus order. previous_ports: position -> (port letter, position of the upstream
     device) from the online topology (a letter alone: the device before); default ("B", position - 1), a line."""
     if not devices:
@@ -576,6 +624,11 @@ def generate_eni(devices: list, master_name: str, cycle_us: int, previous_ports:
     ms = _sub(master, "MailboxStates")
     _sub(ms, "StartAddr", LOGICAL_MAILBOX_STATE)
     _sub(ms, "Count", n_mbx)
+    if eoe:
+        e = _sub(master, "EoE")
+        _sub(e, "MaxPorts", len(eoe) + 1)
+        _sub(e, "MaxFrames", 120)
+        _sub(e, "MaxMACs", 0)
     _master_cmds(_sub(master, "InitCmds"))
 
     inputs_vars, outputs_vars = [], []
@@ -585,7 +638,7 @@ def generate_eni(devices: list, master_name: str, cycle_us: int, previous_ports:
             port = (previous_ports or {}).get(pos, "B")
             letter, parent = (port, pos - 1) if isinstance(port, str) else port
             previous = (letter, lay[parent]["address"])
-        s = _slave(config, dev, ly, cycle_ns, previous, inputs_vars, outputs_vars)
+        s = _slave(config, dev, ly, cycle_ns, previous, inputs_vars, outputs_vars, (eoe or {}).get(pos))
         if dev.get("dc"):
             dc = _sub(s, "DC")
             if pos == ref:
