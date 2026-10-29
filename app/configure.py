@@ -104,7 +104,7 @@ def device_for(src: dict, user_edits: dict, used: set = None) -> dict:
 def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = None, user_edits: dict = None) -> dict:
     """sources: per present device {"pos", "online", "eeprom", "eni_slave", "esi_match", "esi_device"};
     current: {"eni": bytes, "ini": bytes, "parsed": parse_eni() or None}; user_edits: position -> edit."""
-    devices, rows, errors, warnings, drafts = [], [], [], [], []
+    devices, rows, errors, warnings = [], [], [], []
     used = set()
     ports = topology(sources)
     for src in sources:
@@ -125,11 +125,6 @@ def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = N
                 errors.append(f"Position {pos}: {e}")
         elif edit:
             warnings.append(f"Position {pos}: the saved edit was made for another device and is not used")
-        if (dev.get("mailbox") or {}).get("soe") is not None and edit and edits.applies(src, edit) and \
-                (edit.get("soe_mdt") is not None or edit.get("soe_at") is not None):
-            drafts.append(pos)
-            warnings.append(f'Position {pos} ({dev["name"]}): changed drive telegrams (MDT/AT) are not yet checked '
-                            "against a configuration from ctrlX I/O Engineering. Writing them needs an extra confirmation.")
         used.add(dev["name"])
         devices.append(dev)
         rows.append({"position": pos, "name": dev["name"], "source": dev["source"], "note": "; ".join(note),
@@ -163,7 +158,6 @@ def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = N
         "warnings": warnings,
         "variables": diff,
         "identical": bool(eni_bytes) and eni_bytes == current.get("eni") and ini_bytes == current.get("ini"),
-        "draft": drafts,
         "eni": eni_bytes,
         "ini": ini_bytes,
     }

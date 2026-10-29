@@ -338,12 +338,9 @@ $("write").onclick = async () => {
   if (!plan) return;
   const what = plan.identical ? "The new configuration is identical to the current one.\n\n" : "";
   if (!confirm(what + WRITE_WARNING + "\n\nWrite the configuration now?")) return;
-  const draft = plan.draft && plan.draft.length > 0;
-  if (draft && !confirm(`Position ${plan.draft.join(", ")}: the drive part of this configuration is a DRAFT that was ` +
-    "not checked against a configuration from ctrlX I/O Engineering. The drive may not reach Op.\n\nWrite it anyway?")) return;
   try {
     banner("");
-    await api("POST", "/download", { plan_id: plan.id, confirm: true, allow_draft: draft });
+    await api("POST", "/download", { plan_id: plan.id, confirm: true });
     $("write").disabled = true;
     poll();
   } catch (e) {

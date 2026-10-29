@@ -198,7 +198,11 @@ def apply_edit(dev: dict, src: dict, edit: dict) -> dict:
         pdos = []
         for p in out["pdos"]:
             if p["dir"] == direction:
-                entries = [{"index": i, "subindex": 0, "name": dictionary.get(i, {}).get("name", soe.idn_text(i)),
+                # like I/O Engineering: entries already in the telegram keep their ESI (or ENI) name and type,
+                # only added IDNs come from the SoE dictionary
+                known = {e["index"]: e for e in p["entries"]}
+                entries = [dict(known[i]) if i in known else
+                           {"index": i, "subindex": 0, "name": dictionary.get(i, {}).get("name", soe.idn_text(i)),
                             "bits": dictionary.get(i, {}).get("bits", 0), "type": soe_type(dictionary.get(i, {}).get("type", ""))}
                            for i in edit[key]]
                 p = dict(p, entries=entries)

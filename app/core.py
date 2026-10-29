@@ -314,7 +314,7 @@ class Core:
             raise KeyError("no configuration built")
         return p[which]
 
-    def start_download(self, plan_id: int, allow_draft=False) -> dict:
+    def start_download(self, plan_id: int) -> dict:
         with self.lock:
             if self._busy():
                 raise ConfigError("a scan or download is already running")
@@ -323,9 +323,6 @@ class Core:
                 raise ConfigError("the configuration changed; build it again")
             if p["errors"] or not p["eni"]:
                 raise ConfigError("the configuration has errors: " + "; ".join(p["errors"]))
-            if p.get("draft") and not allow_draft:
-                raise ConfigError("the configuration contains draft drive support (positions "
-                                  f'{", ".join(map(str, p["draft"]))}); confirm writing a draft explicitly')
             self.download_state = {"running": True, "steps": [], "finished": None, "error": None}
             self._thread = threading.Thread(target=self._download_thread, args=(p["eni"], p["ini"], "download"),
                                             name="download", daemon=True)

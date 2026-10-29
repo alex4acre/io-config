@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 
-"""SoE drive support (DRAFT) against the ctrlX DRIVE XCS2-F/H that joined the X3's bus:  python3 -m unittest -q
+"""SoE drive support against the ctrlX DRIVE XCS2-F/H that joined the X3's bus:  python3 -m unittest -q
 
 Real: the drive's online info, EEPROM and topology (tests/data/x3-drive.json), its ESI and SoE dictionary
 (tests/data/esi-drive). Synthetic: its SoE parameter values (it was never in PreOp on the X3 yet).
@@ -114,7 +114,7 @@ class DriveBusTest(unittest.TestCase):
         """The acceptance test: ctrlX I/O Engineering 4.6.1 configured this bus with the drive (defaults) on the X3
         (tests/data/x3-drive-ioe.xml); the app builds the same file from the scan and the ESI files."""
         p = self.core.plan()
-        self.assertEqual((p["errors"], p["draft"]), ([], []))
+        self.assertEqual(p["errors"], [])
         self.assertEqual(self.core.plan_file("eni"), read(os.path.join(DATA, "x3-drive-ioe.xml")))
         x = self.core.plan_file("eni").decode("latin-1")
         drive = x[x.index("<Name>ctrlX_DRIVE"):]
@@ -143,17 +143,22 @@ class DriveBusTest(unittest.TestCase):
         d = self.core.state()["devices"][4]
         self.assertEqual((d["name"], d["sources"]["eni"]), ("ctrlX_DRIVE_XCS2_F_H_SoE_", "revision"))   # 0x06000003 vs 0x3
         p = self.core.plan()
-        self.assertEqual((p["identical"], p["draft"], p["errors"]), (True, [], []))
+        self.assertEqual((p["identical"], p["errors"]), (True, []))
 
-    def test_changed_telegrams_need_an_extra_confirmation(self):
-        at = [x["idn"] for x in self.core.edit_options(4)["soe"]["at"]] + [51]
-        self.core.save_edit(4, {"soe_at": at})
+    def test_changed_telegrams_same_file_as_io_engineering(self):
+        """Acceptance test for edited telegrams: in I/O Engineering 4.6.1 the user added S-0-0041 to the MDT (before
+        P-0-2250), removed S-0-0084 from the AT and added S-0-0011 at its end (tests/data/x3-drive-ioe-telegram.xml,
+        read from the X3). Entries that were in the telegram keep the ESI's name and type, added ones come from the
+        SoE dictionary."""
+        o = self.core.edit_options(4)["soe"]
+        mdt, at = [x["idn"] for x in o["mdt"]], [x["idn"] for x in o["at"]]
+        mdt.insert(mdt.index(0x8000 + 2250), 41)
+        at.remove(84)
+        self.core.save_edit(4, {"soe_mdt": mdt, "soe_at": at + [11]})
         p = self.core.plan()
-        self.assertEqual(p["draft"], [4])
-        with self.assertRaises(ConfigError):
-            self.core.start_download(p["id"])
-        self.assertEqual(self.bus.written, [])
-        self.core.start_download(p["id"], allow_draft=True)
+        self.assertEqual(p["errors"], [])
+        self.assertEqual(self.core.plan_file("eni"), read(os.path.join(DATA, "x3-drive-ioe-telegram.xml")))
+        self.core.start_download(p["id"])
         self.core.wait_scan()
         self.core.wait_scan()
         self.assertIsNone(self.core.state()["download"]["error"])
@@ -181,7 +186,7 @@ class DriveBusTest(unittest.TestCase):
         with self.assertRaises(ConfigError):
             self.core.soe_read(2, 1)                                 # XI422202 has no SoE
         p = self.core.plan()
-        self.core.start_download(p["id"], allow_draft=True)
+        self.core.start_download(p["id"])
         self.core.wait_scan()
         self.core.wait_scan()
         self.drive_in_op()

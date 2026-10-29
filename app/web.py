@@ -291,7 +291,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         d = self.read_json()
         if not isinstance(d.get("plan_id"), int) or d.get("confirm") is not True:
             raise HttpError(400, '{"plan_id": <id of the built configuration>, "confirm": true} is needed')
-        self.send_json(202, core.start_download(d["plan_id"], allow_draft=d.get("allow_draft") is True))
+        self.send_json(202, core.start_download(d["plan_id"]))
 
     def get_backups(self):
         self.send_json(200, {"backups": core.backups()})

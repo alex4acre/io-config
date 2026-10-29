@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 
-"""UI check of the drive views (SoE parameters, telegram editor, draft confirmation) in headless Firefox, against
+"""UI check of the drive views (SoE parameters, telegram editor, write) in headless Firefox, against
 the simulated ctrlX WITH the ctrlX DRIVE (IO_CONFIG_FAKE_DRIVE=1) and an ESI library holding the I/O ESIs plus
 tests/data/esi-drive. Otherwise set up like tests/ui/ui_check.py.
 
@@ -107,9 +107,8 @@ try:
 
     js("document.getElementById('plan-devices').tBodies[0].replaceChildren(); document.getElementById('build').click();")
     check(until("document.querySelector('#plan-devices tbody').textContent.includes('Drive1')"), "plan lists Drive1")
-    check("not yet checked" in text("plan-messages"), "plan says changed drive telegrams are unchecked")
     js("window.confirm = () => true; document.getElementById('write').click();")
-    check(until("document.getElementById('dl-title').textContent === 'Written'", 30), "draft written after both confirmations")
+    check(until("document.getElementById('dl-title').textContent === 'Written'", 30), "edited drive configuration written")
     js("document.querySelector('#s-list tbody tr').click();")
     check(until("document.getElementById('s-param').textContent.includes('Value')", 15), "S-0-0047 read online once configured")
     shot("soe-configured")
