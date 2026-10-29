@@ -135,6 +135,8 @@ visible.
    FMMUs cleared in index order. My 1.3.0 draft already had the right S-0-0016/S-0-0024 lists.
    On the X3 the drive then reached SafeOp (S-0-0095 "A0006 Safe-Operational"); its SoE parameters read
    through the app (tests/data/x3-drive-soe.json). Only changed MDT/AT content is still unverified (draft).
+   1.3.1 installed on the X3 2026-10-29: plan identical to the running I/O Engineering file, identical write
+   through the app OK, SoE read/write through the app on the real drive OK.
 7. **Next:** DC mode choice, devices without a mailbox, more than one frame, slots/modules.
 
 ## Open questions
