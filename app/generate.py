@@ -9,8 +9,10 @@ commands, DC and the process-image variables.
 
 The layout and every command follow the ENI ctrlX I/O Engineering 4.6.1 generated for a real bus
 (tests/data/controller-eni.xml); tests/test_generate.py checks that the same bus gives the same file,
-byte for byte. Devices without a mailbox and buses with more than one frame of process data are not
-covered by that reference and are refused.
+byte for byte. Devices without a mailbox (e.g. ctrlX I/O XI112108) are built from their ESI alone: no mailbox
+section, process data on the sync managers the ESI names, and sync managers / FMMUs marked OpOnly switched on
+only in the SafeOp->Op transition (ETG.2000); no I/O Engineering reference for those yet. Buses with more than
+one frame of process data are refused.
 """
 
 import re
@@ -58,7 +60,7 @@ def le(value: int, size: int) -> str:
 
 def _sm_list(sms):
     return [{"no": s["no"], "type": s["type"], "start": s["start"], "size": s["size"], "control": s["control"],
-             "enable": s["enable"]} for s in sms]
+             "enable": s["enable"], "op_only": s.get("op_only", False)} for s in sms]
 
 
 def _oversampled(pdo: dict) -> dict:
@@ -99,6 +101,7 @@ def device_from_esi(esi: dict, name: str) -> dict:
         "name": name, "vendor": esi["vendor"], "product": esi["product"], "revision": esi["revision"],
         "check_revision": esi.get("check_revision", ""), "physics": esi.get("physics", "YY"), "esc": dict(esi.get("esc") or {}),
         "timeouts": {**DEFAULT_TIMEOUTS, **(esi.get("timeouts") or {})}, "fmmu": list(esi.get("fmmu") or []),
+        "fmmu_op_only": list(esi.get("fmmu_op_only") or []),
         "sm": _sm_list(esi["sm"]), "mailbox": mailbox,
         "pdos": [_oversampled(p) for p in esi["pdos"] if p["sm"] is not None],
         "dc": {"assign_activate": modes[0]["assign_activate"], "shift": modes[0].get("shift_sync0") or 0}
@@ -238,14 +241,13 @@ def _layout(devices):
                 raise GenerateError(f'{dev["name"]}: {"outputs" if direction == "rx" else "inputs"} are {bits} bits, '
                                     "not whole bytes")
             sizes[direction] = bits // 8
-        if dev.get("mailbox") is None:
-            raise GenerateError(f'{dev["name"]}: devices without a mailbox are not supported yet')
+        has_mbx = dev.get("mailbox") is not None
         lay.append({"pos": pos, "address": FIRST_ADDRESS + pos, "autoinc": (-pos) & 0xFFFF,
                     "out_size": sizes["rx"], "in_size": sizes["tx"], "out_off": out_off, "in_off": in_off,
-                    "mbx_bit": mbx})
+                    "mbx_bit": mbx if has_mbx else None})
         out_off += sizes["rx"]
         in_off += sizes["tx"]
-        mbx += 1
+        mbx += has_mbx
     if max(out_off, in_off) > 2048:
         raise GenerateError("more than 2048 bytes of process data in one direction")
     return lay, out_off, in_off, mbx
@@ -367,73 +369,74 @@ def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars, eoe=
 
     # mailbox
     mbx = dev["mailbox"]
-    m = _sub(s, "Mailbox")
-    send = _sub(m, "Send")
-    _sub(send, "Start", mbx["send"][0])
-    _sub(send, "Length", mbx["send"][1])
-    recv = _sub(m, "Recv")
-    _sub(recv, "Start", mbx["recv"][0])
-    _sub(recv, "Length", mbx["recv"][1])
-    _sub(recv, "StatusBitAddr", lay["mbx_bit"])
-    if mbx["bootstrap"]:
-        b = _sub(m, "BootStrap")
-        bs = _sub(b, "Send")
-        _sub(bs, "Start", mbx["bootstrap"][0])
-        _sub(bs, "Length", mbx["bootstrap"][1])
-        br = _sub(b, "Recv")
-        _sub(br, "Start", mbx["bootstrap"][2])
-        _sub(br, "Length", mbx["bootstrap"][3])
-    for proto in mbx["protocols"]:
-        _sub(m, "Protocol", proto)
-    coe = mbx.get("coe")
-    if coe is not None:
-        ce = _sub(m, "CoE")
-        ic = _sub(ce, "InitCmds")
-        if coe["pdo_assign"]:
-            for index, direction in ((0x1C12, "rx"), (0x1C13, "tx")):
-                pdos = [p["index"] for p in dev["pdos"] if p["dir"] == direction]
-                c = _sub(ic, "InitCmd", **({"CompleteAccess": "1"} if pdos else {}))
-                _sub(c, "Transition", "PS")
-                _sub(c, "Comment", f"download pdo {index:#x} content" if pdos else f"clear sm pdos ({index:#x})")
+    if mbx is not None:
+        m = _sub(s, "Mailbox")
+        send = _sub(m, "Send")
+        _sub(send, "Start", mbx["send"][0])
+        _sub(send, "Length", mbx["send"][1])
+        recv = _sub(m, "Recv")
+        _sub(recv, "Start", mbx["recv"][0])
+        _sub(recv, "Length", mbx["recv"][1])
+        _sub(recv, "StatusBitAddr", lay["mbx_bit"])
+        if mbx["bootstrap"]:
+            b = _sub(m, "BootStrap")
+            bs = _sub(b, "Send")
+            _sub(bs, "Start", mbx["bootstrap"][0])
+            _sub(bs, "Length", mbx["bootstrap"][1])
+            br = _sub(b, "Recv")
+            _sub(br, "Start", mbx["bootstrap"][2])
+            _sub(br, "Length", mbx["bootstrap"][3])
+        for proto in mbx["protocols"]:
+            _sub(m, "Protocol", proto)
+        coe = mbx.get("coe")
+        if coe is not None:
+            ce = _sub(m, "CoE")
+            ic = _sub(ce, "InitCmds")
+            if coe["pdo_assign"]:
+                for index, direction in ((0x1C12, "rx"), (0x1C13, "tx")):
+                    pdos = [p["index"] for p in dev["pdos"] if p["dir"] == direction]
+                    c = _sub(ic, "InitCmd", **({"CompleteAccess": "1"} if pdos else {}))
+                    _sub(c, "Transition", "PS")
+                    _sub(c, "Comment", f"download pdo {index:#x} content" if pdos else f"clear sm pdos ({index:#x})")
+                    _sub(c, "Timeout", coe.get("timeout", 2000))
+                    _sub(c, "Ccs", 1)
+                    _sub(c, "Index", index)
+                    _sub(c, "SubIndex", 0)
+                    _sub(c, "Data", (le(len(pdos), 1) + "00" + "".join(le(x, 2) for x in pdos)) if pdos else "00")
+            for x in coe.get("init", []):
+                c = _sub(ic, "InitCmd", **({"CompleteAccess": "1"} if x.get("complete_access") else {}))
+                for tr in x["transitions"]:
+                    _sub(c, "Transition", tr)
+                _sub(c, "Comment", x.get("comment", ""))
                 _sub(c, "Timeout", coe.get("timeout", 2000))
                 _sub(c, "Ccs", 1)
-                _sub(c, "Index", index)
-                _sub(c, "SubIndex", 0)
-                _sub(c, "Data", (le(len(pdos), 1) + "00" + "".join(le(x, 2) for x in pdos)) if pdos else "00")
-        for x in coe.get("init", []):
-            c = _sub(ic, "InitCmd", **({"CompleteAccess": "1"} if x.get("complete_access") else {}))
-            for tr in x["transitions"]:
+                _sub(c, "Index", x["index"])
+                _sub(c, "SubIndex", x["subindex"])
+                _sub(c, "Data", x["data"])
+            if coe.get("profile_no") is not None:
+                pr = _sub(_sub(ce, "Profile"), "ChannelInfo")
+                _sub(pr, "ProfileNo", coe["profile_no"])
+        if mbx.get("soe") is not None:
+            ic = _sub(_sub(m, "SoE"), "InitCmds")
+            for x in soe_commands(dev, cycle_ns // 1000):
+                c = _sub(ic, "InitCmd")
+                for tr in x["transitions"]:
+                    _sub(c, "Transition", tr)
+                _sub(c, "Comment", x.get("comment", ""))
+                _sub(c, "Timeout", mbx["soe"].get("timeout", 2000))
+                _sub(c, "OpCode", 3)                     # write request
+                _sub(c, "DriveNo", x.get("drive", 0))
+                _sub(c, "IDN", x["idn"])
+                _sub(c, "Elements", 64)                  # the value
+                _sub(c, "Attribute", 0)
+                _sub(c, "Data", x["data"])
+        if "EoE" in mbx["protocols"] and eoe is not None:
+            c = _sub(_sub(_sub(m, "EoE"), "InitCmds"), "InitCmd", Fixed="1")
+            for tr in ("IP", "PS"):
                 _sub(c, "Transition", tr)
-            _sub(c, "Comment", x.get("comment", ""))
-            _sub(c, "Timeout", coe.get("timeout", 2000))
-            _sub(c, "Ccs", 1)
-            _sub(c, "Index", x["index"])
-            _sub(c, "SubIndex", x["subindex"])
-            _sub(c, "Data", x["data"])
-        if coe.get("profile_no") is not None:
-            pr = _sub(_sub(ce, "Profile"), "ChannelInfo")
-            _sub(pr, "ProfileNo", coe["profile_no"])
-    if mbx.get("soe") is not None:
-        ic = _sub(_sub(m, "SoE"), "InitCmds")
-        for x in soe_commands(dev, cycle_ns // 1000):
-            c = _sub(ic, "InitCmd")
-            for tr in x["transitions"]:
-                _sub(c, "Transition", tr)
-            _sub(c, "Comment", x.get("comment", ""))
-            _sub(c, "Timeout", mbx["soe"].get("timeout", 2000))
-            _sub(c, "OpCode", 3)                     # write request
-            _sub(c, "DriveNo", x.get("drive", 0))
-            _sub(c, "IDN", x["idn"])
-            _sub(c, "Elements", 64)                  # the value
-            _sub(c, "Attribute", 0)
-            _sub(c, "Data", x["data"])
-    if "EoE" in mbx["protocols"] and eoe is not None:
-        c = _sub(_sub(_sub(m, "EoE"), "InitCmds"), "InitCmd", Fixed="1")
-        for tr in ("IP", "PS"):
-            _sub(c, "Transition", tr)
-        _sub(c, "Comment", "eoe init")
-        _sub(c, "Timeout", 0)
-        _sub(c, "Data", _eoe_ip(dev["name"], phys, eoe))
+            _sub(c, "Comment", "eoe init")
+            _sub(c, "Timeout", 0)
+            _sub(c, "Data", _eoe_ip(dev["name"], phys, eoe))
 
     # state machine
     ic = _sub(s, "InitCmds")
@@ -455,7 +458,8 @@ def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars, eoe=
         if dev.get("esc"):                       # devices whose ESI sets ESC registers (seen: ctrlX DRIVE)
             _cmd(ic, "PS", "set DC latch cfg", FPWR, phys, 0x9A8, "0000")
     zero8 = "0" * 16
-    mbx_sms = [(0, "mailbox out", mbx["send"], 0x26), (1, "mailbox in", mbx["recv"], 0x22)]
+    op_only = []                                 # (label, activation register) switched on only in SafeOp->Op
+    mbx_sms = [(0, "mailbox out", mbx["send"], 0x26), (1, "mailbox in", mbx["recv"], 0x22)] if mbx else []
     sm_by_type = {sm["type"]: sm for sm in dev["sm"]}
     for no, label, (start, size), control in mbx_sms:
         control = sm_by_type.get("MBoxOut" if no == 0 else "MBoxIn", {}).get("control", control)
@@ -468,19 +472,27 @@ def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars, eoe=
         size = lay["out_size"] if sm["type"] == "Outputs" else lay["in_size"]
         ado = SM_BASE + 8 * sm["no"]
         _cmd(ic, "IP,SP,SI,OP,OI", f'clear sm {sm["no"]} ({label})', FPWR, phys, ado, zero8)
+        active = sm["enable"] and size > 0
+        # OpOnly (ETG.2000): set up in PreOp->SafeOp but inactive, activated in SafeOp->Op, deactivated on the way back
         _cmd(ic, "PS", f'set sm {sm["no"]} ({label})', FPWR, phys, ado,
-             _sm_data(sm["start"], size, sm["control"], sm["enable"] and size > 0), cnt=1, requires=False)
-    fmmus = dev["fmmu"] or ["Outputs", "Inputs", "MBoxState"]
-    process_fmmus = []
+             _sm_data(sm["start"], size, sm["control"], active and not sm.get("op_only")), cnt=1, requires=False)
+        if active and sm.get("op_only"):
+            op_only.append((f'sm {sm["no"]} ({label})', ado + 6))
+    fmmus = dev["fmmu"] or (["Outputs", "Inputs", "MBoxState"] if mbx else ["Outputs", "Inputs"])
+    fmmu_op_only = dev.get("fmmu_op_only") or []
+    process_fmmus, mbx_fmmu = [], None
     for i, kind in enumerate(fmmus):
         if kind in ("Outputs", "Inputs"):
             sm = sm_by_type.get(kind)
             size = lay["out_size"] if kind == "Outputs" else lay["in_size"]
             logical = (LOGICAL_OUTPUTS + lay["out_off"]) if kind == "Outputs" else (LOGICAL_INPUTS + lay["in_off"])
-            data = _fmmu_data(logical, size, sm["start"] if sm else 0, 2 if kind == "Outputs" else 1, size > 0)
+            late = size > 0 and i < len(fmmu_op_only) and fmmu_op_only[i]
+            data = _fmmu_data(logical, size, sm["start"] if sm else 0, 2 if kind == "Outputs" else 1, size > 0 and not late)
             _cmd(ic, "PS", f"set fmmu {i}({kind.lower()})", FPWR, phys, FMMU_BASE + 16 * i, data, cnt=1, requires=False)
+            if late:
+                op_only.append((f"fmmu {i}({kind.lower()})", FMMU_BASE + 16 * i + 12))
             process_fmmus.append(i)
-        elif kind == "MBoxState":
+        elif kind == "MBoxState" and mbx:
             bit = lay["mbx_bit"]
             data = _fmmu_data(LOGICAL_MAILBOX_STATE + bit // 8, 1, SM_BASE + 8 + 5, 1, True, bit % 8, bit % 8)
             _cmd(ic, "IP,IB", f"set fmmu {i}(mailbox state)", FPWR, phys, FMMU_BASE + 16 * i, data, cnt=1, requires=False)
@@ -489,7 +501,7 @@ def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars, eoe=
         _cmd(ic, "IP", "set PDI divider", FPWR, phys, 0x400, le(dev["esc"]["0400"], 2), cnt=1, requires=False)
     if "0420" in dev.get("esc", {}):
         _cmd(ic, "IP", "set SM watchdog", FPWR, phys, 0x420, le(dev["esc"]["0420"], 2), cnt=1, requires=False)
-    if mbx["bootstrap"]:
+    if mbx and mbx["bootstrap"]:
         for no, label, (start, size) in ((0, "bootstrap out", mbx["bootstrap"][0:2]), (1, "bootstrap in", mbx["bootstrap"][2:4])):
             control = sm_by_type.get("MBoxOut" if no == 0 else "MBoxIn", {}).get("control", 0x26 if no == 0 else 0x22)
             _cmd(ic, "IB", f"set sm {no} ({label})", FPWR, phys, SM_BASE + 8 * no, _sm_data(start, size, control, True),
@@ -503,19 +515,22 @@ def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars, eoe=
     _cmd(ic, "IP", "check device state for preop", FPRD, phys, AL_STATUS, state6,
          validate=("020000000000", "1F0000000000", t["preop"]))
     _cmd(ic, "IP,BI", "assign EEPROM back to ECAT", APWR, -pos, EEPROM_CONFIG, "00")
-    if mbx["bootstrap"]:
+    if mbx and mbx["bootstrap"]:
         _cmd(ic, "IB", "set device state to BOOT", FPWR, phys, AL_CONTROL, "1300", cnt=1)
         _cmd(ic, "IB", "check device state to BOOT", FPRD, phys, AL_STATUS, state6, cnt=1,
              validate=("030000000000", "1F0000000000", t["preop"]))
     _cmd(ic, "OS", "set device state to SAFEOP", FPWR, phys, AL_CONTROL, "0400")
     _cmd(ic, "PS", "set device state to SAFEOP", FPWR, phys, AL_CONTROL, "0400", cnt=1)
-    for i in sorted(process_fmmus + [mbx_fmmu]):             # in FMMU order
+    for i in sorted(process_fmmus + ([mbx_fmmu] if mbx_fmmu is not None else [])):     # in FMMU order
         transitions = "PI,BI,SI,OI" if i == mbx_fmmu else "SP,SI,OP,OI"
         _cmd(ic, transitions, f"clear fmmu {i}", FPWR, phys, FMMU_BASE + 16 * i, "0" * 32, requires=False)
     _cmd(ic, "PS", "check device state for SAFEOP", FPRD, phys, AL_STATUS, state6, cnt=1,
          validate=("040000000000", "1F0000000000", t["safeop_op"]))
     _cmd(ic, "OS", "check device state for SAFEOP", FPRD, phys, AL_STATUS, state6,
          validate=("040000000000", "1F0000000000", t["back_to_safeop"]))
+    for label, ado in op_only:
+        _cmd(ic, "SO", f"activate {label}", FPWR, phys, ado, "01", cnt=1, requires=False)
+        _cmd(ic, "OS", f"deactivate {label}", FPWR, phys, ado, "00", requires=False)
     _cmd(ic, "SO", "set device state to OP", FPWR, phys, AL_CONTROL, "0800", cnt=1)
     _cmd(ic, "SO", "check device state to OP", FPRD, phys, AL_STATUS, state6, cnt=1,
          validate=("080000000000", "1F0000000000", t["safeop_op"]))

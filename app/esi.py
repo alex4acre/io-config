@@ -116,7 +116,7 @@ def parse_device(path: str, vendor: int, product: int, revision: int) -> dict:
             for i, sm in enumerate(dev.findall("Sm")):
                 sms.append({"no": i, "type": (sm.text or "").strip(), "start": num(sm.get("StartAddress"), 0),
                             "size": num(sm.get("DefaultSize"), 0), "control": num(sm.get("ControlByte"), 0),
-                            "enable": flag(sm.get("Enable"))})
+                            "enable": flag(sm.get("Enable")), "op_only": flag(sm.get("OpOnly"))})
             dc_modes = [{"name": (m.findtext("Name") or "").strip(), "desc": (m.findtext("Desc") or "").strip(),
                          "assign_activate": num(m.findtext("AssignActivate"), 0),
                          "shift_sync0": num(m.findtext("ShiftTimeSync0"), 0)} for m in dev.findall("Dc/OpMode")]
@@ -139,6 +139,7 @@ def parse_device(path: str, vendor: int, product: int, revision: int) -> dict:
                 "timeouts": timeouts,
                 "mailbox_timeout": num(dev.findtext("Info/Mailbox/Timeout/ResponseTimeout"), 2000),
                 "fmmu": [(f.text or "").strip() for f in dev.findall("Fmmu")],
+                "fmmu_op_only": [flag(f.get("OpOnly")) for f in dev.findall("Fmmu")],
                 "bootstrap": bytes.fromhex(bootstrap) if len(bootstrap) == 16 else None,
                 "pdo_assign": coe is not None and flag(coe.get("PdoAssign")),
                 "profile_no": num(dev.findtext("Profile/ProfileNo")),
