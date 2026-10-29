@@ -288,8 +288,10 @@ function renderConfig(s) {
   const d = s.download;
   $("dl").hidden = !d.running && !d.finished;
   if (!$("dl").hidden) {
-    $("dl-title").textContent = d.running ? "Writing to the EtherCAT master ..." :
-      (d.error ? "Writing failed" : "Written");
+    const a = s.activation;                  // this write is the activation of a saved configuration?
+    const act = a.state === "running" ? ` - activating "${a.name}"` :
+      (a.finished && d.finished && Math.abs(a.finished - d.finished) < 1 ? ` - activation of "${a.name}"` : "");
+    $("dl-title").textContent = (d.running ? "Writing to the EtherCAT master ..." : (d.error ? "Writing failed" : "Written")) + act;
     const ul = $("dl-steps");
     ul.replaceChildren(...d.steps.map((t) => el("li", { class: "ok" }, t)));
     if (d.error) ul.append(el("li", { class: "error" }, d.error));
@@ -299,6 +301,7 @@ function renderConfig(s) {
     plan = null;
     $("plan").hidden = true;
     loadBackups();
+    if ($("saved-box").open) loadSaved();
   }
 }
 
@@ -403,6 +406,65 @@ async function loadBackups() {
 }
 
 $("backups-box").ontoggle = () => { if ($("backups-box").open) loadBackups(); };
+
+// --- saved configurations ---------------------------------------------------------------------------
+
+async function loadSaved() {
+  try {
+    const r = await api("GET", "/saved");
+    const tb = $("saved").tBodies[0];
+    tb.replaceChildren();
+    if (!r.configurations.length) row(tb, [el("span", { class: "muted" }, "none yet"), "", "", "", ""]);
+    for (const c of r.configurations) {
+      const activate = el("button", { class: "small" }, "Activate");
+      activate.onclick = async () => {
+        if (!confirm(`Activate the saved configuration "${c.name}"?\n\n` + WRITE_WARNING)) return;
+        try {
+          banner("");
+          await api("POST", `/saved/${encodeURIComponent(c.name)}/activate`);
+          poll();
+        } catch (e) {
+          banner(e.message);
+        }
+      };
+      const get = el("button", { class: "small" }, "ENI");
+      get.onclick = () => getFile(`/saved/${encodeURIComponent(c.name)}/eni`, `${c.name}-ethercat.xml`);
+      const del = el("button", { class: "small" }, "Delete");
+      del.onclick = async () => {
+        if (!confirm(`Delete the saved configuration "${c.name}"?`)) return;
+        try {
+          await api("DELETE", `/saved/${encodeURIComponent(c.name)}`);
+          loadSaved();
+        } catch (e) {
+          banner(e.message);
+        }
+      };
+      row(tb, [c.name, new Date(c.time * 1000).toLocaleString(), c.devices.join(", "),
+        c.active ? el("span", { class: "badge ok" }, "running") : "", el("span", {}, activate, " ", get, " ", del)]);
+    }
+  } catch (e) {
+    banner(e.message);
+  }
+}
+
+async function saveCurrent(overwrite) {
+  const name = $("save-name").value.trim();
+  if (!name) { banner("Enter a name first"); return; }
+  try {
+    banner("");
+    await api("POST", "/saved", { name, overwrite });
+    $("save-name").value = "";
+    banner(`Saved the running configuration as "${name}".`, true);
+    loadSaved();
+  } catch (e) {
+    if (!overwrite && e.message.includes("saved already") && confirm(`"${name}" exists. Replace it?`)) saveCurrent(true);
+    else banner(e.message);
+  }
+}
+
+$("saved-box").ontoggle = () => { if ($("saved-box").open) loadSaved(); };
+$("save-current").onclick = () => saveCurrent(false);
+$("save-name").onkeydown = (ev) => { if (ev.key === "Enter") saveCurrent(false); };
 
 // --- writes switch ----------------------------------------------------------------------------------
 

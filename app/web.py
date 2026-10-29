@@ -53,6 +53,11 @@ ROUTES = [
     ("GET", r"/backups", "get_backups"),
     ("GET", r"/backups/(\d{8}-\d{6})/(eni|ini)", "get_backup_file"),
     ("POST", r"/backups/(\d{8}-\d{6})/restore", "post_restore"),
+    ("GET", r"/saved", "get_saved"),
+    ("POST", r"/saved", "post_saved"),
+    ("DELETE", r"/saved/([^/]+)", "delete_saved"),
+    ("GET", r"/saved/([^/]+)/(eni|ini)", "get_saved_file"),
+    ("POST", r"/saved/([^/]+)/activate", "post_activate"),
     ("GET", r"/esi", "get_esi"),
     ("POST", r"/esi", "post_esi"),
     ("DELETE", r"/esi/([^/]+)", "delete_esi"),
@@ -308,6 +313,28 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         if d.get("confirm") is not True:
             raise HttpError(400, '{"confirm": true} is needed')
         self.send_json(202, core.start_restore(name))
+
+    # --- saved configurations ------------------------------------------------------------------------
+
+    def get_saved(self):
+        self.send_json(200, {"configurations": core.saved(), "activation": core.activation})
+
+    def post_saved(self):
+        d = self.read_json()
+        if not isinstance(d.get("name"), str):
+            raise HttpError(400, '{"name": ..., "overwrite": false} is needed')
+        self.send_json(201, core.save_current(d["name"].strip(), overwrite=d.get("overwrite") is True))
+
+    def delete_saved(self, name):
+        core.delete_saved(name)
+        self.send_json(200, {"deleted": name})
+
+    def get_saved_file(self, name, which):
+        file = "ethercat.xml" if which == "eni" else "ethercat.ini"
+        self.send_file(core.saved_file(name, which), f"{name}-{file}", "application/xml" if which == "eni" else "text/plain")
+
+    def post_activate(self, name):
+        self.send_json(202, core.start_activate(name))
 
     # --- ESI library -------------------------------------------------------------------------------
 

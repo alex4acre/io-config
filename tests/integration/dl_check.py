@@ -223,6 +223,7 @@ def main():
             check(False, "a request the type doesn't know raises")
         except BusError as e:
             check(True, f"a request the type doesn't know raises ({e})")
+        nodes_check(provider, bus)
     finally:
         bus.close()
         for name in methods:
@@ -234,6 +235,43 @@ def main():
         system.stop(True)
     print("FAILED: " + "; ".join(failures) if failures else "ALL OK", flush=True)
     return 1 if failures else 0
+
+
+def nodes_check(provider, bus):
+    """The app's own nodes (app/provider.py) read and written through a client, as a PLC would."""
+    from app.provider import NodeRegistry
+
+    class Core:                                       # what NodeRegistry uses of app.core.Core
+        activation = {"state": "idle", "name": "", "error": "", "started": None, "finished": None}
+        started = []
+
+        def saved(self):
+            return [{"name": "Line A"}, {"name": "Line B"}]
+
+        def start_activate(self, name):
+            if name not in ("Line A", "Line B"):
+                raise KeyError(f"no saved configuration {name}")
+            self.started.append(name)
+            self.activation = dict(self.activation, state="running", name=name)
+
+    core = Core()
+    reg = NodeRegistry(provider, core, log=lambda m: None)
+    reg.register()
+    try:
+        check(json.loads(bus.read("io-config/configurations")) == ["Line A", "Line B"], "configurations node lists the names")
+        check(bus.read("io-config/activation/state") == "idle", "activation/state reads idle")
+        bus.write("io-config/activate", "Line B")
+        check(core.started == ["Line B"] and bus.read("io-config/activation/state") == "running" and
+              bus.read("io-config/activation/name") == "Line B", "writing a name to activate starts it")
+        check(bus.read("io-config/activate") == "started Line B", "activate reads the result of the last write")
+        try:
+            bus.write("io-config/activate", "nothing")
+            check(False, "an unknown name is refused")
+        except BusError as e:
+            check(bus.read("io-config/activate").startswith("error: ") and core.started == ["Line B"],
+                  f"an unknown name is refused ({e})")
+    finally:
+        reg.clear()
 
 
 if __name__ == "__main__":

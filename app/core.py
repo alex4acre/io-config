@@ -31,6 +31,7 @@ INSTANCES = "fieldbuses/ethercat/master/instances"
 EEPROM_CHUNK_WORDS = 64
 EEPROM_MAX_WORDS = 8192
 MAX_BACKUPS = 20
+SAVED_NAME = re.compile(r"[A-Za-z0-9_\-][A-Za-z0-9 _.\-]{0,63}")
 
 
 
@@ -81,6 +82,8 @@ class Core:
         # the active configuration: io-config/config.json is in it, and the master's files too
         self.active_dir = os.path.dirname(os.path.dirname(os.path.abspath(config_path)))
         self.backup_dir = os.path.join(os.path.dirname(os.path.abspath(config_path)), "backups")
+        self.saved_dir = os.path.join(os.path.dirname(os.path.abspath(config_path)), "saved")
+        self.activation = {"state": "idle", "name": "", "error": "", "started": None, "finished": None}
         self.edits_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "edits.json")
         self.od_cache = {}           # (position, identity) -> object list
 
@@ -142,6 +145,7 @@ class Core:
                 "instance": self.config["instance"],
                 "scan": dict(self.scan_state),
                 "download": dict(self.download_state, steps=list(self.download_state["steps"])),
+                "activation": dict(self.activation),
                 "master": self.master,
                 "devices": [self._summary(d) for d in self.devices],
                 "esi": self.esi.summary(),
@@ -363,29 +367,131 @@ class Core:
             self._thread.start()
             return dict(self.download_state)
 
-    def _download_thread(self, eni_bytes, ini_bytes, what):
+    def _download_thread(self, eni_bytes, ini_bytes, what, fresh=False, after=None):
+        """fresh: back up what the master runs right now instead of checking it against the last scan (activation
+        of a saved configuration, also without a scan); after(): run once the configuration is written."""
         base = f'{INSTANCES}/{self.config["instance"]}/'
         error = None
         steps = self.download_state["steps"]
         try:
-            # never overwrite a configuration someone else downloaded since the last scan
-            sums = {c["id"]: c["checksum"] for c in
-                    self.bus.read(base + "admin/fieldbus_config/checksum").get("response", {}).get("checksums", [])}
-            if self.current and self.current["eni"] and sums.get("eniCrc32") != generate.checksum(self.current["eni"]):
-                raise configure.DownloadError("the master's configuration changed since the last scan; scan again")
-            if self.current and self.current["eni"]:
-                steps.append(f'backup {self._backup(self.current["eni"], self.current["ini"], what)}')
+            if fresh:
+                cfg = self.bus.read(base + "admin/fieldbus_config").get("response", {})
+                running = {"eni": _bytes(cfg.get("eni")), "ini": _bytes(cfg.get("ini"))}
+            else:
+                # never overwrite a configuration someone else downloaded since the last scan
+                sums = {c["id"]: c["checksum"] for c in
+                        self.bus.read(base + "admin/fieldbus_config/checksum").get("response", {}).get("checksums", [])}
+                if self.current and self.current["eni"] and sums.get("eniCrc32") != generate.checksum(self.current["eni"]):
+                    raise configure.DownloadError("the master's configuration changed since the last scan; scan again")
+                running = self.current or {}
+            if running.get("eni"):
+                steps.append(f'backup {self._backup(running["eni"], running["ini"], what)}')
             folder = os.path.join(self.active_dir, "comm.ethercat.master", "config", self.config["instance"])
             steps += configure.write_config(self.bus, base, eni_bytes, ini_bytes,
                                             (os.path.join(folder, "ethercat.xml"), os.path.join(folder, "ethercat.ini")),
                                             self.log)
+            if after:
+                steps.append(after())
         except Exception as e:
             error = str(e)
             self.log(f"{what} failed: {e}")
         with self.lock:
             self.download_state = {"running": False, "steps": steps, "finished": time.time(), "error": error}
             self.plan_data = None
+            if what.startswith("activate "):
+                self.activation.update(state="error" if error else "done", error=error or "", finished=time.time())
         self.start_scan()
+
+    # --- saved configurations (io-config/saved/<name>/ in the active configuration) -------------------
+
+    def _saved_folder(self, name: str, exists=True) -> str:
+        if not isinstance(name, str) or not SAVED_NAME.fullmatch(name):
+            raise ConfigError("a name has 1 to 64 letters, digits, spaces, '-', '_' or '.', and doesn't start with '.' or a space")
+        folder = os.path.join(self.saved_dir, name)
+        if exists and not os.path.isfile(os.path.join(folder, "ethercat.xml")):
+            raise KeyError(f"no saved configuration {name}")
+        return folder
+
+    def saved(self) -> list:
+        """The saved configurations, newest first; "active": the master runs that ENI (as of the last scan)."""
+        running = (self.current or {}).get("eni")
+        out = []
+        try:
+            names = os.listdir(self.saved_dir)
+        except FileNotFoundError:
+            return []
+        for name in names:
+            folder = os.path.join(self.saved_dir, name)
+            try:
+                with open(os.path.join(folder, "info.json"), encoding="utf-8") as f:
+                    info = json.load(f)
+                with open(os.path.join(folder, "ethercat.xml"), "rb") as f:
+                    same = running is not None and f.read() == running
+            except (OSError, ValueError):
+                continue
+            out.append({"name": name, "time": info.get("time"), "devices": info.get("devices", []),
+                        "edits": info.get("edits", 0), "active": same})
+        return sorted(out, key=lambda x: x["time"] or 0, reverse=True)
+
+    def save_current(self, name: str, overwrite=False) -> dict:
+        """Saves what the master runs now (read from it, not from the last scan) and the app's edits."""
+        folder = self._saved_folder(name, exists=False)
+        if os.path.exists(folder) and not overwrite:
+            raise ConfigError(f'a configuration named "{name}" is saved already')
+        cfg = self.bus.read(f'{INSTANCES}/{self.config["instance"]}/admin/fieldbus_config').get("response", {})
+        eni_bytes, ini_bytes = _bytes(cfg.get("eni")), _bytes(cfg.get("ini"))
+        if not eni_bytes:
+            raise ConfigError("the EtherCAT master runs no configuration (no ENI)")
+        all_edits = self.load_edits()
+        tmp = folder + ".tmp"
+        shutil.rmtree(tmp, ignore_errors=True)
+        os.makedirs(tmp)
+        for file, data in (("ethercat.xml", eni_bytes), ("ethercat.ini", ini_bytes)):
+            with open(os.path.join(tmp, file), "wb") as f:
+                f.write(data)
+        with open(os.path.join(tmp, "edits.json"), "w", encoding="utf-8") as f:
+            json.dump({str(k): v for k, v in sorted(all_edits.items())}, f, indent=2)
+        with open(os.path.join(tmp, "info.json"), "w", encoding="utf-8") as f:
+            json.dump({"time": time.time(), "edits": len(all_edits),
+                       "devices": [s["name"] for s in eni.parse_eni(eni_bytes)["slaves"]]}, f)
+        shutil.rmtree(folder, ignore_errors=True)
+        os.replace(tmp, folder)
+        return next(x for x in self.saved() if x["name"] == name)
+
+    def delete_saved(self, name: str):
+        shutil.rmtree(self._saved_folder(name))
+
+    def saved_file(self, name: str, which: str) -> bytes:
+        with open(os.path.join(self._saved_folder(name), "ethercat.xml" if which == "eni" else "ethercat.ini"), "rb") as f:
+            return f.read()
+
+    def start_activate(self, name: str) -> dict:
+        """Writes a saved configuration to the master (after a backup of the running one) and brings back the edits
+        saved with it. Works without a scan (REST / Data Layer); waits for a scan that is running."""
+        folder = self._saved_folder(name)
+        eni_bytes = self.saved_file(name, "eni")
+        ini_bytes = self.saved_file(name, "ini")
+        with open(os.path.join(folder, "edits.json"), encoding="utf-8") as f:
+            saved_edits = json.load(f)
+
+        def restore_edits():
+            self._save_edits({int(k): v for k, v in saved_edits.items()})
+            return f"edits of {name} restored ({len(saved_edits)})"
+
+        def run():
+            end = time.time() + 120
+            while self.scan_state["running"] and time.time() < end:
+                time.sleep(0.2)
+            self._download_thread(eni_bytes, ini_bytes, f"activate {name}", fresh=True, after=restore_edits)
+
+        with self.lock:
+            if self.download_state["running"]:
+                raise ConfigError("a configuration is being written already")
+            self.download_state = {"running": True, "steps": [], "finished": None, "error": None}
+            self.activation = {"state": "running", "name": name, "error": "", "started": time.time(), "finished": None}
+            self._thread = threading.Thread(target=run, name="activate", daemon=True)
+            self._thread.start()
+            return dict(self.activation)
 
     # --- the user's edits per position (io-config/edits.json in the active configuration) -------------
 

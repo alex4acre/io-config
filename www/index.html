@@ -207,6 +207,19 @@
         <h3 id="dl-title"></h3>
         <ul id="dl-steps" class="findings"></ul>
       </div>
+      <details id="saved-box">
+        <summary>Saved configurations</summary>
+        <p class="hint">Saves the configuration the master runs now, with this app's settings (names, PDOs, telegrams,
+          startup parameters). "Activate" writes it back (the current one is backed up first; the bus stops briefly).
+          Also by REST (<code>POST api/v1/saved/&lt;name&gt;/activate</code>) or the Data Layer (write the name to
+          <code>io-config/activate</code>, state in <code>io-config/activation/state</code>).</p>
+        <div class="row">
+          <input id="save-name" type="text" maxlength="64" placeholder="Name, e.g. Line A">
+          <button id="save-current">Save current configuration</button>
+        </div>
+        <div class="scroll"><table id="saved"><thead><tr><th>Name</th><th>Saved</th><th>Devices</th><th></th><th></th></tr></thead>
+          <tbody></tbody></table></div>
+      </details>
       <details id="backups-box">
         <summary>Backups (configurations replaced by this app)</summary>
         <div class="scroll"><table id="backups"><thead><tr><th>Saved</th><th>Before</th><th>Devices</th><th></th></tr></thead>

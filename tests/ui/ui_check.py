@@ -122,6 +122,20 @@ try:
     check(until("document.querySelectorAll('#backups tbody tr button').length === 2"), "one backup listed")
     shot("written")
 
+    # saved configurations: save the running one, activate it again
+    js("document.getElementById('saved-box').open = true;")
+    check(until("document.querySelector('#saved tbody').textContent.includes('none yet')"), "no saved configurations yet")
+    js("document.getElementById('save-name').value = 'Line A'; document.getElementById('save-current').click();")
+    check(until("document.querySelector('#saved tbody tr') && document.querySelector('#saved tbody tr').cells[0].textContent === 'Line A'"),
+          "Line A saved and listed")
+    check(js("return document.querySelector('#saved tbody tr').cells[3].textContent") == "running", "Line A is the running one")
+    js("""window.confirm = () => true;
+          [...document.querySelectorAll('#saved tbody tr button')].find(b => b.textContent === 'Activate').click();""")
+    check(until("document.getElementById('dl-title').textContent === 'Written - activation of \"Line A\"'", 30),
+          f"Line A activated: {text('dl-title')}")
+    check(until("document.getElementById('m-cycle').textContent === '1000 µs'", 20), "rescan after the activation")
+    shot("saved")
+
     # editor: XI422202 -> compact state PDO, rename, a startup parameter from the objects view
     js("document.querySelectorAll('#devices tbody tr')[2].click();")
     check(until("document.getElementById('d-title').textContent === '2: XI422202'"), "detail of XI422202 again")
