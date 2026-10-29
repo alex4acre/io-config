@@ -33,6 +33,11 @@ EEPROM_MAX_WORDS = 8192
 MAX_BACKUPS = 20
 
 
+
+def _identity(online: dict) -> list:
+    info = (online or {}).get("response", {}).get("slaveIdentity", {})
+    return [info.get("vendorId"), info.get("productCode")]
+
 class ConfigError(ValueError):
     pass
 
@@ -193,6 +198,7 @@ class Core:
             with self.lock:
                 self.master, self.devices, self.sources, self.current = master, devices, sources, current
                 self.plan_data = None
+                self._follow_edits()
         except Exception as e:      # shown in the UI; the last good scan stays
             error = str(e)
             self.log(f"scan failed: {e}")
@@ -228,14 +234,23 @@ class Core:
             master["eni_error"] = str(e)
         cycle = master["ini"].get("EtherCAT.Master", {}).get("CycleTimeUs")
         master["cycle_us"] = int(cycle) if cycle and cycle.isdigit() else None
-        eni_slaves = {s["position"]: s for s in (config or {}).get("slaves", [])}
+        configured_slaves = sorted((config or {}).get("slaves", []), key=lambda s: s["position"])
 
-        devices, sources = [], []
-        master_op = master["state"] == "op"
+        onlines = []
         for pos in range(connected):
             self._progress(f"device {pos + 1} of {connected}")
             address = {"addressType": "autoincrement", "address": (-pos) & 0xFFFF}
-            online = self.bus.read_args(base + "device_access/slave_online_info", {"request": address})
+            onlines.append(self.bus.read_args(base + "device_access/slave_online_info", {"request": address}))
+        # the running configuration's device for each position: same type, in bus order (not the same position,
+        # so a device inserted before others doesn't make them lose their settings)
+        bus_ids = [_identity(o) for o in onlines]
+        paired = configure.pair_in_order([[s["vendor"], s["product"]] for s in configured_slaves], bus_ids)
+        eni_slaves = {paired[k]: s for k, s in enumerate(configured_slaves) if k in paired}
+
+        devices, sources = [], []
+        master_op = master["state"] == "op"
+        for pos, online in enumerate(onlines):
+            address = {"addressType": "autoincrement", "address": (-pos) & 0xFFFF}
             identity = online.get("response", {}).get("slaveIdentity", {})
             key = (pos, identity.get("vendorId"), identity.get("productCode"), identity.get("revisionNumber"),
                    identity.get("serialNumber"))
@@ -255,8 +270,12 @@ class Core:
                     sources[-1]["soe_dict"] = self.esi.dictionary(device["dictionary"])
                 except KeyError as e:
                     self.log(str(e))
-        for pos in sorted(p for p in eni_slaves if p >= connected):
-            devices.append(self._report(pos, None, None, None, eni_slaves[pos], master_op)[0])
+        missing = [s for k, s in enumerate(configured_slaves) if k not in paired]
+        for n, s in enumerate(missing):                   # configured but not on the bus: listed after the bus
+            report = self._report(connected + n, None, None, None, s, master_op)[0]
+            if s["position"] != connected + n:
+                report["findings"].insert(0, {"level": "info", "text": f'Configured at position {s["position"]}'})
+            devices.append(report)
         return master, devices, sources, {"eni": eni_bytes, "ini": ini_bytes, "parsed": config}
 
     def _read_eeprom(self, base: str, address: dict) -> list:
@@ -388,6 +407,28 @@ class Core:
             json.dump({str(k): v for k, v in sorted(data.items())}, f, indent=2)
         os.replace(tmp, self.edits_path)
 
+    def _bus_ids(self) -> list:
+        return [_identity(s["online"]) for s in self.sources]
+
+    def _follow_edits(self):
+        """After a scan: move saved edits with their device when devices were inserted or removed before it.
+        Each edit keeps the bus it was made for ("bus"); edits saved before 1.3.4 have none and stay put."""
+        all_edits = self.load_edits()
+        now = self._bus_ids()
+        moved, changed = {}, False
+        for pos, edit in sorted(all_edits.items()):
+            target = pos
+            if edit.get("bus") is not None and edit["bus"] != now:
+                target = configure.pair_in_order(edit["bus"], now).get(pos)
+                changed = True
+                if target is None or target in moved:
+                    self.log(f"the saved edit of position {pos} has no device any more; dropped")
+                    continue
+                edit = dict(edit, bus=now)
+            moved[target] = edit
+        if changed:
+            self._save_edits(moved)
+
     def _source(self, position: int) -> dict:
         for s in self.sources:
             if s["pos"] == position:
@@ -438,7 +479,7 @@ class Core:
             merged.update({k: v for k, v in change.items() if k in ("name", "pdos", "startup", "soe_mdt", "soe_at")})
             checked = edits.validate(src, merged)
             configure.device_for(src, {position: checked})          # raises EditError if it can't be applied
-            all_edits[position] = checked
+            all_edits[position] = dict(checked, bus=self._bus_ids())
             self._save_edits(all_edits)
             self.plan_data = None
         return self.edit_options(position)

@@ -29,6 +29,27 @@ class DownloadError(Exception):
     pass
 
 
+
+def pair_in_order(old: list, new: list) -> dict:
+    """Index in old -> index in new for the devices that are the same (equal identities, e.g. [vendor, product]),
+    keeping the bus order: the longest common subsequence. A device inserted into or removed from the middle of
+    the bus then leaves the devices behind it paired with themselves instead of with their neighbours."""
+    n, m = len(old), len(new)
+    best = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n - 1, -1, -1):
+        for j in range(m - 1, -1, -1):
+            best[i][j] = best[i + 1][j + 1] + 1 if old[i] == new[j] else max(best[i + 1][j], best[i][j + 1])
+    out, i, j = {}, 0, 0
+    while i < n and j < m:
+        if old[i] == new[j]:
+            out[i] = j
+            i, j = i + 1, j + 1
+        elif best[i + 1][j] >= best[i][j + 1]:
+            i += 1
+        else:
+            j += 1
+    return out
+
 def _variables(parsed) -> dict:
     out = {}
     for s in (parsed or {}).get("slaves", []):
