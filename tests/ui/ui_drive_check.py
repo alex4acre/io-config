@@ -86,6 +86,7 @@ try:
     check(until("document.getElementById('d-title').textContent.startsWith('4:')"), "drive detail opens")
     check(js("return document.getElementById('d-objects').hidden && !document.getElementById('d-soe').hidden"),
           "SoE button shown, CoE button hidden")
+    check(js("return !document.getElementById('d-startup').hidden"), "drive keeps the Startup tab (SoE)")
 
     js("document.getElementById('d-soe').click();")
     check(until("document.querySelectorAll('#s-list tbody tr').length > 100", 15), "SoE parameter list loads")

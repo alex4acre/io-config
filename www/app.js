@@ -251,9 +251,12 @@ async function openDevice(pos) {
     $("d-writable").checked = false;            // writing is allowed per device, never carried over
   }
   const protocols = d.sources.eeprom.mailbox || [];
-  $("d-objects").hidden = !d.present || (protocols.length > 0 && !protocols.includes("CoE"));
+  const known = d.sources.eeprom.match === "read" || protocols.length > 0;   // EEPROM read: its mailbox protocols count
+  $("d-objects").hidden = !d.present || (known && !protocols.includes("CoE"));
   $("d-soe").hidden = !d.present || !protocols.includes("SoE");
-  for (const id of ["d-edit", "d-startup"]) $(id).hidden = !d.present;
+  $("d-edit").hidden = !d.present;
+  // startup parameters go through the CoE or SoE mailbox: none for devices without one (XI190202, XI112108, ...)
+  $("d-startup").hidden = !d.present || (known && !protocols.includes("CoE") && !protocols.includes("SoE"));
   for (const tr of $("devices").tBodies[0].rows) tr.classList.toggle("selected", Number(tr.cells[0].textContent) === pos);
   $("detail").hidden = false;
   $("d-title").textContent = `${d.position}: ${d.name}`;

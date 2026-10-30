@@ -197,6 +197,8 @@ try:
     js("document.querySelectorAll('#devices tbody tr')[1].click();")
     check(until("document.getElementById('d-title').textContent.startsWith('1:') && "
                 "!document.getElementById('d-writable').checked"), "Writable is off for another device")
+    check(js("return document.getElementById('d-objects').hidden && document.getElementById('d-startup').hidden && "
+             "!document.getElementById('d-edit').hidden"), "XI190202 (FoE only): no Objects or Startup tab")
     js("document.getElementById('tab-bus').click();")
 
     js("document.getElementById('tab-esi').click();")
