@@ -78,7 +78,9 @@ class DriveEsiTest(unittest.TestCase):
             self.assertEqual((dev["mailbox"], dev["dictionary"]), (["EoE", "FoE", "SoE"], DICTIONARY))
             self.assertEqual([c["idn"] for c in dev["soe_init"]], [1, 2, 32, 33, 34, 27, 329, 26, 328])
             self.assertEqual(dev["dc_modes"][0]["shift_sync0"], 60000)
-            self.assertEqual(dev["slots"], [{"name": "FSoE Option", "min": 0, "max": 1}])
+            self.assertEqual([(x["name"], x["min"], x["max"], x["default"]) for x in dev["slots"]],
+                             [("FSoE Option", 0, 1, 780784)])
+            self.assertEqual(dev["modules"], {})          # its modules are in a separate module file: not built from modules
             self.assertEqual(len(lib.dictionary(DICTIONARY)), 1857)
 
 

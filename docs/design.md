@@ -155,7 +155,24 @@ visible.
    data first, 200 ms, per device). Saved configurations: running ENI+ini + edits under a name; activate by button,
    REST or Data Layer (io-config/activate, io-config/activation/*), the app's first own nodes; activation backs up,
    writes without a scan check and restores the edits. 1.4.0 installed on the X3, save/activate not yet tried there.
-10. **Next:** offline add from the ESI library, DC mode choice, devices without a mailbox, more than one frame, slots/modules.
+10. **Modular devices + DC mode (1.5.0, 2026-10-30):** an Elmo Titanium (CoE, 2 axes) behind a second XB-EC-12 got
+   no process data from 1.4.3: its ESI is a Modular Device Profile (ETG.5001) device, the process data is in
+   modules put into slots, the device-level PDOs (#x1701.., #x1B01..) are empty free-mapping containers without a
+   default sync manager, and the app had picked two of them (0 bytes). Read on the device: #xF030 = #xF050 =
+   [#x288110 safety, #x100 position, #x100 position], #xF000:01 = #x800, #x1600/#x1A00 empty (the master must
+   write the PDO contents, ESI PdoConfig="true"), #x1700/#x1B00 hold the safety module's 36 entries.
+   `app/modules.py`: slots + modules from the ESI (only modules defined in the ESI file itself; the ctrlX DRIVE's
+   FSoE option is in a separate module file, so it stays built as before), PDO/object indexes moved per slot
+   (DependOnSlot x SlotPdoIncrement) and slot group (DependOnSlotGroup x SlotGroupPdoIncrement /
+   SlotGroupIndexIncrement), PDO names prefixed with the slot name (two axes, same module, distinct variables).
+   ENI startup order (PS): #xF030 module list (complete access; empty slots at the end left out, like the
+   device's own list), clear #x1C12/#x1C13, each module PDO's entries (complete access when the ESI allows it,
+   else per subindex; placeholder-only PDOs such as the recorder skipped), the assignment, the modules' startup
+   commands (e.g. #x6060/#x6860 = 8). A running ENI's modules are read back from its #xF030; without one (the
+   1.4.3 file) the ESI defaults are used. Settings tab: module per slot, DC mode (ESI OpModes). No I/O
+   Engineering reference for a modular device yet: commands follow ETG.5001/ETG.2000; ask for one to compare.
+11. **Next:** offline add from the ESI library, more than one frame, free PDO mapping (editing PDO contents),
+   modules from separate module files (EtherCATModule, e.g. ctrlX DRIVE FSoE).
 
 ## Open questions
 

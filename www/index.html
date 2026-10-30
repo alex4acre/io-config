@@ -84,6 +84,17 @@
         <div class="row">
           <label class="check">Name <input id="e-name" type="text" maxlength="64"></label>
         </div>
+        <div id="e-modules-box" hidden>
+          <h3>Modules</h3>
+          <p class="hint">A modular device: its process data comes from the module in each slot (from its ESI). The
+            master writes the module list, the PDO contents and the modules' startup commands.</p>
+          <div class="scroll"><table id="e-modules"><thead><tr><th>Slot</th><th>Module</th><th></th></tr></thead>
+            <tbody></tbody></table></div>
+        </div>
+        <div id="e-dc-box" hidden>
+          <h3>Distributed clocks</h3>
+          <div class="row"><select id="e-dc"></select><span id="e-dc-desc" class="muted"></span></div>
+        </div>
         <h3>PDOs</h3>
         <p id="e-reason" class="hint"></p>
         <div class="scroll"><table id="e-pdos"><thead><tr><th>Use</th><th>Dir</th><th>Index</th><th>Name</th><th>Size</th>

@@ -72,13 +72,31 @@ def add_drive(nodes: dict, slaves: list, data_dir: str = DATA):
     nodes[MASTER + "admin/fieldbus_status/num_connected_slaves"] = {"response": {"numSlaves": len(slaves)}}
 
 
+def add_elmo(nodes: dict, slaves: list, data_dir: str = DATA):
+    """An Elmo Titanium (CoE, modular, tests/data/esi-elmo) at port C of the coupler, in Init: online info and
+    EEPROM are the ctrlX DRIVE's recording with the Elmo's identity (no recording of the real one)."""
+    with open(os.path.join(data_dir, "x3-drive.json"), encoding="utf-8") as f:
+        elmo = json.load(f)
+    info = elmo["online_info"]["response"]
+    info["slaveIdentity"].update(vendorId=0x9A, productCode=0x01280002, revisionNumber=0x00220031)
+    info["mbxProtocols"] = 2 | 4 | 8                   # EoE, CoE, FoE
+    words = elmo["eeprom"]
+    words[8:14] = [0x9A, 0, 0x0002, 0x0128, 0x0031, 0x0022]
+    slaves[0] = json.loads(json.dumps(slaves[0]))
+    slaves[0]["online_info"]["response"]["portSlaveHandles"][2] = info["slaveHandle"]
+    slaves.append({"autoinc": elmo["autoinc"], "online_info": elmo["online_info"], "eeprom": words})
+    nodes[MASTER + "admin/fieldbus_status/num_connected_slaves"] = {"response": {"numSlaves": len(slaves)}}
+
+
 class FakeBus:
 
-    def __init__(self, nodes: dict = None, slaves: list = None, drive: bool = False):
+    def __init__(self, nodes: dict = None, slaves: list = None, drive: bool = False, elmo: bool = False):
         self.lock = threading.RLock()
         if nodes is None:
             nodes, slaves = recorded_nodes()
-            if drive:
+            if elmo:
+                add_elmo(nodes, slaves)
+            elif drive:
                 add_drive(nodes, slaves)
                 from app.soe import parse_dictionary
                 with open(os.path.join(DATA, "esi-drive", "BoschRexroth_ctrlX_DRIVE_XCS2_F_H_SoE_Dictionary.xml"), "rb") as f:

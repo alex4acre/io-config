@@ -605,7 +605,7 @@ class Core:
             all_edits = self.load_edits()
             old = all_edits.get(position) if all_edits.get(position) and edits.applies(src, all_edits[position]) else {}
             merged = {k: v for k, v in old.items() if k != "identity"}
-            merged.update({k: v for k, v in change.items() if k in ("name", "pdos", "startup", "soe_mdt", "soe_at")})
+            merged.update({k: v for k, v in change.items() if k in ("name", "pdos", "startup", "soe_mdt", "soe_at", "modules", "dc_mode")})
             checked = edits.validate(src, merged)
             configure.device_for(src, {position: checked})          # raises EditError if it can't be applied
             all_edits[position] = dict(checked, bus=self._bus_ids())

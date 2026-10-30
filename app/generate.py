@@ -18,6 +18,8 @@ one frame of process data are refused.
 import re
 import xml.etree.ElementTree as ET
 
+from app import modules
+
 FIRST_ADDRESS = 1001
 LOGICAL_OUTPUTS = 0x10000
 LOGICAL_INPUTS = 0x10800
@@ -97,7 +99,7 @@ def device_from_esi(esi: dict, name: str) -> dict:
             if "SoE" in esi["mailbox"] else None,
         }
     modes = esi.get("dc_modes") or []
-    return {
+    dev = {
         "name": name, "vendor": esi["vendor"], "product": esi["product"], "revision": esi["revision"],
         "check_revision": esi.get("check_revision", ""), "physics": esi.get("physics", "YY"), "esc": dict(esi.get("esc") or {}),
         "timeouts": {**DEFAULT_TIMEOUTS, **(esi.get("timeouts") or {})}, "fmmu": list(esi.get("fmmu") or []),
@@ -108,6 +110,10 @@ def device_from_esi(esi: dict, name: str) -> dict:
               if modes and modes[0]["assign_activate"] else None,
         "source": "esi",
     }
+    if modules.usable(esi):              # modular device: the PDOs of its default modules
+        dev = modules.apply(dev, esi, modules.defaults(esi))
+        dev["module_esi"] = esi
+    return dev
 
 
 def device_from_eeprom(sii: dict, name: str) -> dict:
@@ -163,7 +169,31 @@ def apply_eni(dev: dict, slave: dict) -> dict:
         out["mailbox"] = dict(out["mailbox"], coe=dict(out["mailbox"]["coe"], init=extra))
     if slave["harvest"].get("eoe_mac"):
         out["eoe_mac"] = slave["harvest"]["eoe_mac"]
+    if dev.get("module_esi"):
+        out = _apply_eni_modules(dev, out, slave)
     return out
+
+
+def _apply_eni_modules(dev: dict, out: dict, slave: dict) -> dict:
+    """A modular device in the current configuration: the modules its #xF030 command names (else the ESI
+    defaults: a configuration without a module list, e.g. io-config before 1.5.0, had no module PDOs); the
+    configuration's PDOs are kept when they are the modules' PDOs; the commands the generator writes itself
+    are not kept as extra startup commands."""
+    esi = dev["module_esi"]
+    idents = modules.idents_from_startup(esi, slave.get("coe_init", [])) or dev["modules"]["idents"]
+    built = modules.apply(dict(dev, mailbox=out.get("mailbox")), esi, idents)
+    assigned = [x for sm in slave["sm"] for x in sm.get("pdos", [])]
+    eni_pdos = {p["index"]: p for p in slave["pdos"]}
+    if sorted(assigned) == sorted(p["index"] for p in built["pdos"]) and all(x in eni_pdos for x in assigned):
+        by_index = {p["index"]: p for p in built["pdos"]}
+        built["pdos"] = [dict(eni_pdos[p["index"]], sm=by_index[p["index"]]["sm"]) for p in built["pdos"]]
+    mbx = built.get("mailbox")
+    if mbx and mbx.get("coe") is not None:
+        mod_cmds = {(c["index"], c["subindex"], c["data"].upper()) for c in modules.startup(esi, idents)}
+        init = [c for c in mbx["coe"]["init"] if not (c.get("from_eni") and (
+            modules.is_generated(c) or (c["index"], c["subindex"], c["data"].upper()) in mod_cmds))]
+        built["mailbox"] = dict(mbx, coe=dict(mbx["coe"], init=init))
+    return dict(out, pdos=built["pdos"], modules=built["modules"], mailbox=built["mailbox"])
 
 
 # --- XML helpers ------------------------------------------------------------------------------------
@@ -173,6 +203,43 @@ def _sub(parent, tag, text=None, **attrib):
     if text is not None:
         e.text = str(text)
     return e
+
+
+def _coe_cmd(parent, comment, timeout, index, subindex, data, complete_access=False):
+    c = _sub(parent, "InitCmd", **({"CompleteAccess": "1"} if complete_access else {}))
+    _sub(c, "Transition", "PS")
+    _sub(c, "Comment", comment)
+    _sub(c, "Timeout", timeout)
+    _sub(c, "Ccs", 1)
+    _sub(c, "Index", index)
+    _sub(c, "SubIndex", subindex)
+    _sub(c, "Data", data)
+
+
+def _module_cmds(ic, dev, timeout):
+    """A modular device: the module list (#xF030), then, when the PDO contents are configurable, the assignment
+    cleared and each module PDO's entries written (they are empty in the device until then). The assignment
+    itself follows as for every device."""
+    m = dev["modules"]
+    if m["download_list"]:
+        _coe_cmd(ic, f"download module ident list ({modules.MODULE_LIST:#x})", timeout, modules.MODULE_LIST, 0,
+                 modules.module_list_data(m["idents"]), True)
+    if not m["pdo_config"]:
+        return
+    for index in (0x1C12, 0x1C13):
+        _coe_cmd(ic, f"clear sm pdos ({index:#x})", timeout, index, 0, "00")
+    for p in dev["pdos"]:
+        if not any(e["index"] for e in p["entries"]):      # placeholders only (e.g. Elmo recorder): the device fills it
+            continue
+        words = [(e["index"] << 16) | (e["subindex"] << 8) | e["bits"] for e in p["entries"]]
+        if m["complete_access"]:
+            _coe_cmd(ic, f'download pdo {p["index"]:#x} entries', timeout, p["index"], 0,
+                     le(len(words), 1) + "00" + "".join(le(w, 4) for w in words), True)
+        else:
+            _coe_cmd(ic, f'clear pdo {p["index"]:#x} entries', timeout, p["index"], 0, "00")
+            for k, w in enumerate(words, 1):
+                _coe_cmd(ic, f'download pdo {p["index"]:#x} entry {k}', timeout, p["index"], k, le(w, 4))
+            _coe_cmd(ic, f'download pdo {p["index"]:#x} entry count', timeout, p["index"], 0, le(len(words), 1))
 
 
 def _cmd(parent, transitions, comment, cmd, adp, ado, data=None, cnt=None, requires=True, retries=3,
@@ -404,6 +471,8 @@ def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars, eoe=
         if coe is not None:
             ce = _sub(m, "CoE")
             ic = _sub(ce, "InitCmds")
+            if dev.get("modules"):
+                _module_cmds(ic, dev, coe.get("timeout", 2000))
             if coe["pdo_assign"]:
                 for index, direction in ((0x1C12, "rx"), (0x1C13, "tx")):
                     pdos = [p["index"] for p in dev["pdos"] if p["dir"] == direction]

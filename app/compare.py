@@ -11,6 +11,8 @@ Entries are compared by object index, subindex and bit length only: names and da
 differ between the sources (the EEPROM says BOOL where the ENI says BIT) without meaning anything.
 """
 
+from app import modules
+
 AL_STATES = {1: "Init", 2: "PreOp", 3: "Boot", 4: "SafeOp", 8: "Op"}
 LEVELS = ("ok", "info", "warning", "error")
 
@@ -79,7 +81,16 @@ def device_report(position, online, eeprom, eeprom_error, eni_slave, esi_match, 
     elif esi_match == "nearest":
         add("warning", f'ESI only for revision {hx(esi_entry["revision"], 8)} (device has {hx(revision, 8)})')
     if esi_device and esi_device.get("modular"):
-        add("info", "Modular device: its modules/slots are not checked yet")
+        if not modules.usable(esi_device):
+            add("info", "Modular device: its modules are not in its ESI file (separate module files are not read yet)")
+        elif eni_slave is not None:
+            idents = modules.idents_from_startup(esi_device, eni_slave.get("coe_init", []))
+            if idents is None:
+                add("warning", "Modular device without a module list in the current configuration: its module "
+                               "process data is missing. Build the configuration to add the modules (Settings tab).")
+            else:
+                add("info", "Modules: " + ", ".join(f'{sl["name"]} = {modules.name(esi_device, x)}'
+                                                    for sl, x in zip(esi_device["slots"], idents)))
 
     # --- EEPROM
     if eeprom_error:
@@ -87,7 +98,11 @@ def device_report(position, online, eeprom, eeprom_error, eni_slave, esi_match, 
     elif eeprom and info and (eeprom["vendor"], eeprom["product"], eeprom["revision"]) != (vendor, product, revision):
         add("error", f'EEPROM identity ({ident(eeprom["vendor"], eeprom["product"], eeprom["revision"])}) differs from what the device reports')
 
-    # --- PDOs side by side
+    # --- PDOs side by side (a modular device: also the PDOs of its configured, else default, modules)
+    if modules.usable(esi_device):
+        idents = (modules.idents_from_startup(esi_device, eni_slave.get("coe_init", [])) if eni_slave else None) \
+            or modules.defaults(esi_device)
+        esi_device = dict(esi_device, pdos=esi_device["pdos"] + modules.pdos(esi_device, idents))
     rows = {}
     for source, desc in (("esi", esi_device), ("eni", eni_slave), ("eeprom", eeprom)):
         for p in (desc or {}).get("pdos", []):

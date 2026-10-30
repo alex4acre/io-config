@@ -92,6 +92,53 @@ def index_file(path: str) -> list:
     return out
 
 
+def _slots(dev) -> list:
+    """The slots of a modular device: name, slot group, the modules it takes (ModuleIdent, or every module of a
+    ModuleClass) and its default module."""
+    out = []
+    for sl in dev.findall("Slots/Slot"):
+        idents = [num(m.text, 0) for m in sl.findall("ModuleIdent")]
+        default = next((num(m.text, 0) for m in sl.findall("ModuleIdent") if flag(m.get("Default"))), None)
+        out.append({"name": _name(sl), "min": num(sl.get("MinInstances"), 0), "max": num(sl.get("MaxInstances"), 1),
+                    "group": num(sl.get("SlotGroup"), 0), "idents": idents, "default": default,
+                    "classes": [c.get("Class") or (c.text or "").strip() for c in sl.findall("ModuleClass")],
+                    "pdo_increment": num(sl.get("SlotPdoIncrement")), "index_increment": num(sl.get("SlotIndexIncrement"))})
+    return out
+
+
+def _slot_increments(dev) -> dict:
+    sl = dev.find("Slots")
+    get = (lambda attr: num(sl.get(attr), 0)) if sl is not None else (lambda attr: 0)
+    return {"pdo": get("SlotPdoIncrement"), "index": get("SlotIndexIncrement"),
+            "group_pdo": get("SlotGroupPdoIncrement"), "group_index": get("SlotGroupIndexIncrement")}
+
+
+def _modules(info, dev) -> dict:
+    """ModuleIdent -> module (name, class, PDOs, CoE startup commands) for the modules the ESI file itself
+    defines (EtherCATInfo/Descriptions/Modules or the device's Modules). Modules in separate module files
+    (EtherCATModule) are not read."""
+    out = {}
+    if dev.find("Slots") is None:
+        return out
+    for m in info.findall("Descriptions/Modules/Module") + dev.findall("Modules/Module"):
+        t = m.find("Type")
+        ident = num(t.get("ModuleIdent")) if t is not None else None
+        if ident is None:
+            continue
+        init = []
+        for c in m.findall("Mailbox/CoE/InitCmd"):
+            init.append({"transitions": [x.text for x in c.findall("Transition")],
+                         "comment": (c.findtext("Comment") or "").strip(),
+                         "index": num(c.findtext("Index"), 0), "subindex": num(c.findtext("SubIndex"), 0),
+                         "data": (c.findtext("Data") or "").strip(), "complete_access": flag(c.get("CompleteAccess")),
+                         "depends": {"group": True} if flag((c.find("Index").get("DependOnSlotGroup")
+                                                             if c.find("Index") is not None else None)) else {}})
+        out[ident] = {"ident": ident, "name": _name(m) or (t.text or "").strip(), "class": t.get("ModuleClass") or "",
+                      "pdos": [parse_pdo(p, "tx") for p in m.findall("TxPdo")] + [parse_pdo(p, "rx") for p in m.findall("RxPdo")],
+                      "init": init}
+    return out
+
+
 def parse_device(path: str, vendor: int, product: int, revision: int) -> dict:
     """One device's details from its ESI file, in the shape the ENI parser and the EEPROM decoder give."""
     with open(path, "rb") as f:
@@ -147,8 +194,13 @@ def parse_device(path: str, vendor: int, product: int, revision: int) -> dict:
                 "esc": {r.tag[3:]: num(r.text) for r in (dev.find("ESC") if dev.find("ESC") is not None else [])
                         if r.tag.startswith("Reg") and num(r.text) is not None},
                 "soe_init": soe_init,
-                "slots": [{"name": (s.findtext("Name") or "").strip(), "min": num(s.get("MinInstances"), 0),
-                           "max": num(s.get("MaxInstances"), 1)} for s in dev.findall("Slots/Slot")],
+                "slots": _slots(dev),
+                "slot_increments": _slot_increments(dev),
+                "download_module_list": flag((dev.find("Slots").get("DownloadModuleIdentList")
+                                              if dev.find("Slots") is not None else None)),
+                "modules": _modules(info, dev),
+                "pdo_config": coe is not None and flag(coe.get("PdoConfig")),
+                "complete_access": coe is not None and flag(coe.get("CompleteAccess")),
                 "sm": sms,
                 "pdos": [parse_pdo(p, "tx") for p in dev.findall("TxPdo")] +
                         [parse_pdo(p, "rx") for p in dev.findall("RxPdo")],

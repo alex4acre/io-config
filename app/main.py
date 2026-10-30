@@ -60,7 +60,8 @@ def start_datalayer():
     if not IN_SNAP and os.environ.get("IO_CONFIG_FAKE"):
         from app.fake import FakeBus
         log("Using a simulated ctrlX (development mode)")
-        return None, None, FakeBus(drive=bool(os.environ.get("IO_CONFIG_FAKE_DRIVE")))
+        return None, None, FakeBus(drive=bool(os.environ.get("IO_CONFIG_FAKE_DRIVE")),
+                                   elmo=bool(os.environ.get("IO_CONFIG_FAKE_ELMO")))
     # outside the snap, e.g. "tcp://boschrexroth:boschrexroth@192.168.1.1?sslport=443" (needs Ubuntu 24.04)
     connection = "ipc://" if IN_SNAP else os.environ.get("DATALAYER_CONNECTION")
     if not connection:

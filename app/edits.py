@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 
-"""The user's choices per bus position: the device name and which PDOs are assigned.
+"""The user's choices per bus position: the device name, which PDOs are assigned (modular devices: which module
+sits in each slot), the DC mode, startup parameters and SoE telegrams.
 
 An edit is kept with the identity of the device it was made for (vendor, product code, revision) and is
 only applied while that device sits at that position. The PDOs a device offers come from its ESI (or,
@@ -10,7 +11,7 @@ fixed PDOs, only its name can be changed.
 
 import re
 
-from app import coe, generate, soe
+from app import coe, generate, modules, soe
 
 NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}")
 TRANSITIONS = ("IP", "PS", "SO")          # CoE startup commands can be sent on these state changes
@@ -27,6 +28,8 @@ def _size(pdo) -> int:
 def catalog(src: dict):
     """(pdos the device offers, PDO assignment changeable?, why not) for a scanned position."""
     esi = src.get("esi_device") if src.get("esi_match") in ("exact", "nearest") else None
+    if modules.usable(esi):
+        return [], False, "the PDOs come from the modules chosen for the slots"
     if esi is not None:
         pdos = [generate._oversampled(p) for p in esi["pdos"]]
         can = bool(esi.get("pdo_assign"))
@@ -47,7 +50,21 @@ def options(src: dict, dev: dict, edit: dict = None) -> dict:
     pdos, can, why = catalog(src)
     selected = [p["index"] for p in dev["pdos"]] if dev else []
     default = [p["index"] for p in pdos if p["sm"] is not None]
+    esi = _esi(src)
+    slots = None
+    if dev and dev.get("modules") and esi:
+        pdos, default = dev["pdos"], selected
+        slots = [{"slot": sl["name"], "group": sl["group"], "selected": dev["modules"]["idents"][no],
+                  "default": sl["default"] or modules.EMPTY,
+                  "choices": [{"ident": x, "name": modules.name(esi, x)} for x in modules.choices(esi, sl)]}
+                 for no, sl in enumerate(esi["slots"])]
+    modes = (esi or {}).get("dc_modes") or []
+    current_dc = (dev or {}).get("dc") or {}
+    dc_mode = next((m["name"] for m in modes if m["assign_activate"] == current_dc.get("assign_activate", 0)), "")
     return {
+        "modules": slots,
+        "dc_modes": [{"name": m["name"], "desc": m["desc"], "assign_activate": m["assign_activate"]} for m in modes],
+        "dc_mode": dc_mode,
         "position": src["pos"],
         "name": dev["name"] if dev else "",
         "editable": can,
@@ -62,6 +79,10 @@ def options(src: dict, dev: dict, edit: dict = None) -> dict:
     }
 
 
+def _esi(src: dict):
+    return src.get("esi_device") if src.get("esi_match") in ("exact", "nearest") else None
+
+
 def validate(src: dict, edit: dict) -> dict:
     """The edit, checked and cleaned; EditError with all problems otherwise."""
     problems = []
@@ -73,6 +94,25 @@ def validate(src: dict, edit: dict) -> dict:
             problems.append("the name must start with a letter and contain only letters, digits and _ (max 64)")
         else:
             out["name"] = edit["name"]
+    esi = _esi(src)
+    if edit.get("modules") is not None:
+        chosen = edit["modules"]
+        if not modules.usable(esi):
+            problems.append("the device has no modules described in its ESI")
+        elif not isinstance(chosen, list) or len(chosen) != len(esi["slots"]) or \
+                not all(isinstance(x, int) and not isinstance(x, bool) for x in chosen):
+            problems.append(f'modules must be a list of {len(esi["slots"])} module idents (0 = empty slot)')
+        else:
+            for sl, x in zip(esi["slots"], chosen):
+                if x not in modules.choices(esi, sl):
+                    problems.append(f'slot {sl["name"]}: module {x:#x} is not allowed there')
+            out["modules"] = chosen
+    if edit.get("dc_mode") is not None:
+        names = [m["name"] for m in (esi or {}).get("dc_modes") or []]
+        if edit["dc_mode"] not in names:
+            problems.append(f'DC mode must be one of: {", ".join(names) or "(the ESI has none)"}')
+        else:
+            out["dc_mode"] = edit["dc_mode"]
     if edit.get("pdos") is not None:
         pdos, can, why = catalog(src)
         if not can:
@@ -178,6 +218,17 @@ def apply_edit(dev: dict, src: dict, edit: dict) -> dict:
     out = dict(dev)
     if edit.get("name"):
         out["name"] = edit["name"]
+    if edit.get("modules") is not None:
+        if not dev.get("module_esi"):
+            raise EditError("the device is not built from modules (no ESI with its modules)")
+        out = modules.apply(out, dev["module_esi"], edit["modules"])
+        out["source"] = "edited"
+    if edit.get("dc_mode") is not None:
+        mode = next((m for m in (_esi(src) or {}).get("dc_modes") or [] if m["name"] == edit["dc_mode"]), None)
+        if mode is None:
+            raise EditError(f'DC mode {edit["dc_mode"]} is not in the ESI')
+        out["dc"] = {"assign_activate": mode["assign_activate"], "shift": mode.get("shift_sync0") or 0} \
+            if mode["assign_activate"] else None
     if edit.get("pdos") is not None:
         pdos, _can, _why = catalog(src)
         by_index = {p["index"]: p for p in pdos}

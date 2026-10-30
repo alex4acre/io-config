@@ -32,6 +32,14 @@ def _text(el, path, default=""):
     return v.strip() if v is not None else default
 
 
+def _depends(index_el) -> dict:
+    """ESI modules: whether an index moves with the slot / slot group the module sits in (empty if neither)."""
+    if index_el is None:
+        return {}
+    out = {k: True for k, attr in (("slot", "DependOnSlot"), ("group", "DependOnSlotGroup")) if flag(index_el.get(attr))}
+    return {"depends": out} if out else {}
+
+
 def parse_pdo(el, direction: str) -> dict:
     """A TxPdo/RxPdo element (same form in ENI and ESI)."""
     entries = []
@@ -39,13 +47,14 @@ def parse_pdo(el, direction: str) -> dict:
         index = num(e.findtext("Index"), 0)
         entries.append({"index": index, "subindex": num(e.findtext("SubIndex"), 0) if index else 0,
                         "name": _text(e, "Name"), "bits": num(e.findtext("BitLen"), 0),
-                        "type": _text(e, "DataType")})
+                        "type": _text(e, "DataType"), **_depends(e.find("Index"))})
     sm = el.get("Sm")
     out = {"dir": direction, "index": num(el.findtext("Index"), 0),
            "name": (el.findtext("Name") or "").strip("\r\n\t"),     # spaces count: "Channel 1 Sample " + " 0"
            "sm": num(sm) if sm is not None else None, "fixed": flag(el.get("Fixed")),
            "mandatory": flag(el.get("Mandatory")),
            "excludes": [num(x.text, 0) for x in el.findall("Exclude")], "entries": entries}
+    out.update(_depends(el.find("Index")))
     if el.get("OSFac") is not None:          # oversampling (ESI only)
         out["oversampling"] = {"factor": num(el.get("OSFac"), 1), "index_inc": num(el.get("OSIndexInc"), 1)}
     return out

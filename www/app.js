@@ -548,9 +548,10 @@ function selectedPdos() {
 
 function renderEditor() {
   const d = editData;
-  $("e-title").textContent = "Name, PDOs and drive telegrams";
+  $("e-title").textContent = d.modules ? "Name, modules and PDOs" : "Name, PDOs and drive telegrams";
   $("e-name").value = d.name;
   $("e-reason").textContent = d.editable ? "" : "PDOs can't be changed: " + d.reason;
+  renderModules();
   const tb = $("e-pdos").tBodies[0];
   tb.replaceChildren();
   for (const p of d.pdos) {
@@ -581,6 +582,31 @@ function renderEditor() {
   renderSoeEditor();
   if (!d.fixed_startup.length && !d.startup.length) row(sb, [el("span", { class: "muted" }, "none"), "", "", "", ""]);
   $("e-msg").textContent = d.edited ? "This position has saved changes." : "Defaults (no saved changes).";
+}
+
+function renderModules() {
+  const d = editData;
+  $("e-modules-box").hidden = !d.modules;
+  const tb = $("e-modules").tBodies[0];
+  tb.replaceChildren();
+  for (const m of d.modules || []) {
+    const sel = el("select", {}, ...m.choices.map((c) => el("option", { value: c.ident }, c.ident ? `${c.name} (${hex(c.ident)})` : c.name)));
+    sel.value = m.selected;
+    row(tb, [m.slot, sel, el("span", { class: "muted" }, m.selected === m.default ? "default" : "")]);
+  }
+  $("e-dc-box").hidden = !d.dc_modes.length;
+  $("e-dc").replaceChildren(...d.dc_modes.map((m) => el("option", { value: m.name }, m.name)));
+  $("e-dc").value = d.dc_mode;
+  const showDesc = () => {
+    const m = d.dc_modes.find((x) => x.name === $("e-dc").value);
+    $("e-dc-desc").textContent = m ? `${m.desc} (AssignActivate ${hex(m.assign_activate)})` : "configured otherwise";
+  };
+  $("e-dc").onchange = showDesc;
+  showDesc();
+}
+
+function chosenModules() {
+  return [...$("e-modules").querySelectorAll("select")].map((s) => Number(s.value));
 }
 
 function idnText(n) {
@@ -670,6 +696,11 @@ async function saveEdit(change) {
 $("e-save").onclick = () => {
   const change = { name: $("e-name").value.trim() };
   if (editData.editable) change.pdos = selectedPdos();
+  if (editData.modules) {
+    const mods = chosenModules();
+    if (mods.some((x, i) => x !== editData.modules[i].selected)) change.modules = mods;
+  }
+  if (editData.dc_modes.length && $("e-dc").value && $("e-dc").value !== editData.dc_mode) change.dc_mode = $("e-dc").value;
   if (editData.soe && soeLists) {
     change.soe_mdt = soeLists.mdt;
     change.soe_at = soeLists.at;
@@ -678,7 +709,7 @@ $("e-save").onclick = () => {
   saveEdit(change);
 };
 $("e-reset").onclick = async () => {
-  if (!confirm("Forget the saved name, PDO choice and startup parameters of this position?")) return;
+  if (!confirm("Forget the saved name, modules, DC mode, PDO choice and startup parameters of this position?")) return;
   try {
     editData = await api("DELETE", `/devices/${editPos}/edit`);
     soeLists = null;
