@@ -55,6 +55,15 @@ main { display: grid; gap: 16px; padding: 24px 32px 60px; }
 .cols2.even { grid-template-columns: 1fr 1fr; }
 .cols2 > div { min-width: 0; }
 @media (max-width: 900px) { .cols2, .cols2.even { grid-template-columns: 1fr; } }
+/* List + detail panes (Objects, Parameters): each framed with a header band; the filter belongs to its list */
+.cols2.panes { gap: 32px; align-items: start; }
+.pane { border: 1px solid var(--line); min-width: 0; }
+.pane-head { background: var(--tile); padding: 10px 12px; font-size: 15px; border-bottom: 1px solid var(--line); }
+.pane-head .muted { margin-left: 6px; }
+.pane-tools { display: flex; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--row); }
+.pane-tools input { flex: 1; min-width: 0; }
+.pane-body { padding: 10px 12px; }
+.pane .scroll.tall { max-height: 480px; }
 
 /* Filled fields (ctrlX inputs): grey, square, a black line underneath that turns blue when focused */
 input, select { font: inherit; font-size: 15px; color: var(--text); background: var(--field); border: 0; border-radius: 0;

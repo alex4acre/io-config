@@ -708,6 +708,7 @@ async function openObjects(pos, refresh) {
   currentObject = null;
   $("o-title").textContent = "Objects (online)";
   $("o-obj-title").textContent = "Loading the object list ... (the first time takes a while)";
+  $("o-obj-title").className = "muted";
   $("o-entries").tBodies[0].replaceChildren();
   $("o-list").tBodies[0].replaceChildren();
   try {
@@ -738,6 +739,7 @@ async function openObject(index) {
     return;
   }
   $("o-obj-title").textContent = `${hex(o.index)} ${o.name} (${o.object_code})`;
+  $("o-obj-title").className = "";
   const tb = $("o-entries").tBodies[0];
   tb.replaceChildren();
   for (const e of o.entries) {
@@ -809,6 +811,7 @@ async function openSoeList(pos) {
   soePos = pos;
   soeIdn = null;
   $("s-title").textContent = "Drive parameters";
+  $("s-param-title").className = "muted";
   $("s-param").replaceChildren();
   $("s-edit").hidden = true;
   loadSoeList();
@@ -824,6 +827,7 @@ async function openSoe(idn) {
   try {
     const p = await busy("soe", `Reading ${idnText(idn)}`, () => api("GET", `/devices/${soePos}/soe/${idn}`));
     $("s-param-title").textContent = `${p.text} ${p.name}`;
+    $("s-param-title").className = "";
     add("Value", `${p.show} ${p.unit || ""}`);
     const a = p.attribute;
     add("Type", `${a.display}${a.list ? " list" : ""}, ${a.size} byte(s)${a.decimals ? `, ${a.decimals} decimals` : ""}`);

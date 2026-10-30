@@ -124,12 +124,15 @@
         <div class="row head"><h3 id="o-title"></h3><button id="o-refresh">Reload list</button></div>
         <p class="hint">Read online from the device through the master (CoE mailbox). "Write now" changes the device until its
           next start; "Startup" keeps the value in the configuration.</p>
-        <div class="row"><input id="o-filter" type="search" placeholder="Filter: 8000, x8000 or a name"></div>
-        <div class="cols2">
-          <div class="scroll tall"><table id="o-list"><thead><tr><th>Index</th><th>Name</th><th>Kind</th></tr></thead>
-            <tbody></tbody></table></div>
-          <div>
-            <h3 id="o-obj-title" class="muted">Choose an object</h3>
+        <div class="cols2 panes">
+          <div class="pane">
+            <div class="pane-head">Object dictionary</div>
+            <div class="pane-tools"><input id="o-filter" type="search" placeholder="Filter: 8000, x8000 or a name"></div>
+            <div class="scroll tall"><table id="o-list"><thead><tr><th>Index</th><th>Name</th><th>Kind</th></tr></thead>
+              <tbody></tbody></table></div>
+          </div>
+          <div class="pane">
+            <div class="pane-head">Object <span id="o-obj-title" class="muted">Choose an object</span></div>
             <div class="scroll"><table id="o-entries"><thead><tr><th>Sub</th><th>Name</th><th>Type</th><th>Access</th>
               <th>Value</th><th>New value</th><th></th></tr></thead><tbody></tbody></table></div>
           </div>
@@ -141,20 +144,25 @@
         <p class="hint">The drive's parameters from its SoE dictionary; values are read online (the drive must be in
           PreOp or higher, i.e. configured). "Write now" changes the drive until its next start; "Startup" keeps the value
           in the configuration.</p>
-        <div class="row">
-          <input id="s-filter" type="search" placeholder="Filter: S265, P-0-12, 265 or a name">
-          <select id="s-mapping"><option value="">all</option><option value="r">MDT-mappable</option><option value="t">AT-mappable</option></select>
-        </div>
-        <div class="cols2">
-          <div class="scroll tall"><table id="s-list"><thead><tr><th>IDN</th><th>Name</th><th>Unit</th></tr></thead>
-            <tbody></tbody></table></div>
-          <div>
-            <h3 id="s-param-title" class="muted">Choose a parameter</h3>
-            <dl id="s-param" class="grid"></dl>
-            <div class="row" id="s-edit" hidden>
-              <input id="s-value" type="text">
-              <button id="s-write">Write now</button>
-              <button id="s-startup">Startup</button>
+        <div class="cols2 panes">
+          <div class="pane">
+            <div class="pane-head">Parameter list (SoE dictionary)</div>
+            <div class="pane-tools">
+              <input id="s-filter" type="search" placeholder="Filter: S265, P-0-12, 265 or a name">
+              <select id="s-mapping"><option value="">all</option><option value="r">MDT-mappable</option><option value="t">AT-mappable</option></select>
+            </div>
+            <div class="scroll tall"><table id="s-list"><thead><tr><th>IDN</th><th>Name</th><th>Unit</th></tr></thead>
+              <tbody></tbody></table></div>
+          </div>
+          <div class="pane">
+            <div class="pane-head">Parameter <span id="s-param-title" class="muted">Choose a parameter</span></div>
+            <div class="pane-body">
+              <dl id="s-param" class="grid"></dl>
+              <div class="row" id="s-edit" hidden>
+                <input id="s-value" type="text">
+                <button id="s-write">Write now</button>
+                <button id="s-startup">Startup</button>
+              </div>
             </div>
           </div>
         </div>

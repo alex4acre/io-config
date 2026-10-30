@@ -4,7 +4,7 @@
 
 The ctrlX I/O XI112108 (8 DI / 8 DO, tests/data/esi-nombx) joined the X3's bus on 2026-10-29. Its ESI has no
 mailbox, process data on SM0 (outputs at #x0F01, ControlByte #x44) and SM1 (inputs at #x1000), and sync managers
-and FMMUs marked OpOnly. No I/O Engineering file for it yet, so this checks the structure, not the bytes.
+and FMMUs marked OpOnly. Its bytes are checked against I/O Engineering in tests/test_8dev.py (2026-10-30).
 """
 
 import os
@@ -56,14 +56,14 @@ class NoMailboxTest(unittest.TestCase):
             return (",".join(re.findall(r"<Transition>(\w+)</Transition>", c)), int(re.search(r"<Ado>(\d+)</Ado>", c).group(1)),
                     re.search(r"<Data>(\w*)</Data>", c).group(1))
 
-        # OpOnly: set up inactive in PS, activated in SO, deactivated in OS
-        self.assertEqual(find("set sm 0 (outputs)"), ("PS", 0x800, "010F0100440000" + "00"))
-        self.assertEqual(find("activate sm 0 (outputs)"), ("SO", 0x806, "01"))
-        self.assertEqual(find("deactivate sm 0 (outputs)"), ("OS", 0x806, "00"))
-        self.assertEqual(find("set sm 1 (inputs)")[2][-4:], "0100")          # not OpOnly: active from SafeOp
-        self.assertEqual(find("activate fmmu 0(outputs)"), ("SO", 0x60C, "01"))
-        self.assertEqual(find("activate fmmu 1(inputs)"), ("SO", 0x61C, "01"))
-        self.assertEqual(find("set fmmu 0(outputs)")[2][24:26], "00")        # FMMU written inactive
+        # OpOnly as I/O Engineering writes it (tests/test_8dev.py checks the bytes): the sync manager set up active
+        # in SafeOp->Op, each process-data sync manager cleared in Op->SafeOp, FMMUs active from PreOp->SafeOp
+        self.assertEqual(find("set sm 0 (outputs)"), ("SO", 0x800, "010F0100440001" + "00"))
+        self.assertEqual(find("set sm 1 (inputs)"), ("PS", 0x808, "0010010000000100"))   # not OpOnly: PreOp->SafeOp
+        self.assertEqual(len([c for c in cmds if "<Comment>clear output sm</Comment>" in c]), 2)
+        self.assertFalse([c for c in cmds if "activate" in c])
+        self.assertEqual(find("set fmmu 0(outputs)")[2][24:26], "01")        # FMMU written active
+        self.assertEqual(len([c for c in cmds if "<Comment>set device state to BOOT</Comment>" in c]), 1)
         # only the 4 devices with a mailbox are in the cyclic mailbox-state read
         self.assertIn("<MailboxStates><StartAddr>524288</StartAddr><Count>4</Count></MailboxStates>", x)
 

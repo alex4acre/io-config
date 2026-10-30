@@ -73,7 +73,7 @@ def _slave(el, position: int) -> dict:
                              "data": _text(c, "Data"), "complete_access": flag(c.get("CompleteAccess"))})
     dc = el.find("DC")
     dc_activate = None
-    sm_control, fmmu, timeouts, check_high, check_low = {}, [], {}, False, False
+    sm_control, fmmu, timeouts, check_high, check_low, sm_op_only = {}, [], {}, False, False, []
     for c in el.findall("InitCmds/InitCmd"):
         ado, comment = num(c.findtext("Ado")), (c.findtext("Comment") or "").strip()
         transitions = [t.text for t in c.findall("Transition")]
@@ -82,6 +82,8 @@ def _slave(el, position: int) -> dict:
             dc_activate = int.from_bytes(bytes.fromhex(data), "little")
         elif comment.startswith("set sm ") and len(data) == 16:
             sm_control[int(comment.split()[2])] = int(data[8:10], 16)
+            if "SO" in transitions:              # OpOnly sync manager: set up (active) in SafeOp->Op
+                sm_op_only.append(int(comment.split()[2]))
         elif comment.startswith("set fmmu ") and "(" in comment:
             fmmu.append(comment.split("(", 1)[1].rstrip(")"))
         elif "high word" in comment:
@@ -122,8 +124,11 @@ def _slave(el, position: int) -> dict:
         "dc_activate": dc_activate,
         "physics": _text(info, "Physics"),
         "harvest": {"sm_control": sm_control, "fmmu": fmmu, "timeouts": timeouts, "check_high": check_high,
-                    "check_low": check_low,
-                    "mailbox": mbx},
+                    "check_low": check_low, "sm_op_only": sm_op_only,
+                    "mailbox": mbx,
+                    # the EoE MAC the device got (I/O Engineering keeps it when the device moves): bytes 8..13
+                    "eoe_mac": ((mailbox.findtext("EoE/InitCmds/InitCmd/Data") or "").strip()[16:28] or None)
+                    if mailbox is not None else None},
         "variables": [],
     }
 

@@ -128,7 +128,7 @@ def device_from_eni(slave: dict) -> dict:
     the same device again."""
     h = slave["harvest"]
     mbx = h["mailbox"]
-    sms = list(slave["sm"])
+    sms = [dict(sm, op_only=sm["no"] in h.get("sm_op_only", [])) for sm in slave["sm"]]
     if mbx:
         sms = [{"no": 0, "type": "MBoxOut", "start": mbx["send"][0], "size": mbx["send"][1],
                 "control": h["sm_control"].get(0, 0x26), "enable": True},
@@ -161,6 +161,8 @@ def apply_eni(dev: dict, slave: dict) -> dict:
     if out.get("mailbox") and out["mailbox"].get("coe") is not None:
         extra = [dict(c, from_eni=True) for c in slave.get("coe_init", []) if c["index"] not in (0x1C12, 0x1C13)]
         out["mailbox"] = dict(out["mailbox"], coe=dict(out["mailbox"]["coe"], init=extra))
+    if slave["harvest"].get("eoe_mac"):
+        out["eoe_mac"] = slave["harvest"]["eoe_mac"]
     return out
 
 
@@ -275,10 +277,12 @@ def _ip_bytes(text: str) -> str:
     return bytes(reversed([int(x) for x in text.split(".")])).hex().upper()
 
 
-def _eoe_ip(name: str, phys: int, eoe: dict) -> str:
-    """EoE "set IP parameter" request (ETG.1000.6): MAC 02:60:34:FE:<station address>, the next address of the
+def _eoe_ip(name: str, phys: int, eoe: dict, mac: str = None) -> str:
+    """EoE "set IP parameter" request (ETG.1000.6): MAC 02:60:34:FE:<station address> (or the MAC the running
+    configuration gave the device: I/O Engineering keeps it when the device moves), the next address of the
     master's EoE network, its mask, the master as gateway, no DNS server, the device name as DNS name."""
-    data = (le(2, 4) + le(0x2F, 4) + "026034FE" + phys.to_bytes(2, "big").hex().upper() +
+    mac = mac or "026034FE" + phys.to_bytes(2, "big").hex().upper()
+    data = (le(2, 4) + le(0x2F, 4) + mac +
             _ip_bytes(eoe["ip"]) + _ip_bytes(eoe["mask"]) + _ip_bytes(eoe["gateway"]) + "00000000")
     return data + name.encode("latin-1")[:31].ljust(32, b"\0").hex().upper()
 
@@ -320,9 +324,17 @@ def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars, eoe=
         _sub(recv, "BitStart", (FRAME_HEADER + lay["in_off"]) * 8)
         _sub(recv, "BitLength", lay["in_size"] * 8)
     process_sms = [sm for sm in dev["sm"] if sm["type"] in ("Outputs", "Inputs")]
+
+    def sm_size(sm):
+        """Bytes of one process-data sync manager: the whole direction, or (several sync managers per
+        direction, e.g. XI211116 outputs on #x0F00 and #x0F01) the PDOs assigned to it."""
+        if sum(1 for x in process_sms if x["type"] == sm["type"]) == 1:
+            return lay["out_size"] if sm["type"] == "Outputs" else lay["in_size"]
+        return (sum(e["bits"] for p in dev["pdos"] if p["sm"] == sm["no"] for e in p["entries"]) + 7) // 8
+
     for sm in process_sms:
         pdos = [p for p in dev["pdos"] if p["sm"] == sm["no"]]
-        size = lay["out_size"] if sm["type"] == "Outputs" else lay["in_size"]
+        size = sm_size(sm)
         e = _sub(pd, f'Sm{sm["no"]}')
         _sub(e, "Type", sm["type"])
         if size:
@@ -436,7 +448,7 @@ def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars, eoe=
                 _sub(c, "Transition", tr)
             _sub(c, "Comment", "eoe init")
             _sub(c, "Timeout", 0)
-            _sub(c, "Data", _eoe_ip(dev["name"], phys, eoe))
+            _sub(c, "Data", _eoe_ip(dev["name"], phys, eoe, dev.get("eoe_mac")))
 
     # state machine
     ic = _sub(s, "InitCmds")
@@ -458,9 +470,11 @@ def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars, eoe=
         if dev.get("esc"):                       # devices whose ESI sets ESC registers (seen: ctrlX DRIVE)
             _cmd(ic, "PS", "set DC latch cfg", FPWR, phys, 0x9A8, "0000")
     zero8 = "0" * 16
-    op_only = []                                 # (label, activation register) switched on only in SafeOp->Op
     mbx_sms = [(0, "mailbox out", mbx["send"], 0x26), (1, "mailbox in", mbx["recv"], 0x22)] if mbx else []
-    sm_by_type = {sm["type"]: sm for sm in dev["sm"]}
+    sm_by_type = {}                              # the first sync manager of each type (the FMMU starts there)
+    for sm in dev["sm"]:
+        sm_by_type.setdefault(sm["type"], sm)
+    any_op_only = any(sm.get("op_only") for sm in process_sms)
     for no, label, (start, size), control in mbx_sms:
         control = sm_by_type.get("MBoxOut" if no == 0 else "MBoxIn", {}).get("control", control)
         ado = SM_BASE + 8 * no
@@ -469,28 +483,25 @@ def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars, eoe=
         _cmd(ic, "IP", f"set sm {no} ({label})", FPWR, phys, ado, _sm_data(start, size, control, True), cnt=1, requires=False)
     for sm in process_sms:
         label = "outputs" if sm["type"] == "Outputs" else "inputs"
-        size = lay["out_size"] if sm["type"] == "Outputs" else lay["in_size"]
+        size = sm_size(sm)
         ado = SM_BASE + 8 * sm["no"]
         _cmd(ic, "IP,SP,SI,OP,OI", f'clear sm {sm["no"]} ({label})', FPWR, phys, ado, zero8)
         active = sm["enable"] and size > 0
-        # OpOnly (ETG.2000): set up in PreOp->SafeOp but inactive, activated in SafeOp->Op, deactivated on the way back
-        _cmd(ic, "PS", f'set sm {sm["no"]} ({label})', FPWR, phys, ado,
-             _sm_data(sm["start"], size, sm["control"], active and not sm.get("op_only")), cnt=1, requires=False)
-        if active and sm.get("op_only"):
-            op_only.append((f'sm {sm["no"]} ({label})', ado + 6))
+        # OpOnly (ETG.2000) as ctrlX I/O Engineering writes it (tests/data/x3-8dev-ioe.xml): the sync manager is set
+        # up active only in SafeOp->Op, and every process-data sync manager of such a device is cleared in Op->SafeOp
+        if any_op_only:
+            _cmd(ic, "OS", "clear output sm", FPWR, phys, ado, zero8, requires=False)
+        _cmd(ic, "SO" if sm.get("op_only") else "PS", f'set sm {sm["no"]} ({label})', FPWR, phys, ado,
+             _sm_data(sm["start"], size, sm["control"], active), cnt=1, requires=False)
     fmmus = dev["fmmu"] or (["Outputs", "Inputs", "MBoxState"] if mbx else ["Outputs", "Inputs"])
-    fmmu_op_only = dev.get("fmmu_op_only") or []
-    process_fmmus, mbx_fmmu = [], None
+    process_fmmus, mbx_fmmu = [], None          # FMMUs are written active, OpOnly or not (as I/O Engineering)
     for i, kind in enumerate(fmmus):
         if kind in ("Outputs", "Inputs"):
             sm = sm_by_type.get(kind)
             size = lay["out_size"] if kind == "Outputs" else lay["in_size"]
             logical = (LOGICAL_OUTPUTS + lay["out_off"]) if kind == "Outputs" else (LOGICAL_INPUTS + lay["in_off"])
-            late = size > 0 and i < len(fmmu_op_only) and fmmu_op_only[i]
-            data = _fmmu_data(logical, size, sm["start"] if sm else 0, 2 if kind == "Outputs" else 1, size > 0 and not late)
+            data = _fmmu_data(logical, size, sm["start"] if sm else 0, 2 if kind == "Outputs" else 1, size > 0)
             _cmd(ic, "PS", f"set fmmu {i}({kind.lower()})", FPWR, phys, FMMU_BASE + 16 * i, data, cnt=1, requires=False)
-            if late:
-                op_only.append((f"fmmu {i}({kind.lower()})", FMMU_BASE + 16 * i + 12))
             process_fmmus.append(i)
         elif kind == "MBoxState" and mbx:
             bit = lay["mbx_bit"]
@@ -515,7 +526,7 @@ def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars, eoe=
     _cmd(ic, "IP", "check device state for preop", FPRD, phys, AL_STATUS, state6,
          validate=("020000000000", "1F0000000000", t["preop"]))
     _cmd(ic, "IP,BI", "assign EEPROM back to ECAT", APWR, -pos, EEPROM_CONFIG, "00")
-    if mbx and mbx["bootstrap"]:
+    if (mbx and mbx["bootstrap"]) or not mbx:     # I/O Engineering writes these for devices without a mailbox too
         _cmd(ic, "IB", "set device state to BOOT", FPWR, phys, AL_CONTROL, "1300", cnt=1)
         _cmd(ic, "IB", "check device state to BOOT", FPRD, phys, AL_STATUS, state6, cnt=1,
              validate=("030000000000", "1F0000000000", t["preop"]))
@@ -528,9 +539,6 @@ def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars, eoe=
          validate=("040000000000", "1F0000000000", t["safeop_op"]))
     _cmd(ic, "OS", "check device state for SAFEOP", FPRD, phys, AL_STATUS, state6,
          validate=("040000000000", "1F0000000000", t["back_to_safeop"]))
-    for label, ado in op_only:
-        _cmd(ic, "SO", f"activate {label}", FPWR, phys, ado, "01", cnt=1, requires=False)
-        _cmd(ic, "OS", f"deactivate {label}", FPWR, phys, ado, "00", requires=False)
     _cmd(ic, "SO", "set device state to OP", FPWR, phys, AL_CONTROL, "0800", cnt=1)
     _cmd(ic, "SO", "check device state to OP", FPRD, phys, AL_STATUS, state6, cnt=1,
          validate=("080000000000", "1F0000000000", t["safeop_op"]))
