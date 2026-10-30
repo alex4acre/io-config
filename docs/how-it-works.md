@@ -1,7 +1,9 @@
 # io-config: how devices are identified, cross-checked and applied
 
-State: version 1.4.0 (2026-10-30). File paths are relative to the app folder `io-config/`. The code snippets are
-shortened (marked `...`); the line numbers point to the full code.
+State: version 1.4.0, ctrlx-baseline 1.0.0 (2026-10-30). File paths are relative to the app folder `io-config/`.
+The code snippets are io-config's own code, shortened (marked `...`); the line numbers point to the full code. The
+shared parts every ctrlX app has (section 2) are described, not shown: their code and rules are in
+`ctrlx-baseline/` (`STANDARD.md`, `framework/`).
 
 ## 1. The four columns in the device list
 
@@ -22,7 +24,126 @@ Typical findings:
 - a sync manager's start address differs;
 - the EEPROM's identity doesn't match what the device reports.
 
-## 2. Where the data comes from
+## 2. How io-config is built: shared parts and its own parts
+
+io-config is a ctrlX app like the others in `~/ctrlx-apps`. Everything that isn't about EtherCAT, such as reaching
+the Data Layer, serving the web page, storing settings and starting and stopping, is the same in every app. That
+shared part is the **framework** of `ctrlx-baseline`, and its rules are in `ctrlx-baseline/STANDARD.md`.
+io-config's own code is the EtherCAT part.
+
+### 2.1 Today: the old layout
+
+io-config was made from the app template before the baseline existed (2026-10-28), so it still has its **own copies**
+of the shared parts: [app/bus.py](../app/bus.py), the request handling in [app/web.py](../app/web.py), the
+start-up in [app/main.py](../app/main.py) and the node base in [app/provider.py](../app/provider.py). The baseline
+was partly built from io-config: its additions to these copies (marked ★ below) were taken into the framework.
+
+`ctrlx-baseline/tools/check.py` runs before every build. For io-config it reports the old layout and one warning
+[BUS1]: io-config's `bus.py` treats MOTION's `OK_NO_CONTENT` answer as an error. io-config doesn't talk to MOTION,
+and no EtherCAT master node has been seen to answer that way, so it isn't known to matter; the framework's client
+has the fix. io-config moves to the framework the next time it's
+reworked (STANDARD.md §12), as its own commit. Its URL, Data Layer nodes and REST routes stay the same.
+
+### 2.2 Which shared part does what for io-config
+
+| Shared part (framework) | What it does for io-config | io-config today |
+|---|---|---|
+| Data Layer client (`bus`) | every call to the EtherCAT master: reads, reads with arguments ★, JSON writes ★; errors carry the Data Layer code | `app/bus.py` |
+| Simulated ctrlX (`fakebus`) | development and tests without a controller | `app/fake.py`: replays the recorded X3 bus (below) |
+| Web server (`web`) | routing below `/io-config/api/v1`, error answers, reading uploads, file downloads ★, the configuration load/save hooks | first half of `app/web.py` |
+| Own Data Layer nodes (`provider`) | publishing `io-config/...` nodes, including "write a command, read the result" nodes ★ | `app/provider.py` |
+| App data (`appdata`) | `config.json` and `edits.json` in the active configuration: atomic writes, reload when replaced from outside | `app/core.py` (`_save`, `reload_if_changed`) |
+| Start-up (`runtime`) | snap or development mode, waiting for the active configuration, a folder outside the configuration ★, a provider that may give up ★, web server, main loop, shutdown | `app/main.py` |
+| UI helpers (`ctrlx.js`, `base.css`) | token, API calls, error banner, colours | the top of `www/app.js`, `www/style.css` |
+
+### 2.3 io-config's own code on top of the shared parts
+
+Everything in sections 3 and 4 is io-config's own code: `core.py`, `sii.py`, `eni.py`, `esi.py`, `generate.py`,
+`configure.py`, `edits.py`, `compare.py`, `coe.py`, `soe.py`. Where io-config plugs into the shared parts:
+
+**Start-up: the ESI library lives outside the configuration.** ESI files can be large and belong to the controller,
+not to a configuration, so the library is in `$SNAP_COMMON/esi` rather than in the app data (with the framework:
+the start-up's folder for data outside the configuration).
+
+```python
+# app/main.py:52 esi_folder
+def esi_folder() -> str:
+    if IN_SNAP:
+        return os.path.join(os.environ["SNAP_COMMON"], "esi")
+    return os.environ.get("IO_CONFIG_ESI", os.path.join(SRC, "data", "esi"))
+
+# app/main.py:114 main (shortened): the core gets the bus, its settings file and the ESI library
+core = Core(path, bus, esi_folder(), log=log)
+...
+log(f"Configuration: {path}, ESI library: {core.esi.folder} ({core.esi.summary()['devices']} devices)")
+```
+
+The configurator works without its own Data Layer nodes, so the start-up stops trying to start the provider after a
+minute ([app/main.py:73](../app/main.py#L73)) instead of waiting forever.
+
+**Own Data Layer nodes: switching saved configurations from a PLC.** `io-config/activate` is a command node: a PLC or
+another app writes a configuration's name, and reading the node gives the result of the last write.
+
+```python
+# app/provider.py:106 register (shortened)
+def activate(text):
+    name = text.strip()
+    try:
+        core.start_activate(name)
+    except Exception as e:
+        self.last_activate = f"error: {e}"
+        raise ValueError(str(e)) from e                 # the write is refused (DL_INVALID_VALUE)
+    self.last_activate = f"started {name}"
+
+self._add(f"{ROOT}/configurations", "Names of the saved configurations (JSON list)",
+          lambda: json.dumps([c["name"] for c in core.saved()]))
+self._add(f"{ROOT}/activate", "Write a saved configuration's name to activate it",
+          lambda: self.last_activate, write=activate)
+for field, description in (("state", ...), ("name", ...), ("error", ...)):
+    self._add(f"{ROOT}/activation/{field}", description, lambda f=field: str(core.activation[f] or ""))
+```
+
+**Web server: io-config's routes.** The REST API has about 30 routes (scan, devices, CoE objects, SoE parameters,
+process data, plan, download, backups, saved configurations, ESI library). They're thin: each calls the core. The
+ESI upload takes the file itself as the request body, with a larger limit than ordinary JSON requests:
+
+```python
+# app/web.py:345 post_esi (shortened)
+def post_esi(self):
+    """The body is the file itself (XML or zip); its name comes in ?name=."""
+    name = self.q("name")
+    ...
+    if length > MAX_UPLOAD:                             # 64 MB
+        raise HttpError(413, f"File too large (max {MAX_UPLOAD // (1024 * 1024)} MB)")
+    data = self.rfile.read(length)
+    self.send_json(200, core.esi.add(name, data))
+
+# app/web.py:336 post_activate: the same activation as the Data Layer node
+def post_activate(self, name):
+    self.send_json(202, core.start_activate(name))
+```
+
+**Simulated ctrlX: the recorded X3 bus.** The fake doesn't invent devices. It replays what the X3's master answered
+(online info, EEPROMs, CoE dictionaries in `tests/data/`), so the scan, the cross-check and the byte-for-byte tests
+run on real data without a controller. `IO_CONFIG_FAKE_DRIVE=1` adds the recorded ctrlX DRIVE with its SoE parameters.
+
+```python
+# app/fake.py:75 FakeBus (shortened)
+class FakeBus:
+    def __init__(self, nodes: dict = None, slaves: list = None, drive: bool = False):
+        if nodes is None:
+            nodes, slaves = recorded_nodes()            # tests/data/x3-bus.json
+            if drive:
+                add_drive(nodes, slaves)                # tests/data/x3-drive.json, plugged into the coupler's port C
+                ...                                     # SoE attributes from the drive's SoE dictionary
+```
+
+**App data: two files in the active configuration.** `io-config/config.json` (the master instance) and
+`io-config/edits.json` (your edits per device) travel with ctrlX configurations and backups, and so do the saved
+configurations and backups (`io-config/saved/<name>/`, `io-config/backups/<time>/`). The ESI library doesn't (see
+above).
+
+## 3. Where the data comes from
 
 The app talks **only to the ctrlX EtherCAT master** (the `comm.ethercat.master` app on the controller), through
 the **Data Layer**. It doesn't open the Ethernet port itself or send any EtherCAT frames. Everything comes from
@@ -38,8 +159,10 @@ nodes the master already offers under `fieldbuses/ethercat/master/instances/ethe
 | Process data | `realtime_data/input|output/data/<variable>` | read/write |
 
 So the **master scans the bus** (it does that on its own at start-up and when the topology changes), and the app
-reads the master's results, then each device's EEPROM through the master's EEPROM node. Two Data Layer calls
-are in [app/bus.py](../app/bus.py): `read_args` for nodes that need arguments, and `write` / `write_json`.
+reads the master's results, then each device's EEPROM through the master's EEPROM node. All calls go through the
+shared Data Layer client (section 2). The master's device-access nodes need two calls io-config added to it:
+`read_args` for nodes that take arguments (position, EEPROM offset), and `write_json` for nodes that can't be read
+without arguments (SDO, SoE). Both are now part of the baseline's client.
 
 ```python
 # app/core.py:212 _scan (shortened)
@@ -72,7 +195,7 @@ The EEPROM words are cached per position + identity + serial number. A rescan do
 "Reread EEPROMs" is ticked. [app/sii.py](../app/sii.py) decodes them (ETG.1000.6): identity, mailbox protocols,
 sync managers, FMMUs, PDOs and DC.
 
-## 3. The process, step by step
+## 4. The process, step by step
 
 ```
  Scan                     Cross-check                    Build                       Write
@@ -85,7 +208,7 @@ sync managers, FMMUs, PDOs and DC.
                                                          -> ENI + ini (generated)    files in active configuration
 ```
 
-### 3.1 Identify: the ESI lookup
+### 4.1 Identify: the ESI lookup
 
 ```python
 # app/esi.py:294 EsiLibrary.find
@@ -105,7 +228,7 @@ def find(self, vendor, product, revision):
 The library index (`$SNAP_COMMON/esi/index.json`) lists every device in every uploaded file, so a lookup doesn't
 parse XML. Only the matching device is parsed, by [app/esi.py:95](../app/esi.py#L95) `parse_device`.
 
-### 3.2 Identify: pairing with the running configuration
+### 4.2 Identify: pairing with the running configuration
 
 Each device on the bus is paired with its entry in the running ENI **by device type in bus order** (1.3.4). Before
 that the pairing was by position, so a device plugged in before others made those others lose their settings.
@@ -133,7 +256,7 @@ entry. The drive keeps its edited telegram.
 Saved edits from the editor carry the bus they were made for and move with their device the same way
 (`_follow_edits`, [app/core.py:519](../app/core.py#L519)).
 
-### 3.3 Cross-check
+### 4.3 Cross-check
 
 [app/compare.py:43](../app/compare.py#L43) `device_report` puts online info, EEPROM, ENI entry and ESI device side
 by side and adds a finding for each disagreement:
@@ -166,7 +289,7 @@ compared by object index, subindex and bit length only: names and type spellings
 meaning anything (the EEPROM says BOOL where the ENI says BIT). It does the same for the process-data sync
 managers (start address, size) and the mailbox protocols. The worst finding gives the **Check** badge.
 
-### 3.4 Describe each device (what the new configuration is built from)
+### 4.4 Describe each device (what the new configuration is built from)
 
 [app/configure.py:78](../app/configure.py#L78) `describe` picks the best source per position, then lays the
 current configuration's choices and your edits on top:
@@ -201,7 +324,7 @@ if slave is not None and (slave["vendor"], slave["product"]) == (vendor, product
   parameters, MDT/AT content. Edited MDT/AT entries keep the ESI's names and types; only added IDNs take theirs
   from the drive's SoE dictionary (as I/O Engineering does).
 
-### 3.5 Build: generate the ENI and ini
+### 4.5 Build: generate the ENI and ini
 
 [app/configure.py:125](../app/configure.py#L125) `build_plan` does three things:
 - runs the steps above for every position;
@@ -237,7 +360,7 @@ The plan shows:
 
 You can download the ENI and the ini before writing.
 
-### 3.6 Apply: write to the master
+### 4.6 Apply: write to the master
 
 ```python
 # app/configure.py:201 write_config (the download sequence)
@@ -260,11 +383,14 @@ Before this the app does two things ([app/core.py:370](../app/core.py#L370) `_do
 
 Saved configurations (1.4.0) use the same sequence. "Activate", by button, REST or Data Layer, backs up the
 running configuration, writes the saved ENI and ini, then restores the edits saved with them
-([app/core.py:468](../app/core.py#L468) `start_activate`).
+([app/core.py:468](../app/core.py#L468) `start_activate`). The Data Layer way is the `io-config/activate` node
+(section 2.3).
 
-## 4. Where to look for more
+## 5. Where to look for more
 
 - [docs/design.md](design.md): the design history, every rule learned from the controller and what's open.
+- `ctrlx-baseline/STANDARD.md`: the rules all apps follow and the shared framework (§2), how an app moves to it
+  (§12). `ctrlx-baseline/tools/check.py ~/ctrlx-apps/io-config` shows where io-config stands.
 - Tests: `tests/test_generate.py` and `tests/test_drive.py` hold the byte-for-byte acceptance tests.
   `tests/test_nombx.py` covers devices without a mailbox and the real X3 bus with the inserted XI112108.
   `tests/test_saved.py` covers saved configurations.
