@@ -99,7 +99,8 @@ def device_report(position, online, eeprom, eeprom_error, eni_slave, esi_match, 
         add("error", f'EEPROM identity ({ident(eeprom["vendor"], eeprom["product"], eeprom["revision"])}) differs from what the device reports')
 
     # --- PDOs side by side (a modular device: also the PDOs of its configured, else default, modules)
-    if modules.usable(esi_device):
+    modular = modules.usable(esi_device)
+    if modular:
         idents = (modules.idents_from_startup(esi_device, eni_slave.get("coe_init", [])) if eni_slave else None) \
             or modules.defaults(esi_device)
         esi_device = dict(esi_device, pdos=esi_device["pdos"] + modules.pdos(esi_device, idents))
@@ -133,7 +134,7 @@ def device_report(position, online, eeprom, eeprom_error, eni_slave, esi_match, 
                 add("error", f'PDO {hx(r["index"])} "{out["name"]}" is configured but not in the ESI')
             elif ee_p is not None:
                 add("warning", f'PDO {hx(r["index"])} "{out["name"]}" is in the EEPROM but not in the ESI')
-        if esi_device and eeprom and ee_p is None and esi_p is not None:
+        if esi_device and eeprom and ee_p is None and esi_p is not None and not modular:   # EEPROMs list no module PDOs
             add("info", f'PDO {hx(r["index"])} "{out["name"]}" is in the ESI but not in the EEPROM')
         pdo_rows.append(out)
 

@@ -133,6 +133,14 @@ class ModularTest(unittest.TestCase):
         with self.assertRaises(edits.EditError):
             edits.validate(src, {"dc_mode": "nonsense"})
 
+    def test_pdo_choice_from_before_modules(self):
+        """io-config 1.4.3 saved a PDO choice for the Elmo (#x1702/#x1B01, empty): ignored, dropped on the next save."""
+        src = source(self.esi)
+        old = {"identity": [VENDOR, PRODUCT, REVISION], "pdos": [0x1702, 0x1B01]}
+        dev = configure.device_for(src, {src["pos"]: old})
+        self.assertEqual(len(dev["pdos"]), 6)
+        self.assertNotIn("pdos", edits.validate(src, {"pdos": [0x1702, 0x1B01], "name": "Elmo1"}))
+
     def test_startup_parameter_on_top(self):
         src = source(self.esi)
         edit = edits.validate(src, {"startup": [{"index": 0x6065, "subindex": 0, "data": "E8030000"}]})

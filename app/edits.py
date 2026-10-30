@@ -113,7 +113,9 @@ def validate(src: dict, edit: dict) -> dict:
             problems.append(f'DC mode must be one of: {", ".join(names) or "(the ESI has none)"}')
         else:
             out["dc_mode"] = edit["dc_mode"]
-    if edit.get("pdos") is not None:
+    if edit.get("pdos") is not None and modules.usable(esi):
+        pass                 # a PDO choice saved before 1.5.0 for a modular device: its PDOs come from the modules now
+    elif edit.get("pdos") is not None:
         pdos, can, why = catalog(src)
         if not can:
             problems.append(f"PDOs can't be changed: {why}")
@@ -229,7 +231,7 @@ def apply_edit(dev: dict, src: dict, edit: dict) -> dict:
             raise EditError(f'DC mode {edit["dc_mode"]} is not in the ESI')
         out["dc"] = {"assign_activate": mode["assign_activate"], "shift": mode.get("shift_sync0") or 0} \
             if mode["assign_activate"] else None
-    if edit.get("pdos") is not None:
+    if edit.get("pdos") is not None and not out.get("modules"):
         pdos, _can, _why = catalog(src)
         by_index = {p["index"]: p for p in pdos}
         sm_for = {"tx": next((s["no"] for s in dev["sm"] if s["type"] == "Inputs"), None),

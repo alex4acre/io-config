@@ -171,6 +171,9 @@ visible.
    commands (e.g. #x6060/#x6860 = 8). A running ENI's modules are read back from its #xF030; without one (the
    1.4.3 file) the ESI defaults are used. Settings tab: module per slot, DC mode (ESI OpModes). No I/O
    Engineering reference for a modular device yet: commands follow ETG.5001/ETG.2000; ask for one to compare.
+   1.5.1: a PDO choice saved before 1.5.0 for a modular device (the X3's Elmo had #x1702/#x1B01) is ignored and
+   dropped on the next save (1.5.0 applied it and the plan gave the Elmo 0 bytes); no "in the ESI but not in the
+   EEPROM" notes for module PDOs.
 11. **Next:** offline add from the ESI library, more than one frame, free PDO mapping (editing PDO contents),
    modules from separate module files (EtherCATModule, e.g. ctrlX DRIVE FSoE).
 
