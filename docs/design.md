@@ -174,6 +174,8 @@ visible.
    1.5.1: a PDO choice saved before 1.5.0 for a modular device (the X3's Elmo had #x1702/#x1B01) is ignored and
    dropped on the next save (1.5.0 applied it and the plan gave the Elmo 0 bytes); no "in the ESI but not in the
    EEPROM" notes for module PDOs.
+   1.5.2: the Settings tab shows the PDOs of the chosen modules as soon as a slot changes (each module choice carries
+   its PDOs, numbered for the slot), with a "Not saved yet" note; the Startup tab follows after Save.
 11. **Next:** offline add from the ESI library, more than one frame, free PDO mapping (editing PDO contents),
    modules from separate module files (EtherCATModule, e.g. ctrlX DRIVE FSoE).
 

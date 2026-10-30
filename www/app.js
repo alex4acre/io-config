@@ -552,21 +552,7 @@ function renderEditor() {
   $("e-name").value = d.name;
   $("e-reason").textContent = d.editable ? "" : "PDOs can't be changed: " + d.reason;
   renderModules();
-  const tb = $("e-pdos").tBodies[0];
-  tb.replaceChildren();
-  for (const p of d.pdos) {
-    const box = el("input", { type: "checkbox" });
-    box.dataset.index = p.index;
-    box.checked = d.selected.includes(p.index);
-    box.disabled = !d.editable || p.mandatory;
-    box.onchange = updateEditorRules;
-    const rules = [p.mandatory ? "mandatory" : "", p.fixed ? "fixed content" : "",
-      p.excludes.length ? "excludes " + p.excludes.map((x) => hex(x)).join(" ") : ""].filter(Boolean).join(", ");
-    const tr = row(tb, [el("td", {}, box), p.dir === "rx" ? "out" : "in", hex(p.index), p.name, p.bits / 8 + " B", rules],
-      { class: d.default.includes(p.index) ? "default" : "" });
-    tr.title = p.entries.map((e) => (e.index ? `${hex(e.index)}:${e.subindex} ${e.name} (${e.bits} bit)` : `padding ${e.bits} bit`)).join("\n");
-  }
-  updateEditorRules();
+  renderPdoTable();
   const sb = $("e-startup").tBodies[0];
   sb.replaceChildren();
   for (const c of d.fixed_startup) {
@@ -584,6 +570,38 @@ function renderEditor() {
   $("e-msg").textContent = d.edited ? "This position has saved changes." : "Defaults (no saved changes).";
 }
 
+function renderPdoTable() {
+  const d = editData;
+  const tb = $("e-pdos").tBodies[0];
+  tb.replaceChildren();
+  for (const p of d.pdos) {
+    const box = el("input", { type: "checkbox" });
+    box.dataset.index = p.index;
+    box.checked = d.selected.includes(p.index);
+    box.disabled = !d.editable || p.mandatory;
+    box.onchange = updateEditorRules;
+    const rules = [p.mandatory ? "mandatory" : "", p.fixed ? "fixed content" : "",
+      p.excludes.length ? "excludes " + p.excludes.map((x) => hex(x)).join(" ") : ""].filter(Boolean).join(", ");
+    const tr = row(tb, [el("td", {}, box), p.dir === "rx" ? "out" : "in", hex(p.index), p.name, p.bits / 8 + " B", rules],
+      { class: d.default.includes(p.index) ? "default" : "" });
+    tr.title = p.entries.map((e) => (e.index ? `${hex(e.index)}:${e.subindex} ${e.name} (${e.bits} bit)` : `padding ${e.bits} bit`)).join("\n");
+  }
+  updateEditorRules();
+}
+
+// a module changed in a slot: show the PDOs the chosen modules bring (same order as the server), not saved yet
+function previewModules() {
+  const mods = chosenModules();
+  const pdos = editData.modules.flatMap((m, i) => (m.choices.find((c) => c.ident === mods[i]) || { pdos: [] }).pdos);
+  editData.pdos = pdos;
+  editData.selected = editData.default = pdos.map((p) => p.index);
+  renderPdoTable();
+  const changed = mods.some((x, i) => x !== editData.modules[i].selected);
+  $("e-msg").textContent = changed ? "Not saved yet: Save to apply the modules (the Startup tab follows after Save)."
+    : (editData.edited ? "This position has saved changes." : "Defaults (no saved changes).");
+  $("e-msg").className = changed ? "warnlabel" : "muted";
+}
+
 function renderModules() {
   const d = editData;
   $("e-modules-box").hidden = !d.modules;
@@ -592,6 +610,7 @@ function renderModules() {
   for (const m of d.modules || []) {
     const sel = el("select", {}, ...m.choices.map((c) => el("option", { value: c.ident }, c.ident ? `${c.name} (${hex(c.ident)})` : c.name)));
     sel.value = m.selected;
+    sel.onchange = previewModules;
     row(tb, [m.slot, sel, el("span", { class: "muted" }, m.selected === m.default ? "default" : "")]);
   }
   $("e-dc-box").hidden = !d.dc_modes.length;

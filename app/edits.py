@@ -56,7 +56,9 @@ def options(src: dict, dev: dict, edit: dict = None) -> dict:
         pdos, default = dev["pdos"], selected
         slots = [{"slot": sl["name"], "group": sl["group"], "selected": dev["modules"]["idents"][no],
                   "default": sl["default"] or modules.EMPTY,
-                  "choices": [{"ident": x, "name": modules.name(esi, x)} for x in modules.choices(esi, sl)]}
+                  "choices": [{"ident": x, "name": modules.name(esi, x),
+                               "pdos": [_pdo_row(p) for p in modules.pdos(esi, _only(esi, no, x))]}
+                              for x in modules.choices(esi, sl)]}
                  for no, sl in enumerate(esi["slots"])]
     modes = (esi or {}).get("dc_modes") or []
     current_dc = (dev or {}).get("dc") or {}
@@ -72,11 +74,22 @@ def options(src: dict, dev: dict, edit: dict = None) -> dict:
         "edited": bool(edit),
         "selected": selected,
         "default": default,
-        "pdos": [{"dir": p["dir"], "index": p["index"], "name": p["name"], "bits": _size(p),
-                  "sm": p["sm"], "fixed": p["fixed"], "mandatory": p["mandatory"], "excludes": p["excludes"],
-                  "entries": [{"index": e["index"], "subindex": e["subindex"], "name": e["name"], "bits": e["bits"],
-                               "type": e.get("type", "")} for e in p["entries"]]} for p in pdos],
+        "pdos": [_pdo_row(p) for p in pdos],
     }
+
+
+def _pdo_row(p: dict) -> dict:
+    return {"dir": p["dir"], "index": p["index"], "name": p["name"], "bits": _size(p),
+            "sm": p["sm"], "fixed": p["fixed"], "mandatory": p["mandatory"], "excludes": p["excludes"],
+            "entries": [{"index": e["index"], "subindex": e["subindex"], "name": e["name"], "bits": e["bits"],
+                         "type": e.get("type", "")} for e in p["entries"]]}
+
+
+def _only(esi: dict, no: int, ident: int) -> list:
+    """A module list with only this slot filled (the PDOs one module choice brings)."""
+    idents = [modules.EMPTY] * len(esi["slots"])
+    idents[no] = ident
+    return idents
 
 
 def _esi(src: dict):

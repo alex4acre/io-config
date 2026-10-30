@@ -127,6 +127,9 @@ class ModularTest(unittest.TestCase):
         opts = edits.options(src, dev, edit)
         self.assertEqual([m["selected"] for m in opts["modules"]], [0, 0x100, 0, 0, 0])
         self.assertEqual(opts["dc_mode"], "DC Off")
+        velocity = next(c for c in opts["modules"][2]["choices"] if c["ident"] == 0x200)      # what the UI previews
+        self.assertEqual([(p["index"], p["bits"]) for p in velocity["pdos"]], [(0x1A10, 48), (0x1610, 48)])
+        self.assertEqual(velocity["pdos"][1]["entries"][1]["index"], 0x68FF)
         self.assertFalse(opts["editable"])
         with self.assertRaises(edits.EditError):
             edits.validate(src, {"modules": [0x100, 0x288110, 0, 0, 0]})

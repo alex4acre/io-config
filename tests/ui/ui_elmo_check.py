@@ -92,8 +92,15 @@ try:
     check(js("return document.querySelectorAll('#e-pdos tbody tr').length") == 6, "6 module PDOs listed")
     js("document.getElementById('e-modules-box').scrollIntoView();")
     shot("elmo-settings-defaults")
-    js("const s = document.querySelectorAll('#e-modules select'); s[0].value = '0'; s[2].value = '0'; "
-       "document.getElementById('e-name').value = 'Elmo1'; document.getElementById('e-save').click();")
+    js("const s = document.querySelectorAll('#e-modules select'); s[2].value = '512'; s[2].onchange();")
+    check(until("document.querySelector('#e-pdos tbody').textContent.includes('Axis2_Slot1 Cyclic Velocity Mode Outputs')"),
+          "PDO table follows a module change before Save")
+    check(js("return document.getElementById('e-msg').textContent").startswith("Not saved yet"), "not-saved note")
+    check(js("return document.getElementById('e-sizes').textContent").startswith("23 B inputs, 23 B outputs"),
+          f"sizes follow: {js('return document.getElementById(' + chr(39) + 'e-sizes' + chr(39) + ').textContent')}")
+    js("const s = document.querySelectorAll('#e-modules select'); s[0].value = '0'; s[0].onchange(); s[2].value = '0'; s[2].onchange();")
+    check(until("document.querySelectorAll('#e-pdos tbody tr').length === 2"), "2 PDOs shown before Save")
+    js("document.getElementById('e-name').value = 'Elmo1'; document.getElementById('e-save').click();")
     check(until("document.getElementById('e-msg').textContent.startsWith('Saved')"), "module edit saved")
     check(until("document.querySelectorAll('#e-pdos tbody tr').length === 2"), "2 PDOs after the edit")
     js("document.getElementById('e-modules-box').scrollIntoView();")
