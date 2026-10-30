@@ -162,6 +162,49 @@ def _fix_text(text: str) -> str:
     return text if text.isprintable() else ""
 
 
+def show(data, attr: dict) -> str:
+    """A value for people: decoded, numbers with their hex most significant byte first ("1000 (0x000003E8)").
+    The data stays little-endian in the drive and the ENI."""
+    data = bytes(data)
+    try:
+        value = decode(data, attr)
+    except (ValueError, struct.error):
+        return " ".join(f"{b:02X}" for b in data) or "-"
+    size = attr["size"]
+
+    def one(v, raw):
+        if attr["display"] in ("unsigned", "signed", "binary") and isinstance(v, (int, float)) and len(raw) in (1, 2, 4, 8):
+            return f"{v:g} (0x{int.from_bytes(raw, 'little'):0{len(raw) * 2}X})" if isinstance(v, float) else \
+                f"{v} (0x{int.from_bytes(raw, 'little'):0{len(raw) * 2}X})"
+        return f"{v:g}" if isinstance(v, float) else str(v)
+
+    if isinstance(value, list):
+        body = data[4:]
+        return ", ".join(one(v, body[i * size:(i + 1) * size]) for i, v in enumerate(value)) or "(empty list)"
+    return one(value, data[:size or len(data)])
+
+
+SEARCH_IDN = re.compile(r"([sp])?\s*-?\s*(?:([0-7])\s*-\s*)?(\d{1,4})", re.IGNORECASE)
+
+
+def matches(query: str, idn: int, text: str) -> bool:
+    """Parameter filter: every word is part of "S-0-0265 name", or is an IDN written short: S265, s 265, S-265,
+    S0265, P-0-12, P12 or only the number (265)."""
+    query = re.sub(r"\b([sp])\s+(?=\d)", r"\1", query, flags=re.IGNORECASE)    # "s 265" -> "s265"
+    hay = f"{idn_text(idn)} {text}".lower()
+    for w in query.split():
+        m = SEARCH_IDN.fullmatch(w)
+        if w.lower() in hay:
+            continue
+        if not m or int(m.group(3)) != idn & 0xFFF:
+            return False
+        if m.group(1) and (m.group(1).upper() == "P") != bool(idn & 0x8000):
+            return False
+        if m.group(2) is not None and int(m.group(2)) != (idn >> 12) & 7:
+            return False
+    return True
+
+
 def parse_dictionary(data: bytes) -> dict:
     """An EtherCATDict file -> {idn: {"name", "type", "bits", "min", "max", "mapping", "attribute", "unit"}}."""
     root = parse_xml(data)

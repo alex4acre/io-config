@@ -151,6 +151,9 @@ try:
     check(until("document.getElementById('e-msg').textContent.startsWith('Saved')"), "edit saved")
     js("document.getElementById('d-objects').click();")
     check(until("document.querySelectorAll('#o-list tbody tr').length === 30", 15), "30 objects listed")
+    js("document.getElementById('o-filter').value = 'x8000'; document.getElementById('o-filter').oninput();")
+    check(until("document.querySelectorAll('#o-list tbody tr').length === 1"), "filter x8000 finds #x8000")
+    js("document.getElementById('o-filter').value = ''; document.getElementById('o-filter').oninput();")
     js("[...document.querySelectorAll('#o-list tbody tr')].find(r => r.cells[0].textContent === '#x8000').click();")
     check(until("document.getElementById('o-obj-title').textContent.includes('Channel 1 settings')", 15), "object 0x8000 opens")
     js("""const r = [...document.querySelectorAll('#o-entries tbody tr')].find(r => r.cells[1].textContent === 'User gain');
@@ -162,11 +165,13 @@ try:
     check(until("!document.getElementById('p-startup').hidden && "
                 "[...document.querySelectorAll('#e-startup tbody tr')].some(r => r.cells[0].textContent === '#x8000:1')"),
           "Startup tab shows the startup parameter")
+    check(js("return [...document.querySelectorAll('#e-startup tbody tr')].find(r => r.cells[0].textContent === '#x8000:1')"
+             ".cells[1].textContent") == "1000 (0x000003E8)", "startup value shown decoded, hex most significant byte first")
     js("document.getElementById('plan-devices').tBodies[0].replaceChildren(); document.getElementById('build').click();")
     check(until("document.querySelector('#plan-devices tbody').textContent.includes('AO1')"), "plan uses the new name")
     check(js("return document.getElementById('plan-summary').textContent").startswith("Differs"), "edited configuration differs")
     shot("editor")
-    js("document.getElementById('allow-writes').click();")
+    js("document.getElementById('d-writable').click();")
     until("""[...document.querySelectorAll('#o-entries tbody tr')].some(r => r.cells[1].textContent === 'User gain' &&
              [...r.querySelectorAll('button')].some(b => b.textContent === 'Write now' && !b.disabled))""")
     js("""const r = [...document.querySelectorAll('#o-entries tbody tr')].find(r => r.cells[1].textContent === 'User gain');
@@ -174,7 +179,7 @@ try:
     check(until("document.getElementById('banner').textContent.includes('can only be written in PreOp')"),
           "online write of a PreOp-only object is explained")
 
-    # process data of the device (allow writes is on)
+    # process data of the device (writable is on)
     js("document.getElementById('d-pd').click();")
     check(until("document.querySelectorAll('#pd tbody tr input').length === 2"), "the 2 outputs can be set")
     OUT1 = "[...document.querySelectorAll('#pd tbody tr')].find(r => r.cells[0].textContent === 'Channel_1.Value')"
@@ -189,7 +194,10 @@ try:
     check(text("pd-info") != t1 or until("document.getElementById('pd-info').textContent !== " + json.dumps(t1), 2),
           "values refresh while the button keeps focus")
     shot("process-data")
-    js("document.getElementById('allow-writes').click(); document.getElementById('tab-bus').click();")
+    js("document.querySelectorAll('#devices tbody tr')[1].click();")
+    check(until("document.getElementById('d-title').textContent.startsWith('1:') && "
+                "!document.getElementById('d-writable').checked"), "Writable is off for another device")
+    js("document.getElementById('tab-bus').click();")
 
     js("document.getElementById('tab-esi').click();")
     check(until("document.getElementById('esi-count').textContent.startsWith('3 files, 5 devices')"), "library shows 3 files")

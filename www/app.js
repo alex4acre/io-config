@@ -33,6 +33,37 @@ async function api(method, path, body, raw) {
   return data;
 }
 
+// --- busy indicator: a spinning wheel with what is running, in the title band ----------------------
+
+const WHEEL = '<svg class="wheel" viewBox="0 0 24 24" aria-hidden="true"><g fill="currentColor">' +
+  [...Array(10).keys()].map((i) => `<rect x="10.4" y="0.6" width="3.2" height="5" rx="0.6" transform="rotate(${i * 36} 12 12)"/>`).join("") +
+  '<path fill-rule="evenodd" d="M12 3.4a8.6 8.6 0 1 0 0 17.2a8.6 8.6 0 1 0 0-17.2zM12 8.6a3.4 3.4 0 1 1 0 6.8a3.4 3.4 0 1 1 0-6.8z"/></g></svg>';
+
+function wheel() {
+  const s = el("span", { class: "wheel-box" });
+  s.innerHTML = WHEEL;
+  return s;
+}
+
+const busyJobs = new Map();                    // key -> text of what is running
+
+function setBusy(key, text) {
+  if (text) busyJobs.set(key, text);
+  else busyJobs.delete(key);
+  const b = $("busy");
+  b.hidden = busyJobs.size === 0;
+  if (!b.hidden) b.replaceChildren(wheel(), el("span", {}, [...busyJobs.values()].pop()));
+}
+
+async function busy(key, text, fn) {
+  setBusy(key, text);
+  try {
+    return await fn();
+  } finally {
+    setBusy(key, null);
+  }
+}
+
 function banner(text, ok) {
   const b = $("banner");
   b.textContent = text || "";
@@ -43,6 +74,18 @@ function banner(text, ok) {
 // --- small helpers ------------------------------------------------------------------------------
 
 const hex = (n, w = 4) => (typeof n === "number" ? "#x" + n.toString(16).toUpperCase().padStart(w, "0") : "-");
+
+// a startup command's value for people (decoded, hex most significant byte first); the ENI bytes as a tooltip
+const valueCell = (c) => el("span", { title: "Data in the ENI (device byte order): " + c.data }, c.show || c.data);
+
+// CoE object filter: every word is in "#x8000 name" or names the index in hex (8000, x8000, 0x8000, #x8000)
+function objectMatches(query, index, text) {
+  const hay = `#x${index.toString(16).padStart(4, "0")} 0x${index.toString(16).padStart(4, "0")} ${text}`.toLowerCase();
+  return query.toLowerCase().split(/\s+/).filter(Boolean).every((w) => {
+    const m = /^(?:0x|#x|x)?([0-9a-f]{1,4})$/.exec(w);
+    return hay.includes(w) || (m && parseInt(m[1], 16) === index);
+  });
+}
 
 function el(tag, attrs, ...children) {
   const e = document.createElement(tag);
@@ -107,6 +150,9 @@ function renderState(s) {
   $("instance").textContent = s.instance;
   $("scan").disabled = s.scan.running || s.download.running;
   $("progress").textContent = s.scan.running ? "Scanning: " + s.scan.progress : "";
+  setBusy("scan", s.scan.running ? "Scanning the bus" : null);
+  setBusy("download", s.download.running ? (s.activation.state === "running" ? `Activating "${s.activation.name}"`
+    : "Writing to the EtherCAT master") : null);
   if (s.scan.error && !s.scan.running && s.scan.finished !== lastFinished) banner("Scan failed: " + s.scan.error);
 
   const m = s.master;
@@ -200,7 +246,10 @@ async function openDevice(pos) {
   const other = pos !== selected;
   selected = pos;
   editPos = null;                             // settings depend on the scan: reloaded when their tab is shown
-  if (other) objPos = soePos = null;
+  if (other) {
+    objPos = soePos = null;
+    $("d-writable").checked = false;            // writing is allowed per device, never carried over
+  }
   const protocols = d.sources.eeprom.mailbox || [];
   $("d-objects").hidden = !d.present || (protocols.length > 0 && !protocols.includes("CoE"));
   $("d-soe").hidden = !d.present || !protocols.includes("SoE");
@@ -252,7 +301,7 @@ async function openDevice(pos) {
   if (!inits.length) row(ib, [el("span", { class: "muted" }, "none"), "", "", "", ""]);
   for (const [src, c] of inits) {
     row(ib, [src, c.transitions.join(" "), `${hex(c.index)}:${c.subindex}${c.complete_access ? " (CA)" : ""}`,
-      el("code", {}, c.data), c.comment]);
+      valueCell(c), c.comment]);
   }
 
   const dc = $("d-dc");
@@ -324,7 +373,7 @@ $("build").onclick = async () => {
   try {
     banner("");
     const cycle = Number($("cycle").value);
-    plan = await api("POST", "/plan", cycle ? { cycle_us: cycle } : {});
+    plan = await busy("plan", "Building the configuration", () => api("POST", "/plan", cycle ? { cycle_us: cycle } : {}));
   } catch (e) {
     plan = null;
     $("plan").hidden = true;
@@ -466,12 +515,12 @@ $("saved-box").ontoggle = () => { if ($("saved-box").open) loadSaved(); };
 $("save-current").onclick = () => saveCurrent(false);
 $("save-name").onkeydown = (ev) => { if (ev.key === "Enter") saveCurrent(false); };
 
-// --- writes switch ----------------------------------------------------------------------------------
+// --- writable switch of the open device (not saved) ----------------------------------------------------
 
-const writesAllowed = () => $("allow-writes").checked;
-$("allow-writes").onchange = () => {
-  document.body.classList.toggle("writes", writesAllowed());
+const writesAllowed = () => $("d-writable").checked;
+$("d-writable").onchange = () => {
   if (!$("detail").hidden && panel === "pd") loadPd(true);
+  if (soeIdn !== null && soePos === selected) openSoe(soeIdn);
   if (currentObject) openObject(currentObject);
 };
 
@@ -517,13 +566,13 @@ function renderEditor() {
   const sb = $("e-startup").tBodies[0];
   sb.replaceChildren();
   for (const c of d.fixed_startup) {
-    row(sb, [`${hex(c.index)}:${c.subindex}`, el("code", {}, c.data), c.transitions.join(" "), c.comment,
+    row(sb, [`${hex(c.index)}:${c.subindex}`, valueCell(c), c.transitions.join(" "), c.comment,
       el("span", { class: "muted" }, "from ESI/configuration")]);
   }
   for (const [i, c] of d.startup.entries()) {
     const del = el("button", { class: "small" }, "Remove");
     del.onclick = () => saveEdit({ startup: d.startup.filter((_, j) => j !== i) });
-    row(sb, [c.idn !== undefined ? idnText(c.idn) : `${hex(c.index)}:${c.subindex}`, el("code", {}, c.data),
+    row(sb, [c.idn !== undefined ? idnText(c.idn) : `${hex(c.index)}:${c.subindex}`, valueCell(c),
       c.transitions.join(" "), c.comment, del]);
   }
   renderSoeEditor();
@@ -555,7 +604,7 @@ function renderSoeEditor() {
   }
   const cmds = $("e-soe-cmds").tBodies[0];
   cmds.replaceChildren();
-  for (const c of s.commands) row(cmds, [c.text, el("code", {}, c.data), c.comment]);
+  for (const c of s.commands) row(cmds, [c.text, valueCell(c), c.comment]);
 }
 
 async function fillSoeSuggestions(key) {
@@ -647,7 +696,7 @@ function renderObjectList() {
   const tb = $("o-list").tBodies[0];
   tb.replaceChildren();
   for (const o of objList) {
-    if (f && !(`${hex(o.index)} ${o.name}`.toLowerCase().includes(f))) continue;
+    if (f && !objectMatches(f, o.index, o.name)) continue;
     const tr = row(tb, [hex(o.index), o.name, [o.object_code, o.startup ? "startup" : ""].filter(Boolean).join(", ")],
       { class: "click" + (o.index === currentObject ? " selected" : "") });
     tr.onclick = () => openObject(o.index);
@@ -658,11 +707,12 @@ async function openObjects(pos, refresh) {
   objPos = pos;
   currentObject = null;
   $("o-title").textContent = "Objects (online)";
-  $("o-obj-title").textContent = "Loading the object list ...";
+  $("o-obj-title").textContent = "Loading the object list ... (the first time takes a while)";
   $("o-entries").tBodies[0].replaceChildren();
   $("o-list").tBodies[0].replaceChildren();
   try {
-    objList = (await api("GET", `/devices/${pos}/objects` + (refresh ? "?refresh=1" : ""))).objects;
+    objList = (await busy("objects", "Reading the object list", () =>
+      api("GET", `/devices/${pos}/objects` + (refresh ? "?refresh=1" : "")))).objects;
     $("o-obj-title").textContent = `${objList.length} objects - choose one`;
     renderObjectList();
   } catch (e) {
@@ -682,7 +732,7 @@ async function openObject(index) {
   renderObjectList();
   let o;
   try {
-    o = await api("GET", `/devices/${objPos}/objects/${index}`);
+    o = await busy("object", `Reading ${hex(index)}`, () => api("GET", `/devices/${objPos}/objects/${index}`));
   } catch (e) {
     $("o-obj-title").textContent = e.message;
     return;
@@ -695,18 +745,19 @@ async function openObject(index) {
       row(tb, [e.subindex, el("span", { class: "muted" }, e.error || "-"), "", "", "", "", ""]);
       continue;
     }
-    const value = e.error ? el("span", { class: "muted" }, "-") : (typeof e.value === "string" && e.value === e.hex ? el("code", {}, e.hex) : String(e.value));
+    const value = e.error ? el("span", { class: "muted" }, "-") : el("span", { title: "Device byte order: " + e.hex }, e.show ?? String(e.value));
     let input = "";
     let actions = "";
     if (e.writable) {
       input = el("input", { type: "text", value: e.error ? "" : String(e.value) });
       const now = el("button", { class: "small" }, "Write now");
       now.disabled = !writesAllowed();
-      now.title = writesAllowed() ? "" : "Turn on \"Allow writes\" first";
+      now.title = writesAllowed() ? "" : "Tick \"Writable\" for this device first";
       now.onclick = async () => {
         if (!confirm(`Write ${input.value} to ${hex(o.index)}:${e.subindex} "${e.name}" on the device now?`)) return;
         try {
-          await api("PUT", `/devices/${objPos}/objects/${o.index}/${e.subindex}`, { value: input.value, confirm: true });
+          await busy("write", `Writing ${hex(o.index)}:${e.subindex}`, () =>
+            api("PUT", `/devices/${objPos}/objects/${o.index}/${e.subindex}`, { value: input.value, confirm: true }));
           openObject(o.index);
         } catch (err) {
           banner(err.message);
@@ -771,18 +822,18 @@ async function openSoe(idn) {
   dl.replaceChildren();
   const add = (k, v) => dl.append(el("dt", {}, k), el("dd", {}, v));
   try {
-    const p = await api("GET", `/devices/${soePos}/soe/${idn}`);
+    const p = await busy("soe", `Reading ${idnText(idn)}`, () => api("GET", `/devices/${soePos}/soe/${idn}`));
     $("s-param-title").textContent = `${p.text} ${p.name}`;
-    add("Value", `${Array.isArray(p.value) ? p.value.join(", ") : p.value} ${p.unit || ""}`);
+    add("Value", `${p.show} ${p.unit || ""}`);
     const a = p.attribute;
     add("Type", `${a.display}${a.list ? " list" : ""}, ${a.size} byte(s)${a.decimals ? `, ${a.decimals} decimals` : ""}`);
     const prot = Object.entries(a.write_protected).filter(([, v]) => v).map(([k]) => k);
     add("Write-protected in", prot.length ? prot.join(", ") : "-");
-    add("Raw", el("code", {}, p.hex));
+    add("Raw (device byte order)", el("code", {}, p.hex));
     $("s-edit").hidden = a.command;
     $("s-value").value = Array.isArray(p.value) ? p.value.join(" ") : String(p.value);
     $("s-write").disabled = !writesAllowed();
-    $("s-write").title = writesAllowed() ? "" : "Turn on \"Allow writes\" first";
+    $("s-write").title = writesAllowed() ? "" : "Tick \"Writable\" for this device first";
   } catch (e) {
     add("Online", el("span", { class: "muted" }, e.message));
     $("s-edit").hidden = false;               // a startup parameter can still be added from the dictionary
@@ -793,7 +844,8 @@ async function openSoe(idn) {
 $("s-write").onclick = async () => {
   if (!confirm(`Write ${$("s-value").value} to ${idnText(soeIdn)} on the drive now?`)) return;
   try {
-    await api("PUT", `/devices/${soePos}/soe/${soeIdn}`, { value: $("s-value").value, confirm: true });
+    await busy("write", `Writing ${idnText(soeIdn)}`, () =>
+      api("PUT", `/devices/${soePos}/soe/${soeIdn}`, { value: $("s-value").value, confirm: true }));
     openSoe(soeIdn);
   } catch (e) {
     banner(e.message);
@@ -954,6 +1006,7 @@ $("esi-upload").onclick = async () => {
   try {
     for (const [i, f] of files.entries()) {
       out.replaceChildren(el("p", { class: "muted" }, `Uploading ${i + 1} of ${files.length}: ${f.name}`));
+      setBusy("esi", `Uploading ESI files (${i + 1} of ${files.length})`);
       try {
         const r = await api("POST", "/esi?name=" + encodeURIComponent(f.name), undefined, f);
         added += r.added.reduce((n, a) => n + a.devices, 0);
@@ -964,6 +1017,7 @@ $("esi-upload").onclick = async () => {
     }
   } finally {
     $("esi-upload").disabled = false;
+    setBusy("esi", null);
   }
   const reasons = {};
   for (const s of skipped) (reasons[s.reason] = reasons[s.reason] || []).push(s.file);

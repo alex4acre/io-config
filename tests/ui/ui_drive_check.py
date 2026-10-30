@@ -89,8 +89,9 @@ try:
 
     js("document.getElementById('d-soe').click();")
     check(until("document.querySelectorAll('#s-list tbody tr').length > 100", 15), "SoE parameter list loads")
-    js("document.getElementById('s-filter').value = 'S-0-0047'; document.getElementById('s-filter').oninput();")
-    check(until("document.querySelectorAll('#s-list tbody tr').length === 1"), "filter finds S-0-0047")
+    js("document.getElementById('s-filter').value = 'S47'; document.getElementById('s-filter').oninput();")
+    check(until("document.querySelectorAll('#s-list tbody tr').length === 1 && "
+                "document.querySelector('#s-list tbody tr').cells[0].textContent === 'S-0-0047'"), "filter S47 finds S-0-0047")
     js("document.querySelector('#s-list tbody tr').click();")
     check(until("document.getElementById('s-param').textContent.includes('Device not found')"),
           "online read explains the unconfigured drive")

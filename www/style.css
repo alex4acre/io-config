@@ -26,7 +26,7 @@ pre:empty { display: none; }
 
 /* Title band, like the ctrlX settings pages */
 header { display: flex; align-items: center; gap: 16px; min-height: 48px; padding: 0 32px;
-         background: var(--band); border-bottom: 1px solid var(--line); }
+         background: var(--band); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 10; }
 h1 { font-size: 22px; font-weight: 400; letter-spacing: .01em; margin: 0; flex: 1; }
 h2 { font-size: 17px; font-weight: 400; margin: 0 0 14px; }
 h3 { font-size: 16px; font-weight: 400; margin: 24px 0 10px; padding-bottom: 4px; border-bottom: 1px solid var(--rule); }
@@ -100,6 +100,13 @@ button.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 /* Status chip in the title band (ctrlX "Operating" chip) */
 .chip { font-size: 14px; padding: 6px 12px; background: var(--tile); white-space: nowrap; }
 .chip.ok { background: var(--ok-bg); } .chip.bad { background: var(--err-bg); }
+
+/* Busy indicator in the title band: a turning toothed wheel in Bosch blue with what is running */
+.busy { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); white-space: nowrap; }
+.wheel-box { display: inline-flex; color: var(--accent); }
+.wheel { width: 24px; height: 24px; animation: wheel-turn 1.6s linear infinite; }
+@keyframes wheel-turn { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .wheel { animation-duration: 6s; } }
 
 /* Banner under the title band: full colour bar with an icon (ctrlX error / success bars) */
 .banner { position: relative; margin: 16px 32px 0; padding: 8px 16px 8px 44px; background: var(--err-bg); color: var(--text);

@@ -13,7 +13,7 @@
       <button id="tab-bus" class="tab active" data-view="bus">Bus</button>
       <button id="tab-esi" class="tab" data-view="esi">ESI library</button>
     </nav>
-    <label class="check warnlabel" title="Writing outputs and CoE objects changes real hardware"><input id="allow-writes" type="checkbox"> Allow writes</label>
+    <span id="busy" class="busy" hidden></span>
     <span id="conn" class="chip">...</span>
   </header>
   <div id="banner" class="banner" hidden></div>
@@ -53,6 +53,7 @@
     <section class="card" id="detail" hidden>
       <div class="row head">
         <h2 id="d-title"></h2>
+        <label class="check warnlabel" title="Allows writing this device's outputs, CoE objects and SoE parameters (real hardware). Off again when another device is opened or the page reloads."><input id="d-writable" type="checkbox"> Writable</label>
         <button id="d-close">Close</button>
       </div>
       <nav class="tabs subtabs">
@@ -74,7 +75,7 @@
           <table id="pd"><thead><tr><th>Variable</th><th>Dir</th><th>Type</th><th>Value</th><th>Set</th></tr></thead><tbody></tbody></table>
         </div>
         <p class="hint">Read through the Data Layer (<code>realtime_data</code>) about 5 times a second. Outputs can be set
-          with "Allow writes" on; the PLC or another app may overwrite them in its next cycle.</p>
+          with "Writable" on; the PLC or another app may overwrite them in its next cycle.</p>
       </div>
 
       <div id="p-settings" class="panel" hidden>
@@ -101,7 +102,7 @@
               <datalist id="e-at-list"></datalist></div>
           </div>
           <details><summary>SoE commands the configuration sends (generated)</summary>
-            <div class="scroll"><table id="e-soe-cmds"><thead><tr><th>IDN</th><th>Data</th><th>Comment</th></tr></thead><tbody></tbody></table></div>
+            <div class="scroll"><table id="e-soe-cmds"><thead><tr><th>IDN</th><th>Value</th><th>Comment</th></tr></thead><tbody></tbody></table></div>
           </details>
         </div>
         <div class="row">
@@ -115,7 +116,7 @@
         <p class="hint">Parameters the master writes at every start-up (PreOp → SafeOp). Add them with "Startup" in the
           "Objects (CoE)" or "Parameters (SoE)" tab; removing one here saves at once. The PDO assignment
           (0x1C12/0x1C13) is added automatically.</p>
-        <div class="scroll"><table id="e-startup"><thead><tr><th>Object</th><th>Data</th><th>Transition</th><th>Comment</th>
+        <div class="scroll"><table id="e-startup"><thead><tr><th>Object</th><th>Value</th><th>Transition</th><th>Comment</th>
           <th></th></tr></thead><tbody></tbody></table></div>
       </div>
 
@@ -123,7 +124,7 @@
         <div class="row head"><h3 id="o-title"></h3><button id="o-refresh">Reload list</button></div>
         <p class="hint">Read online from the device through the master (CoE mailbox). "Write now" changes the device until its
           next start; "Startup" keeps the value in the configuration.</p>
-        <div class="row"><input id="o-filter" type="search" placeholder="Filter by index or name"></div>
+        <div class="row"><input id="o-filter" type="search" placeholder="Filter: 8000, x8000 or a name"></div>
         <div class="cols2">
           <div class="scroll tall"><table id="o-list"><thead><tr><th>Index</th><th>Name</th><th>Kind</th></tr></thead>
             <tbody></tbody></table></div>
@@ -141,7 +142,7 @@
           PreOp or higher, i.e. configured). "Write now" changes the drive until its next start; "Startup" keeps the value
           in the configuration.</p>
         <div class="row">
-          <input id="s-filter" type="search" placeholder="Filter by IDN or name">
+          <input id="s-filter" type="search" placeholder="Filter: S265, P-0-12, 265 or a name">
           <select id="s-mapping"><option value="">all</option><option value="r">MDT-mappable</option><option value="t">AT-mappable</option></select>
         </div>
         <div class="cols2">
@@ -174,7 +175,7 @@
         <div class="scroll"><table id="d-vars"><thead><tr><th>Variable</th><th>Dir</th><th>Type</th><th>Bits</th><th>Offset</th></tr></thead><tbody></tbody></table></div>
 
         <h3>Startup parameters</h3>
-        <div class="scroll"><table id="d-init"><thead><tr><th>Source</th><th>Transition</th><th>Object</th><th>Data</th><th>Comment</th></tr></thead><tbody></tbody></table></div>
+        <div class="scroll"><table id="d-init"><thead><tr><th>Source</th><th>Transition</th><th>Object</th><th>Value</th><th>Comment</th></tr></thead><tbody></tbody></table></div>
 
         <h3>Distributed clocks</h3>
         <dl id="d-dc" class="grid"></dl>

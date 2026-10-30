@@ -39,6 +39,24 @@ def _identity(online: dict) -> list:
     info = (online or {}).get("response", {}).get("slaveIdentity", {})
     return [info.get("vendorId"), info.get("productCode")]
 
+def show_startup(rows: list, dictionary: dict) -> list:
+    """Startup commands with "show": the value for people (the "data" hex stays in device byte order)."""
+    out = []
+    for c in rows:
+        try:
+            data = bytes.fromhex(c["data"])
+        except (KeyError, TypeError, ValueError):
+            out.append(c)
+            continue
+        if "idn" in c:
+            a = (dictionary.get(c["idn"]) or {}).get("attribute")
+            text = soe.show(data, soe.attribute(a)) if a is not None else coe.show(data)
+        else:
+            text = coe.show(data, c.get("data_type"), c.get("bits") or 0)
+        out.append(dict(c, show=text))
+    return out
+
+
 class ConfigError(ValueError):
     pass
 
@@ -164,7 +182,10 @@ class Core:
         with self.lock:
             for d in self.devices:
                 if d["position"] == position:
-                    return d
+                    dictionary = next((x.get("soe_dict") for x in self.sources if x["pos"] == position), None) or {}
+                    sources = {k: dict(v, coe_init=show_startup(v["coe_init"], dictionary)) if "coe_init" in v else v
+                               for k, v in d["sources"].items()}
+                    return dict(d, sources=sources)
         raise KeyError(f"no device at position {position}")
 
     def _busy(self) -> bool:
@@ -556,23 +577,25 @@ class Core:
                 out["startup"] = edit["startup"]
             else:                       # not edited yet: what the configuration keeps now, as the starting point
                 out["startup"] = edits.kept_startup(configure.device_for(src, {}))
+            dictionary = src.get("soe_dict") or {}
+            out["startup"] = show_startup(out["startup"], dictionary)
             coe_cfg = ((dev or {}).get("mailbox") or {}).get("coe")
             out["coe"] = coe_cfg is not None
-            out["fixed_startup"] = [c for c in (coe_cfg or {}).get("init", []) if not c.get("user") and not c.get("from_eni")]
+            out["fixed_startup"] = show_startup([c for c in (coe_cfg or {}).get("init", [])
+                                                 if not c.get("user") and not c.get("from_eni")], dictionary)
             out["pdo_assign"] = bool((coe_cfg or {}).get("pdo_assign"))
             soe_cfg = ((dev or {}).get("mailbox") or {}).get("soe")
             out["soe"] = None
             if soe_cfg is not None:
                 cycle = (self.master or {}).get("cycle_us") or 2000
-                dictionary = src.get("soe_dict") or {}
                 out["soe"] = {
                     "dictionary": bool(dictionary),
                     "mdt": [{"idn": e["index"], "text": soe.idn_text(e["index"]), "name": e["name"], "bits": e["bits"]}
                             for p in dev["pdos"] if p["dir"] == "rx" for e in p["entries"]],
                     "at": [{"idn": e["index"], "text": soe.idn_text(e["index"]), "name": e["name"], "bits": e["bits"]}
                            for p in dev["pdos"] if p["dir"] == "tx" for e in p["entries"]],
-                    "commands": [dict(c, text=soe.idn_text(c["idn"])) for c in generate.soe_commands(dev, cycle)
-                                 if not c.get("user")],
+                    "commands": [dict(c, text=soe.idn_text(c["idn"])) for c in show_startup(
+                                 generate.soe_commands(dev, cycle), dictionary) if not c.get("user")],
                 }
             return out
 
@@ -663,6 +686,7 @@ class Core:
                     raw = data.get("response", {}).get("data") or []
                     e["value"] = coe.decode(raw, e["data_type"], e["bits"])
                     e["hex"] = bytes(raw).hex().upper()
+                    e["show"] = coe.show(raw, e["data_type"], e["bits"])
                 except Exception as ex:
                     e["error"] = str(ex)
             entries.append(e)
@@ -688,7 +712,8 @@ class Core:
         self.log(f"SDO write position {position} {index:#06x}:{sub} = {data.hex().upper()}")
         raw = self.bus.read_args(base + "sdo", {"request": {**a, "objectIndex": index, "subIndex": sub, "flags": "noFlags",
                                                             "maxLength": 1024}}).get("response", {}).get("data") or []
-        return {**e, "value": coe.decode(raw, e["data_type"], e["bits"]), "hex": bytes(raw).hex().upper()}
+        return {**e, "value": coe.decode(raw, e["data_type"], e["bits"]), "hex": bytes(raw).hex().upper(),
+                "show": coe.show(raw, e["data_type"], e["bits"])}
 
     def _device_state(self, position: int) -> str:
         """The device's EtherCAT state now (Init/PreOp/SafeOp/Op), read online."""
@@ -707,7 +732,7 @@ class Core:
             raise ConfigError(f"{index:#06x}:{sub} is read-only")
         data = coe.encode(value, e["data_type"], e["bits"])
         return {"index": index, "subindex": sub, "data": data.hex().upper(), "transitions": ["PS"],
-                "comment": comment or f'{e["name"]} = {value}'}
+                "comment": comment or f'{e["name"]} = {value}', "data_type": e["data_type"], "bits": e["bits"]}
 
     # --- SoE parameters of a drive (online, through the master's mailbox) ----------------------------
 
@@ -728,12 +753,11 @@ class Core:
 
     def soe_parameters(self, position: int, text: str = "", mapping: str = "", limit: int = 400) -> dict:
         """The drive's parameters from its dictionary (offline): filter by IDN/name text and r (MDT) / t (AT)."""
-        words = text.lower().split()
         out = []
-        for p in self.soe_dictionary(position).values():
+        for idn, p in self.soe_dictionary(position).items():
             if mapping and mapping not in p["mapping"]:
                 continue
-            if all(w in f'{p["text"]} {p["name"]}'.lower() for w in words):
+            if soe.matches(text, idn, p["name"]):
                 out.append(p)
                 if len(out) >= limit:
                     break
@@ -769,7 +793,8 @@ class Core:
         except (ConfigError, KeyError):
             pass
         return {"idn": idn, "text": soe.idn_text(idn), "name": info.get("name", ""), "unit": info.get("unit", ""),
-                "attribute": attr, "value": soe.decode(raw, attr), "hex": bytes(raw).hex().upper()}
+                "attribute": attr, "value": soe.decode(raw, attr), "hex": bytes(raw).hex().upper(),
+                "show": soe.show(raw, attr)}
 
     def soe_write(self, position: int, idn, value) -> dict:
         self._soe_device(position)

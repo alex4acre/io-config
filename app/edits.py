@@ -10,7 +10,7 @@ fixed PDOs, only its name can be changed.
 
 import re
 
-from app import generate, soe
+from app import coe, generate, soe
 
 NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}")
 TRANSITIONS = ("IP", "PS", "SO")          # CoE startup commands can be sent on these state changes
@@ -126,8 +126,11 @@ def validate(src: dict, edit: dict) -> dict:
             elif any(tr not in TRANSITIONS for tr in transitions):
                 problems.append(f"startup parameter {i}: transitions must be some of {', '.join(TRANSITIONS)}")
             else:
-                clean.append({"index": index, "subindex": sub, "data": data, "transitions": transitions,
-                              "comment": str(x.get("comment") or f"{index:#06x}:{sub}")[:120]})
+                row = {"index": index, "subindex": sub, "data": data, "transitions": transitions,
+                       "comment": str(x.get("comment") or f"{index:#06x}:{sub}")[:120]}
+                if x.get("data_type") in coe.DATA_TYPES.values() and isinstance(x.get("bits"), int):
+                    row.update(data_type=x["data_type"], bits=x["bits"])     # only to show the value, not in the ENI
+                clean.append(row)
         out["startup"] = clean
     for key, direction, mark, lead in (("soe_mdt", "rx", "r", SOE_CONTROL_WORD), ("soe_at", "tx", "t", SOE_STATUS_WORD)):
         if edit.get(key) is None:

@@ -8,6 +8,7 @@ The master hands over the raw SDO-information answers (ETG.1000.6):
 and SDO data as little-endian bytes. Verified on ctrlX I/O modules (tests/data/x3-coe.json).
 """
 
+import re
 import struct
 
 DATA_TYPES = {0x01: "BOOL", 0x02: "SINT", 0x03: "INT", 0x04: "DINT", 0x05: "USINT", 0x06: "UINT", 0x07: "UDINT",
@@ -69,6 +70,36 @@ def decode(data, data_type: str, bits: int):
         if len(data) >= size:
             return int.from_bytes(data[:size], "little", signed=data_type in SIGNED)
     return data.hex().upper()
+
+
+def show(data, data_type: str = None, bits: int = 0) -> str:
+    """A value for people: decoded, numbers with their hex most significant byte first ("1000 (0x000003E8)").
+    The data stays little-endian in the device and the ENI; without a data type 1/2/4/8 bytes count as unsigned."""
+    data = bytes(data)
+    if data_type:
+        value = decode(data, data_type, bits)
+        if isinstance(value, bool):
+            return "TRUE" if value else "FALSE"
+        if isinstance(value, float):
+            return f"{value:g}"
+        if isinstance(value, int):
+            size = max(1, (bits + 7) // 8) if bits else len(data)
+            return f"{value} (0x{int.from_bytes(data[:size], 'little'):0{size * 2}X})"
+        if data_type == "VISIBLE_STRING":
+            return f'"{value}"'
+    if len(data) in (1, 2, 4, 8):
+        return f"{int.from_bytes(data, 'little')} (0x{int.from_bytes(data, 'little'):0{len(data) * 2}X})"
+    return " ".join(f"{b:02X}" for b in data) or "-"
+
+
+def matches(query: str, index: int, text: str) -> bool:
+    """Object filter: every word is part of "#x8000 name", or names the index as hex (8000, x8000, 0x8000, #x8000)."""
+    hay = f"#x{index:04x} 0x{index:04x} {text}".lower()
+    for w in query.lower().split():
+        m = re.fullmatch(r"(?:0x|#x|x)?([0-9a-f]{1,4})", w)
+        if not (w in hay or (m and int(m.group(1), 16) == index)):
+            return False
+    return True
 
 
 def encode(value, data_type: str, bits: int) -> bytes:
