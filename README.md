@@ -34,14 +34,15 @@ Design and phases: [docs/design.md](docs/design.md). Phase 1 (this version) only
     IO_CONFIG_FAKE=1 python3 -m app.main          # http://127.0.0.1:12617/io-config/?token=dev
     python3 -m unittest -q                       # unit tests against the fake
     python3 tests/ui/ui_check.py <folder>        # headless Firefox check (see the file for set-up)
-    tests/integration/dl_check.py                # real Data Layer library, Ubuntu 24.04 only
-                                                 # (DL_CONTAINER=smtest scripts/dl_container.sh check <app>)
+    tests/integration/dl_check.py                # real Data Layer library, Ubuntu 24.04 only:
+    DL_CONTAINER=smtest ../ctrlx-baseline/tools/dl_container.sh check .
 
-## Build and install
+## Check, build and install
 
-    snapcraft pack --build-for=amd64 --use-lxd 2>&1 | tee build.log     # ctrlX COREvirtual
-    snapcraft pack --build-for=arm64 --use-lxd 2>&1 | tee build.log     # ctrlX CORE X3/X5/X7
+    ../ctrlx-baseline/tools/check.py .                  # against ctrlx-baseline (build.sh runs it too, report only)
+    ../ctrlx-baseline/tools/build.sh arm64              # ctrlX CORE X3/X5/X7 (amd64: COREvirtual), foreground
 
-Bump `version` in `snap/snapcraft.yaml` and `pyproject.toml` for every build you install.
+Bump `version` in `snap/snapcraft.yaml`, `pyproject.toml` and the package manifest for every build you install.
+How io-config relates to the shared ctrlx-baseline framework: `docs/how-it-works.md` §2.
 Install: ctrlX web UI → Settings → Apps → enable "Allow installation from unknown source" → Install from file.
 Logs: `sudo snap logs -f io-config` over SSH (app output does not always reach the web Logbook).
