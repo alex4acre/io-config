@@ -43,8 +43,13 @@ def _process_sms(sms):
 
 
 def device_report(position, online, eeprom, eeprom_error, eni_slave, esi_match, esi_entry, esi_device,
-                  esi_error=None, master_op=True, absent=False) -> dict:
+                  esi_error=None, master_op=True, absent=False, configuration=False) -> dict:
+    """configuration: the list is a project, no live data: online is the list's identity, the state is "-" and
+    absent means "not paired with a device of the last scan". The EEPROM of a paired device is shown but not compared."""
     findings = []
+    shown_eeprom, shown_error = eeprom, eeprom_error
+    if configuration:
+        eeprom = eeprom_error = None
 
     def add(level, text):
         findings.append({"level": level, "text": text})
@@ -56,7 +61,7 @@ def device_report(position, online, eeprom, eeprom_error, eni_slave, esi_match, 
 
     # --- on the wire
     if absent:
-        add("warning", "Not present on the bus")
+        add("warning", "Not on the bus at the last scan" if configuration else "Not present on the bus")
     else:
         if al is not None and al & 0x10:
             add("error", f"Device reports an error: AL status {al_state(al)}, code {hx(info.get('alStatusCode', 0))}")
@@ -170,26 +175,27 @@ def device_report(position, online, eeprom, eeprom_error, eni_slave, esi_match, 
                     f'EEPROM {", ".join(eeprom["mailbox"]) or "none"}')
 
     level = max((f["level"] for f in findings), key=LEVELS.index, default="ok")
+    eeprom, eeprom_error = shown_eeprom, shown_error
     name = (eni_slave or {}).get("name") or (esi_device or {}).get("type") or (eeprom or {}).get("order") or "?"
     return {
         "position": position,
         "name": name,
         "description": (esi_device or {}).get("name") or (eeprom or {}).get("name", ""),
-        "address": (eni_slave or {}).get("address") if absent else info.get("ethercatAddr"),
+        "address": (eni_slave or {}).get("address") if absent or configuration else info.get("ethercatAddr"),
         "vendor": vendor,
         "product": product,
         "revision": revision,
-        "serial": None if absent else identity.get("serialNumber"),
-        "present": not absent,
-        "mailbox": (esi_device or {}).get("mailbox") or [],
-        "state": al_state(al),
-        "dc": None if absent else bool(info.get("dcSupport")),
+        "serial": None if absent or configuration else identity.get("serialNumber"),
+        "present": not (absent or configuration),
+        "mailbox": (esi_device or {}).get("mailbox") or (eeprom or {}).get("mailbox") or [],
+        "state": "-" if configuration else al_state(al),
+        "dc": None if absent or configuration else bool(info.get("dcSupport")),
         "sources": {
             "esi": {"match": "error" if esi_error else esi_match,
                     "file": (esi_entry or {}).get("file"), "revision": (esi_entry or {}).get("revision"),
                     "group": (esi_entry or {}).get("group"),
                     "dc_modes": (esi_device or {}).get("dc_modes", []), "coe_init": (esi_device or {}).get("coe_init", [])},
-            "eni": {"match": "none" if eni_slave is None else "not found" if absent else
+            "eni": {"match": "none" if eni_slave is None else "not found" if absent and not configuration else
                     "same" if (eni_slave["vendor"], eni_slave["product"], eni_slave["revision"]) == (vendor, product, revision)
                     else "revision" if (eni_slave["vendor"], eni_slave["product"]) == (vendor, product) else "different",
                     "name": (eni_slave or {}).get("name"), "address": (eni_slave or {}).get("address"),

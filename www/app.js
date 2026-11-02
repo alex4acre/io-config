@@ -143,6 +143,7 @@ for (const t of document.querySelectorAll("header .tab")) t.onclick = () => show
 
 let lastFinished = null;
 let selected = null;
+let configuring = false;                         // the list is a project: a configuration, no live data
 
 function renderState(s) {
   $("conn").textContent = s.connected ? "Data Layer connected" : "Data Layer offline";
@@ -171,19 +172,28 @@ function renderState(s) {
     $("m-time").textContent = s.scan.finished ? new Date(s.scan.finished * 1000).toLocaleString() : "-";
   }
 
-  const tbody = $("devices").tBodies[0];
-  tbody.replaceChildren();
-  for (const d of s.devices) {
-    const tr = row(tbody, [
-      d.position, d.name, d.description, d.address ?? "-", hex(d.revision, 8),
-      d.present ? d.state : el("span", { class: "badge warn" }, "not present"),
-      badge("esi", d.sources.esi), badge("eni", d.sources.eni), badge("eeprom", d.sources.eeprom),
-      levelBadge(d.level, d.findings), absentTools(d, s.devices.length),
-    ], { class: "click" + (d.position === selected ? " selected" : "") });
-    tr.onclick = () => openDevice(d.position);
-  }
+  configuring = s.project;
+  $("config-flag").hidden = !s.project;
+  $("hint-pd").hidden = s.project;                // no process data in the configuration state
   $("project-reset").hidden = !s.project;
-  renderAddForm(s.devices);
+  const tbody = $("devices").tBodies[0];
+  if (!renaming) {                               // the poll must not take the name field away while it is typed in
+    tbody.replaceChildren();
+    for (const d of s.devices) {
+      const name = el("td", { class: "name", title: "Click to rename" }, d.name);
+      name.onclick = (ev) => {
+        ev.stopPropagation();
+        startRename(d, name);
+      };
+      const tr = row(tbody, [
+        d.position, name, d.description, d.address ?? "-", hex(d.revision, 8),
+        d.present || configuring ? d.state : el("span", { class: "badge warn" }, "not present"),
+        badge("esi", d.sources.esi), badge("eni", d.sources.eni), badge("eeprom", d.sources.eeprom),
+        levelBadge(d.level, d.findings), rowTools(d, s.devices.length, s.scan.running || s.download.running),
+      ], { class: "click" + (d.position === selected ? " selected" : "") });
+      tr.onclick = () => openDevice(d.position);
+    }
+  }
   if (s.scan.finished !== lastFinished) {
     lastFinished = s.scan.finished;
     if (selected !== null) openDevice(selected);
@@ -214,11 +224,10 @@ async function projectChange(fn) {
   }
 }
 
-function absentTools(d, total) {
-  if (d.present) return "";
+function rowTools(d, total, busy) {
   const tool = (text, title, disabled, fn) => {
     const b = el("button", { class: "small", title }, text);
-    b.disabled = disabled;
+    b.disabled = disabled || busy;
     b.onclick = (ev) => {
       ev.stopPropagation();
       projectChange(fn);
@@ -227,48 +236,158 @@ function absentTools(d, total) {
   };
   const move = (by) => () => api("POST", `/project/devices/${d.position}/move`, { by });
   return el("span", { class: "row-tools" },
-    tool("Up", "Move up in the list", d.position === 0, move(-1)),
-    tool("Down", "Move down in the list", d.position === total - 1, move(1)),
-    tool("Remove", "Remove from the project", false, () => api("DELETE", "/project/devices/" + d.position)));
+    tool("▲", "Move up in the list", d.position === 0, move(-1)),
+    tool("▼", "Move down in the list", d.position === total - 1, move(1)),
+    tool("Remove", "Remove from the list", false, () => api("DELETE", "/project/devices/" + d.position)));
 }
 
-let addKey = null;
+// --- rename in the table: click the name, Enter or leaving saves, Esc cancels ------------------------
 
-function renderAddForm(devices) {
-  const key = devices.map((d) => d.name).join("|");
-  if (key === addKey) return;                  // keep what the user picked while the list is the same
-  addKey = key;
-  const fill = (sel, first) => {
-    sel.replaceChildren(el("option", { value: "-1" }, first),
-      ...devices.map((d) => el("option", { value: String(d.position) }, `${d.position}: ${d.name}`)));
-    sel.value = String(devices.length - 1);
+let renaming = false;
+
+function startRename(d, cell) {
+  if (renaming) return;
+  renaming = true;
+  const input = el("input", { type: "text", maxlength: "64", value: d.name });
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    done = true;
+    const name = input.value.trim();
+    renaming = false;
+    cell.textContent = d.name;
+    if (save && name && name !== d.name) {
+      try {
+        banner("");
+        await api("PUT", `/devices/${d.position}/edit`, { name });
+        dropPlan();
+        if (selected === d.position) openDevice(d.position);
+      } catch (e) {
+        banner(e.message);
+      }
+    }
+    poll();
   };
-  fill($("add-after"), "(first in the list)");
-  fill($("add-upstream"), "(the master)");
+  input.onkeydown = (ev) => {
+    if (ev.key === "Enter") finish(true);
+    else if (ev.key === "Escape") finish(false);
+  };
+  input.onblur = () => finish(true);
+  input.onclick = (ev) => ev.stopPropagation();
+  cell.replaceChildren(input);
+  input.focus();
+  input.select();
 }
 
-let addTimer = null;
-let addDevices = [];
+// --- add a device: one input with a suggestion list of the ESI library ---------------------------------
 
-async function loadAddChoices() {
+const sugText = (d) => `${d.type} - ${d.name} (revision ${hex(d.revision, 8)})`;
+let addPick = null;          // the device picked from the list; null until one is
+let sugItems = [];
+let sugActive = -1;          // the highlighted item, -1 = none
+let sugTyped = null;         // what was typed before the arrow keys started filling the box (Esc restores it)
+let sugId = 0;
+let sugTimer = null;
+
+function setPick(d) {
+  addPick = d;
+  $("add").disabled = !d;
+}
+
+function hideSuggest() {
+  sugId++;
+  sugTyped = null;
+  sugItems = [];
+  sugActive = -1;
+  $("add-suggest").hidden = true;
+}
+
+function renderSuggest() {
+  const ul = $("add-suggest");
+  ul.replaceChildren();
+  sugItems.forEach((d, i) => {
+    const li = el("li", { class: "sug" + (i === sugActive ? " active" : "") }, sugText(d));
+    li.onmousedown = (ev) => {
+      ev.preventDefault();                      // the input keeps its focus
+      pickSuggest(i);
+    };
+    ul.append(li);
+  });
+  ul.hidden = !sugItems.length;
+}
+
+async function showSuggest() {
+  const id = ++sugId;
   try {
-    const r = await api("GET", "/esi?limit=100&q=" + encodeURIComponent($("add-search").value.trim()));
-    addDevices = r.devices;
-    $("add-device").replaceChildren(...r.devices.map((d, i) => el("option", { value: String(i) },
-      `${d.type} - ${d.name} (revision ${hex(d.revision, 8)})`)));
-    $("add").disabled = !r.devices.length;
+    const r = await api("GET", "/esi?limit=12&q=" + encodeURIComponent($("add-device").value.trim()));
+    if (id !== sugId) return;
+    sugItems = r.devices;
+    sugActive = -1;
+    sugTyped = null;
+    renderSuggest();
   } catch (e) {
+    hideSuggest();
     banner(e.message);
   }
 }
 
-$("add-box").ontoggle = () => { if ($("add-box").open) loadAddChoices(); };
-$("add-search").oninput = () => { clearTimeout(addTimer); addTimer = setTimeout(loadAddChoices, 250); };
-$("add-after").onchange = () => { $("add-upstream").value = $("add-after").value; };
+function pickSuggest(i) {
+  const d = sugItems[i];
+  if (!d) return;
+  $("add-device").value = sugText(d);
+  setPick(d);
+  hideSuggest();
+  $("add-device").focus();
+}
+
+// Up/Down only preview: the box shows the highlighted device, the pick comes with Enter or a click
+function moveSuggest(step) {
+  if (sugTyped === null) sugTyped = $("add-device").value;
+  sugActive = sugActive < 0 ? (step > 0 ? 0 : sugItems.length - 1) : (sugActive + step + sugItems.length) % sugItems.length;
+  $("add-device").value = sugText(sugItems[sugActive]);
+  setPick(null);
+  renderSuggest();
+}
+
+$("add-device").oninput = () => {
+  setPick(null);                               // editing the text clears the pick
+  sugTyped = null;
+  sugActive = -1;
+  clearTimeout(sugTimer);
+  sugTimer = setTimeout(showSuggest, 150);
+};
+$("add-device").onfocus = showSuggest;         // also with nothing typed
+$("add-device").onblur = () => setTimeout(hideSuggest, 150);
+$("add-device").onkeydown = (ev) => {
+  const open = !$("add-suggest").hidden && sugItems.length > 0;
+  if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+    ev.preventDefault();
+    if (open) moveSuggest(ev.key === "ArrowDown" ? 1 : -1);
+    else showSuggest();
+  } else if (ev.key === "Enter") {
+    ev.preventDefault();
+    if (open && sugActive >= 0) pickSuggest(sugActive);
+    else if (addPick) $("add").click();
+  } else if (ev.key === "Escape" && open) {
+    if (sugTyped !== null) $("add-device").value = sugTyped;
+    hideSuggest();
+  }
+};
+$("add-name").onkeydown = (ev) => { if (ev.key === "Enter" && addPick) $("add").click(); };
+$("add-box").ontoggle = () => { if ($("add-box").open) $("add-device").focus(); };
+
 $("add").onclick = () => {
-  const d = addDevices[Number($("add-device").value)];
-  if (d) projectChange(() => api("POST", "/project/devices", { vendor: d.vendor, product: d.product, revision: d.revision,
-    after: Number($("add-after").value), upstream: Number($("add-upstream").value), port: $("add-port").value }));
+  const d = addPick;
+  if (!d) return;
+  const body = { vendor: d.vendor, product: d.product, revision: d.revision };
+  const name = $("add-name").value.trim();
+  if (name) body.name = name;
+  projectChange(async () => {
+    await api("POST", "/project/devices", body);
+    $("add-device").value = "";                // only after it worked: a refused name stays to be corrected
+    $("add-name").value = "";
+    setPick(null);
+  });
 };
 $("project-reset").onclick = () => {
   if (confirm("Forget the added, moved and removed devices and go back to the devices of the running configuration?")) {
@@ -337,6 +456,7 @@ async function openDevice(pos) {
   const protocols = d.sources.eeprom.mailbox || [];
   const known = d.sources.eeprom.match === "read" || protocols.length > 0;   // EEPROM read: its mailbox protocols count
   $("d-writable").disabled = !d.present;
+  $("d-writable").closest("label").hidden = configuring;
   $("d-pd").hidden = !d.present;
   $("d-objects").hidden = !d.present || (known && !protocols.includes("CoE"));
   $("d-soe").hidden = !d.present || !protocols.includes("SoE");
@@ -482,7 +602,7 @@ $("build").onclick = async () => {
   const msgs = $("plan-messages");
   msgs.replaceChildren(...plan.errors.map((t) => el("li", { class: "error" }, t)),
     ...plan.warnings.map((t) => el("li", { class: "warning" }, t)),
-    ...plan.removed_devices.map((n) => el("li", { class: "warning" }, `${n} is in the running configuration but not in this project: it will be removed`)));
+    ...plan.removed_devices.map((n) => el("li", { class: "warning" }, `${n} is in the running configuration but not in this configuration: it will be removed`)));
   const tb = $("plan-devices").tBodies[0];
   tb.replaceChildren();
   for (const d of plan.devices) row(tb, [d.position, d.name, d.note || d.source || "-", d.inputs + " B", d.outputs + " B"]);

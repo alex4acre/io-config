@@ -9,9 +9,10 @@ ctrlX CORE X3 and logged an error) and cached per device, so a rescan doesn't re
 The number of devices comes from num_connected_slaves: asking past the last device makes the master log
 "Device not found".
 
-The device list is the project merged with the bus (_assemble). The project is the running configuration's devices,
-or io-config/project.json once the user added, removed or moved a device. A project device missing on the bus is
-"absent": described from its ESI or the configuration, without online access. A master that can't be read is no
+The device list (_assemble) is the running configuration's devices merged with the bus, until the user adds, removes
+or moves a device. Then io-config/project.json holds the list ("Configuration" state): exactly the list, in the order
+that is the wiring order, with no live data and no online access; a scan only pairs its devices with the list. A device
+missing on the bus is "absent": described from its ESI or the configuration. A master that can't be read is no
 obstacle: the scan then reports it and the list comes from the master's files in the active configuration.
 
 File handling as in the ctrlx-app-starter template:
@@ -36,6 +37,8 @@ INSTANCES = "fieldbuses/ethercat/master/instances"
 EEPROM_CHUNK_WORDS = 64
 EEPROM_MAX_WORDS = 8192
 MAX_BACKUPS = 20
+CONFIGURING = ("the list is a configuration now: online access is off until it is written or you go back to "
+               "the running configuration")
 SAVED_NAME = re.compile(r"[A-Za-z0-9_\-][A-Za-z0-9 _.\-]{0,63}")
 
 
@@ -118,6 +121,8 @@ class Core:
         self.od_cache = {}           # (position, identity) -> object list
         self.project_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "project.json")
         self.raw = None              # the last scan, unmerged: master, onlines, eeproms, configured, current
+        self.configuring = False     # the list is a project: a configuration, no live data
+        self.unlisted = []           # bus devices that are not in the project (descriptions)
         self._start_from_files()
 
     # --- configuration file ------------------------------------------------------------------------
@@ -346,21 +351,35 @@ class Core:
 
     def _assemble(self):
         """self.devices and self.sources from the last scan and the project (no bus access). A position is the
-        place in this list; src["bus_pos"] is the device's place on the bus, None if it is absent."""
+        place in this list; src["bus_pos"] is the device's place on the bus, None if it is absent. With a project the
+        list is the project's entries only, paired with the bus devices in order; without one it is the running
+        configuration merged with the bus."""
         raw = self.raw
         project = self._load_project()
         configured = raw["configured"]
+        bus_ids = [_identity(o) for o in raw["onlines"]]
         if project is not None:
             entries = project["devices"]
+            ids = [[e["vendor"], e["product"]] for e in entries]
+            on_bus = configure.pair_in_order(ids, bus_ids)
+            walk = [(e, on_bus.get(e)) for e in range(len(entries))]
         else:
             entries = [{"vendor": s["vendor"], "product": s["product"], "revision": s["revision"]} for s in configured]
-        bus_ids = [_identity(o) for o in raw["onlines"]]
-        walk = configure.merge([[e["vendor"], e["product"]] for e in entries], bus_ids)
-        ids = [bus_ids[b] if b is not None else [entries[e]["vendor"], entries[e]["product"]] for e, b in walk]
+            walk = configure.merge([[e["vendor"], e["product"]] for e in entries], bus_ids)
+            ids = [bus_ids[b] if b is not None else [entries[e]["vendor"], entries[e]["product"]] for e, b in walk]
         # the running configuration's device for each position: same type, in bus order (not the same position,
         # so a device inserted before others doesn't make them lose their settings)
         paired = configure.pair_in_order([[s["vendor"], s["product"]] for s in configured], ids)
         eni_slaves = {paired[k]: s for k, s in enumerate(configured) if k in paired}
+        if project is not None:                # a moved device keeps its settings: linked by its station address
+            by_address = {s["address"]: s for s in configured}
+            for pos, e in enumerate(entries):
+                if "address" in e:
+                    slave = by_address.get(e["address"])
+                    if slave and [slave["vendor"], slave["product"]] == ids[pos]:
+                        eni_slaves[pos] = slave
+                    else:
+                        eni_slaves.pop(pos, None)
         uid_pos = {entries[e]["uid"]: pos for pos, (e, _b) in enumerate(walk) if e is not None and "uid" in entries[e]}
         address_pos = {s["address"]: paired[k] for k, s in enumerate(configured) if k in paired}
 
@@ -376,7 +395,13 @@ class Core:
                 online = {"response": {"slaveIdentity": {"vendorId": entry["vendor"], "productCode": entry["product"],
                                                          "revisionNumber": entry["revision"], "serialNumber": 0}}}
                 eeprom, eeprom_error = None, None
-            report, match, device = self._report(pos, online, eeprom, eeprom_error, slave, master_op, absent=b is None)
+            if project is not None:            # no live data: the report knows the list's identity (the EEPROM is shown, not compared)
+                listed = {"response": {"slaveIdentity": {"vendorId": entry["vendor"], "productCode": entry["product"],
+                                                         "revisionNumber": entry["revision"], "serialNumber": 0}}}
+                report, match, device = self._report(pos, listed, eeprom, eeprom_error, slave, master_op, absent=b is None,
+                                                     configuration=True)
+            else:
+                report, match, device = self._report(pos, online, eeprom, eeprom_error, slave, master_op, absent=b is None)
             devices.append(report)
             src = {"pos": pos, "bus_pos": b, "uid": entry.get("uid"), "online": online, "eeprom": eeprom,
                    "eni_slave": slave, "esi_match": match, "esi_device": device}
@@ -386,10 +411,26 @@ class Core:
             if device and device.get("dictionary"):          # SoE drives: their parameter dictionary
                 try:
                     src["soe_dict"] = self.esi.dictionary(device["dictionary"])
-                except KeyError as e:
-                    self.log(str(e))
+                except KeyError as err:
+                    self.log(str(err))
+        self.unlisted = []
+        if project is not None:
+            for b in sorted(set(range(len(bus_ids))) - set(on_bus.values())):
+                eeprom, eeprom_error = raw["eeproms"][b]
+                d = self._report(0, raw["onlines"][b], eeprom, eeprom_error, None, master_op)[0]
+                self.unlisted.append(d["description"] or d["name"])
+        self.configuring = project is not None
         self.master, self.devices, self.sources, self.current = raw["master"], devices, sources, raw["current"]
         self._follow_edits()
+        self._edit_names()
+
+    def _edit_names(self):
+        """The names in the device list: the saved edit's name, else the configuration's or the ESI's."""
+        user = self.load_edits()
+        for d, src in zip(self.devices, self.sources):
+            edit = user.get(src["pos"])
+            if edit and edit.get("name") and edits.applies(src, edit):
+                d["name"] = edit["name"]
 
     @staticmethod
     def _previous_port(pos, entry, slave, uid_pos, address_pos):
@@ -415,7 +456,7 @@ class Core:
                 break
         return words
 
-    def _report(self, pos, online, eeprom, eeprom_error, eni_slave, master_op, absent=False):
+    def _report(self, pos, online, eeprom, eeprom_error, eni_slave, master_op, absent=False, configuration=False):
         identity = online.get("response", {}).get("slaveIdentity", {})
         vendor, product, revision = identity.get("vendorId"), identity.get("productCode"), identity.get("revisionNumber")
         match, entry, device, esi_error = self.esi.find(vendor, product, revision) + (None, None)
@@ -425,7 +466,8 @@ class Core:
             except Exception as e:
                 esi_error = str(e)
         return compare.device_report(pos, online, eeprom, eeprom_error, eni_slave, match, entry, device,
-                                     esi_error=esi_error, master_op=master_op, absent=absent), match, device
+                                     esi_error=esi_error, master_op=master_op, absent=absent,
+                                     configuration=configuration), match, device
 
     # --- the project: the devices the configuration is built for (io-config/project.json) ---------------
 
@@ -459,17 +501,24 @@ class Core:
         self.plan_data = None
 
     def _project_entries(self) -> list:
-        """The device list now as project entries; every device gets a uid."""
+        """The device list now as project entries; every device gets a uid. Without a project the ports come from
+        the master's topology; with one the entries' own upstream and port stay (they are the wiring)."""
+        project = self._load_project()
         used = {s["uid"] for s in self.sources if s["uid"] is not None}
         fresh = iter(n for n in range(len(used) + len(self.sources) + 1) if n not in used)
         uids = [s["uid"] if s["uid"] is not None else next(fresh) for s in self.sources]
         ports = configure.topology(self.sources)
         out = []
-        for s, uid in zip(self.sources, uids):
+        for i, (s, uid) in enumerate(zip(self.sources, uids)):
             idn = s["online"]["response"]["slaveIdentity"]
             port, upstream = ports.get(s["pos"], (None, None))
-            out.append({"uid": uid, "vendor": idn["vendorId"], "product": idn["productCode"], "revision": idn["revisionNumber"],
-                        "port": port, "upstream": None if upstream is None else uids[upstream]})
+            slave = s.get("eni_slave")
+            entry = {"uid": uid, "vendor": idn["vendorId"], "product": idn["productCode"], "revision": idn["revisionNumber"],
+                     "port": port, "upstream": None if upstream is None else uids[upstream],
+                     "address": slave["address"] if slave else None}      # the running configuration's device
+            if project is not None:
+                entry["port"], entry["upstream"] = project["devices"][i]["port"], project["devices"][i]["upstream"]
+            out.append(entry)
         return out
 
     def _project_edit(self):
@@ -477,55 +526,56 @@ class Core:
             raise ConfigError("a scan or download is running")
         return self._project_entries()
 
-    def project_add(self, vendor, product, revision, after=None, upstream=None, port="B") -> int:
-        """Inserts a device from the ESI library behind position after (-1: first, None: last), plugged into port
-        B, C or D of position upstream (None: of the device before it). Returns its position."""
+    def _check_name(self, name):
+        if name not in (None, "") and (not isinstance(name, str) or not edits.NAME_RE.fullmatch(name)):
+            raise ConfigError("the name must start with a letter and contain only letters, digits and _ (max 64)")
+
+    def project_add(self, vendor, product, revision, name=None) -> int:
+        """Appends a device from the ESI library at the bottom of the list (plugged into port B of the device
+        above it) and saves its name, if given. Returns its position."""
         with self.lock:
             entries = self._project_edit()
             if self.esi.find(vendor, product, revision)[0] != "exact":
                 raise ConfigError("no such device in the ESI library")
-            if after is None:
-                after = len(entries) - 1
-            if upstream is None:
-                upstream = after
-            if not isinstance(after, int) or not -1 <= after < len(entries):
-                raise ConfigError(f"insert after must be -1 to {len(entries) - 1}")
-            if not isinstance(upstream, int) or not -1 <= upstream <= after:
-                raise ConfigError("the device it is connected to must come before it in the list")
-            if port not in ("B", "C", "D"):
-                raise ConfigError("the port must be B, C or D")
+            self._check_name(name)
             uid = max((e["uid"] for e in entries), default=-1) + 1
-            entries.insert(after + 1, {"uid": uid, "vendor": vendor, "product": product, "revision": revision,
-                                       "port": port if upstream >= 0 else None,
-                                       "upstream": entries[upstream]["uid"] if upstream >= 0 else None})
+            entries.append({"uid": uid, "vendor": vendor, "product": product, "revision": revision,
+                            "port": "B" if entries else None, "upstream": entries[-1]["uid"] if entries else None,
+                            "address": None})
             self._save_project(entries)
+            self._remap_edits(list(range(len(entries) - 1)) + [None], entries)
             self._project_changed()
-            return next((s["pos"] for s in self.sources if s["uid"] == uid), after + 1)
-
-    def _absent_position(self, position: int) -> None:
-        if not configure.absent(self._source(position)):
-            raise ConfigError(f"the device at position {position} is on the bus; only absent devices can be removed or moved")
+            if name:
+                self.save_edit(len(entries) - 1, {"name": name})
+            return len(entries) - 1
 
     def project_remove(self, position: int):
+        """Takes any device out of the list; the devices behind it close up."""
         with self.lock:
             entries = self._project_edit()
-            self._absent_position(position)
-            uid = entries.pop(position)["uid"]
-            for e in entries:
-                if e["upstream"] == uid:
-                    e["upstream"] = None
+            if not isinstance(position, int) or not 0 <= position < len(entries):
+                raise ConfigError(f"no device at position {position}")
+            configure.remove_entry(entries, position)
             self._save_project(entries)
+            self._remap_edits([i for i in range(len(entries) + 1) if i != position], entries)
             self._project_changed()
 
     def project_move(self, position: int, by: int) -> int:
+        """Moves any device up (negative) or down in the list; returns its new position."""
         with self.lock:
             entries = self._project_edit()
-            self._absent_position(position)
+            if not isinstance(position, int) or not 0 <= position < len(entries):
+                raise ConfigError(f"no device at position {position}")
             if not isinstance(by, int) or isinstance(by, bool):
                 raise ConfigError("by must be a number of places")
             target = max(0, min(len(entries) - 1, position + by))
-            entries.insert(target, entries.pop(position))
+            if target == position:
+                return position
+            configure.move_entry(entries, position, target)
             self._save_project(entries)
+            order = list(range(len(entries)))
+            order.insert(target, order.pop(position))
+            self._remap_edits(order, entries)
             self._project_changed()
             return target
 
@@ -549,7 +599,8 @@ class Core:
                                          or not 125 <= cycle_us <= 100000):
                 raise ConfigError("cycle time must be 125 to 100000 µs")
             current = self.current or {"eni": b"", "ini": b"", "parsed": None}
-            p = configure.build_plan(self.sources, current, self.config["instance"], cycle_us, self.load_edits())
+            p = configure.build_plan(self.sources, current, self.config["instance"], cycle_us, self.load_edits(),
+                                     self.unlisted if self.configuring else None)
             project = self._load_project()
             if project and current["eni"] and project.get("eni_checksum") != generate.checksum(current["eni"]):
                 p["warnings"].append("The master's configuration changed since this project was started")
@@ -760,6 +811,14 @@ class Core:
     def _bus_ids(self) -> list:
         return [_identity(s["online"]) for s in self.sources]
 
+    def _remap_edits(self, order: list, entries: list):
+        """After the list changed: the saved edits follow their device. order[new position] = old position (None: a
+        new device); an edit of a removed device is dropped. Each edit gets the new list as its "bus", so
+        _follow_edits has nothing left to guess (it can't tell two devices of one type apart)."""
+        old = self.load_edits()
+        ids = [[e["vendor"], e["product"]] for e in entries]
+        self._save_edits({new: dict(old[o], bus=ids) for new, o in enumerate(order) if o is not None and o in old})
+
     def _follow_edits(self):
         """After a change of the device list: move saved edits with their device when devices were inserted or removed
         before it. Each edit keeps the list it was made for ("bus"); edits saved before 1.3.4 have none and stay put.
@@ -830,6 +889,10 @@ class Core:
                 }
             return out
 
+    def _edit_changed(self):
+        self._assemble()                  # the list shows the saved name
+        self.plan_data = None
+
     def save_edit(self, position: int, change: dict) -> dict:
         with self.lock:
             src = self._source(position)
@@ -841,7 +904,7 @@ class Core:
             configure.device_for(src, {position: checked})          # raises EditError if it can't be applied
             all_edits[position] = dict(checked, bus=self._bus_ids())
             self._save_edits(all_edits)
-            self.plan_data = None
+            self._edit_changed()
         return self.edit_options(position)
 
     def reset_edit(self, position: int) -> dict:
@@ -849,7 +912,7 @@ class Core:
             all_edits = self.load_edits()
             all_edits.pop(position, None)
             self._save_edits(all_edits)
-            self.plan_data = None
+            self._edit_changed()
         return self.edit_options(position)
 
     # --- CoE objects of a device (online, through the master's mailbox) ------------------------------
@@ -868,6 +931,8 @@ class Core:
 
     def _autoinc(self, position: int) -> dict:
         """The device's address on the bus; a device that isn't there has none."""
+        if self.configuring:
+            raise ConfigError(CONFIGURING)
         bus_pos = self._source(position).get("bus_pos")
         if bus_pos is None:
             raise ConfigError(f"the device at position {position} is not present on the bus")
@@ -1067,6 +1132,8 @@ class Core:
         """The running configuration's variables with their values; with a position only that device's (the
         configuration's device paired with it by the last scan; none if the device isn't configured yet)."""
         with self.lock:
+            if self.configuring:
+                raise ConfigError(CONFIGURING)
             parsed = (self.current or {}).get("parsed")
             slaves = parsed["slaves"] if parsed else []
             if position is not None:
@@ -1088,6 +1155,8 @@ class Core:
 
     def write_output(self, name: str, value):
         with self.lock:
+            if self.configuring:
+                raise ConfigError(CONFIGURING)
             parsed = (self.current or {}).get("parsed")
         var = next((v for s in (parsed or {}).get("slaves", []) for v in s["variables"] if v["name"] == name), None)
         if var is None:

@@ -11,6 +11,8 @@ build_plan() decides each device's description, in this order:
 It also lists what changes for the users of the process image (realtime_data variables).
 
 A project device that isn't on the bus (bus_pos None) is built like any other, only with a warning.
+The project's list is the wiring order: move_entry/remove_entry/normalise keep each entry's (upstream, port) a
+chain that makes sense after a device is moved or removed.
 
 write_config() writes the configuration, best effort: master to Init, write fieldbus_config, compare the master's
 checksums, master to Op, and make sure the active configuration holds the new files (the master
@@ -73,6 +75,47 @@ def merge(project: list, bus: list) -> list:
     return out
 
 
+def normalise(entries: list) -> None:
+    """Project entries in list order (uid, upstream = uid or None, port): the first has no upstream; any other has
+    one that is earlier in the list and a port that no earlier entry already uses, else it hangs on port B of
+    the entry above it."""
+    seen, used = set(), set()
+    for i, e in enumerate(entries):
+        if i == 0:
+            e["upstream"] = e["port"] = None
+        elif e.get("upstream") not in seen or e.get("port") not in ("B", "C", "D") or (e["upstream"], e["port"]) in used:
+            e["upstream"], e["port"] = entries[i - 1]["uid"], "B"
+        seen.add(e["uid"])
+        used.add((e["upstream"], e["port"]))
+
+
+def _children_to_parent(entries: list, i: int) -> None:
+    """The first device hanging on entry i takes the place of entry i (its upstream and port); the others keep
+    entry i as their upstream, which normalise() puts right."""
+    child = next((e for e in entries if e["upstream"] == entries[i]["uid"]), None)
+    if child is not None:
+        child["upstream"], child["port"] = entries[i]["upstream"], entries[i]["port"]
+
+
+def remove_entry(entries: list, position: int) -> None:
+    _children_to_parent(entries, position)
+    entries.pop(position)
+    normalise(entries)
+
+
+def move_entry(entries: list, position: int, target: int) -> None:
+    """Moves an entry to index target: its first child takes its old place, it hangs on port B of the entry above
+    its new place, and whoever hung there goes behind it."""
+    _children_to_parent(entries, position)
+    moved = entries.pop(position)
+    entries.insert(target, moved)
+    moved["upstream"], moved["port"] = (entries[target - 1]["uid"], "B") if target > 0 else (None, None)
+    for e in entries:
+        if e is not moved and (e["upstream"], e["port"]) == (moved["upstream"], "B") and moved["upstream"] is not None:
+            e["upstream"], e["port"] = moved["uid"], "B"
+    normalise(entries)
+
+
 def absent(src: dict) -> bool:
     return src.get("bus_pos", src["pos"]) is None
 
@@ -99,7 +142,8 @@ def topology(sources: list) -> dict:
     for src in sources:
         info = (src.get("online") or {}).get("response", {})
         handles, port = info.get("portSlaveHandles") or [], info.get("previousPort")
-        if src["pos"] > 0 and handles and handles[0] in by_handle and port is not None and 0 <= port < 4:
+        if src["pos"] > 0 and handles and handles[0] in by_handle and port is not None and 0 <= port < 4 \
+                and by_handle[handles[0]] < src["pos"]:       # a device moved above its upstream device: a line
             out[src["pos"]] = (PORTS[port], by_handle[handles[0]])
     occupied = set()
     for src in sources:
@@ -160,9 +204,12 @@ def device_for(src: dict, user_edits: dict, used: set = None) -> dict:
     return dev
 
 
-def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = None, user_edits: dict = None) -> dict:
+def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = None, user_edits: dict = None,
+               unlisted: list = None) -> dict:
     """sources: per present device {"pos", "online", "eeprom", "eni_slave", "esi_match", "esi_device"};
-    current: {"eni": bytes, "ini": bytes, "parsed": parse_eni() or None}; user_edits: position -> edit."""
+    current: {"eni": bytes, "ini": bytes, "parsed": parse_eni() or None}; user_edits: position -> edit.
+    unlisted: None for the live list; for a project (the list is a configuration) the descriptions of the bus
+    devices that are not in it."""
     devices, rows, errors, warnings = [], [], [], []
     used = {src["eni_slave"]["name"] for src in sources if src.get("eni_slave")}       # also of devices further down
     ports = topology(sources)
@@ -176,7 +223,8 @@ def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = N
         if warning:
             warnings.append(warning)
         if absent(src):
-            warnings.append(f'Position {pos}: {dev["name"]} is not present on the bus')
+            warnings.append(f'Position {pos}: {dev["name"]} is not on the bus at the last scan' if unlisted is not None
+                            else f'Position {pos}: {dev["name"]} is not present on the bus')
         edit = (user_edits or {}).get(pos)
         if edit and edits.applies(src, edit):
             try:
@@ -192,6 +240,8 @@ def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = N
                      "present": not absent(src),
                      "inputs": sum(e["bits"] for p in dev["pdos"] if p["dir"] == "tx" for e in p["entries"]) // 8,
                      "outputs": sum(e["bits"] for p in dev["pdos"] if p["dir"] == "rx" for e in p["entries"]) // 8})
+
+    warnings += [f"{d} is on the bus but not in this configuration" for d in unlisted or []]
 
     ini_text = (current.get("ini") or b"").decode("latin-1")
     cycle = cycle_us or int(eni_mod.parse_ini(ini_text).get("EtherCAT.Master", {}).get("CycleTimeUs", 0) or 0) or 2000

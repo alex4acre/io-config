@@ -1,6 +1,6 @@
 # io-config: how devices are identified, cross-checked and applied
 
-State: version 1.6.0, ctrlx-baseline 1.0.0 (2026-11-02). File paths are relative to the app folder `io-config/`.
+State: version 1.6.1, ctrlx-baseline 1.0.0 (2026-11-02). File paths are relative to the app folder `io-config/`.
 The code snippets are io-config's own code, shortened (marked `...`); the line numbers point to the full code. The
 shared parts every ctrlX app has (section 2) are described, not shown: their code and rules are in
 `ctrlx-baseline/` (`STANDARD.md`, `framework/`).
@@ -392,17 +392,32 @@ running configuration, writes the saved ENI and ini, then restores the edits sav
 ### 4.7 Without the devices or a working master (1.6.0)
 
 You can build and write a configuration for devices that are not on the bus yet, or while the master is not
-working. The app then only warns (one warning per absent device); it does not stop you.
+working. The app then only warns (see the warnings below); it does not stop you.
 
-- The device list is the **project** merged with what is on the bus. The project is the running configuration's
-  devices, until you add, remove or move a device; then the app keeps your list in `io-config/project.json`.
-  A device you unplug now stays in the list (marked as not present) until you remove it.
-- **Add** a device from the ESI library: choose where to insert it, which device it is connected to and which port
-  (B, C or D). **Up**, **Down** and **Remove** work only for devices that are not present. **Back to the running
-  configuration** throws the project away.
-- A device that is not present has no online data: objects, drive parameters and process data writes answer "not
-  present on the bus". Startup parameters can be added from the object list only if the device is online (CoE);
-  drives (SoE) work from the dictionary.
+- **Configuration state.** As long as you only look, the device list is the running configuration's devices merged
+  with the bus. Once you add, move or remove a device, the list is a **configuration**: the Devices card shows a
+  "Configuration" flag, and the app keeps exactly your list in `io-config/project.json`. A scan does not change the
+  list any more; it only tells which listed device is on the bus. Renaming a device alone does not start it.
+- **No live data in this state.** The State column shows "-", there is no "not present" badge, no process data, and
+  objects, drive parameters and process-data writes are refused ("the list is a configuration now"). A device
+  opens on its Settings tab (Settings, Startup, Info), and the Writable box is hidden. The state ends with a
+  successful write (the master holds the configuration) or with **Back to the running configuration**.
+- **The order of the list is the wiring order.** A new device (**Add device from ESI**: type in the box, pick from
+  the suggestions with the arrow keys and Enter or a click, give it a name if you like) goes to the bottom of the
+  list. The arrows (▲ ▼) and **Remove** work on every row, on the bus or not, while no scan or download is running.
+  A device that is not on the bus is assumed to be connected to port B of the device above it until it has been
+  scanned; a device that is on the bus keeps the port it really sits on. There is no port choice.
+- The list is compared with the last scan in order. Build warns once per listed device that is not on the bus at the
+  last scan and once per bus device that is not in the list ("... is on the bus but not in this configuration"); a
+  moved device therefore warns on both sides. No warning if the list equals the bus. **Build configuration**
+  builds exactly what the list shows; an empty list is an error.
+- A device that is not on the bus has no online data either: objects, drive parameters and process-data writes
+  answer "not present on the bus". Startup parameters can be added from the object list only if the device is
+  online (CoE); drives (SoE) work from the dictionary.
+- Settings stay with their device when you move it: a listed device is linked to the running configuration by its
+  station address, and its saved edits (name, PDOs, startup parameters) move with it.
+- **Rename**: click a name in the table (Enter or leaving the field saves, Esc cancels). The table and the device
+  card show the saved name.
 - If the master cannot be read, the scan shows state "unavailable" and the list comes from the files of the active
   configuration.
 - Writing is best effort: Init, write, check the checksums, Op, then the files. A step that fails is a warning, and

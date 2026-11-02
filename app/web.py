@@ -206,13 +206,13 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     def get_device(self, position):
         self.send_json(200, core.device(int(position)))
 
-    # --- project: devices added from the ESI library, also without the device or a working master ----
+    # --- project: the device list as a configuration (add from the ESI library, move, remove) ----------
 
     def post_project_device(self):
         d = self.read_json()
         if not all(isinstance(d.get(k), int) for k in ("vendor", "product", "revision")):
-            raise HttpError(400, '{"vendor", "product", "revision"} are needed')
-        position = core.project_add(d["vendor"], d["product"], d["revision"], d.get("after"), d.get("upstream"), d.get("port", "B"))
+            raise HttpError(400, '{"vendor", "product", "revision"} are needed, "name" is optional')
+        position = core.project_add(d["vendor"], d["product"], d["revision"], d.get("name"))
         self.send_json(201, {"position": position})
 
     def delete_project_device(self, position):

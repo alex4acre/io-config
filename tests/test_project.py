@@ -4,6 +4,7 @@
 
 Absent devices stay in the configuration with a warning, devices can be added from the ESI library, and writing
 is best effort: what the master doesn't do is a warning, the configuration then waits in the active configuration's files.
+Once the list is changed it is a configuration ("Configuration" state): exactly the list in wiring order, no live data.
 """
 
 import json
@@ -12,10 +13,13 @@ import tempfile
 import unittest
 
 import app.configure
-from app.configure import merge
+from app import eni
+from app.configure import merge, move_entry, normalise, remove_entry
 from app.core import ConfigError, Core
 from app.fake import DATA, MASTER, FakeBus
 from tests.test_app import ESI_DIR, ESI_FILES, read
+
+DRIVE_DIR = os.path.join(DATA, "esi-drive")
 
 REFERENCE = read(os.path.join(DATA, "controller-eni.xml"))
 NUM = MASTER + "admin/fieldbus_status/num_connected_slaves"
@@ -37,6 +41,103 @@ class MergeTest(unittest.TestCase):
         self.assertEqual(merge(["a", "c"], ["a", "n", "c"]), [(0, 0), (None, 1), (1, 2)])
         self.assertEqual(merge(["x"], ["n"]), [(0, None), (None, 0)])
         self.assertEqual(merge([], []), [])
+
+
+def chain(n=4):
+    return [{"uid": i, "upstream": i - 1 if i else None, "port": "B" if i else None} for i in range(n)]
+
+
+def wiring(entries):
+    return [(e["uid"], e["upstream"], e["port"]) for e in entries]
+
+
+class WiringTest(unittest.TestCase):
+
+    def test_move_down_and_up_in_a_line(self):
+        e = chain()
+        move_entry(e, 1, 2)
+        self.assertEqual(wiring(e), [(0, None, None), (2, 0, "B"), (1, 2, "B"), (3, 1, "B")])
+        move_entry(e, 2, 1)
+        self.assertEqual(wiring(e), wiring(chain()))
+
+    def test_move_to_the_top_and_bottom(self):
+        e = chain()
+        move_entry(e, 3, 0)
+        self.assertEqual(wiring(e), [(3, None, None), (0, 3, "B"), (1, 0, "B"), (2, 1, "B")])
+        move_entry(e, 0, 3)
+        self.assertEqual(wiring(e), [(0, 3, None)[:1] + (None, None), (1, 0, "B"), (2, 1, "B"), (3, 2, "B")])
+
+    def test_children_of_the_moved_device(self):
+        e = chain()
+        e[2]["upstream"], e[2]["port"] = 0, "C"            # 2 hangs on port C of 0, 3 behind 2
+        move_entry(e, 0, 1)                                 # the coupler moves down: 1 (its first child) takes its place
+        self.assertEqual(wiring(e)[0], (1, None, None))
+        self.assertEqual(wiring(e)[1], (0, 1, "B"))
+        self.assertEqual(wiring(e)[2], (2, 0, "C"))
+        self.assertEqual(wiring(e)[3], (3, 2, "B"))
+
+    def test_normalise(self):
+        e = chain()
+        e[1]["upstream"] = 3                                # upstream later in the list
+        e[2]["upstream"], e[2]["port"] = 0, "B"             # port B of 0 is taken by 1 ... (after 1 is fixed: 1 is (0,B))
+        e[3]["port"] = None                                 # no port
+        normalise(e)
+        self.assertEqual(wiring(e), [(0, None, None), (1, 0, "B"), (2, 1, "B"), (3, 2, "B")])
+
+    def test_remove(self):
+        e = chain()
+        remove_entry(e, 1)
+        self.assertEqual(wiring(e), [(0, None, None), (2, 0, "B"), (3, 2, "B")])
+        e = chain()
+        e[3]["upstream"], e[3]["port"] = 1, "C"
+        e[2]["upstream"] = 1                                # two children on 1: 2 (port B) and 3 (port C)
+        remove_entry(e, 1)
+        self.assertEqual(wiring(e), [(0, None, None), (2, 0, "B"), (3, 2, "B")])
+        remove_entry(e, 0)
+        self.assertEqual(wiring(e), [(2, None, None), (3, 2, "B")])
+
+
+class DriveProjectTest(unittest.TestCase):
+    """The ctrlX DRIVE sits on port C of the coupler (FakeBus(drive=True))."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.bus = FakeBus(drive=True)
+        self.core = Core(os.path.join(self.dir.name, "activeConfiguration", "io-config", "config.json"), self.bus,
+                         os.path.join(self.dir.name, "esi"), log=lambda m: None)
+        for folder, names in ((ESI_DIR, ESI_FILES), (DRIVE_DIR, sorted(os.listdir(DRIVE_DIR)))):
+            for name in names:
+                self.core.esi.add(name, read(os.path.join(folder, name)))
+        self.core.start_scan()
+        self.core.wait_scan()
+
+    def tearDown(self):
+        self.core.stop()
+        self.dir.cleanup()
+
+    def previous(self):
+        self.core.plan()
+        return [(s["name"], s["previous"]) for s in eni.parse_eni(self.core.plan_file("eni"))["slaves"]]
+
+    def test_port_c_device_moved_away_and_back_gets_its_port_again(self):
+        before = self.previous()
+        self.assertEqual(before[4][1], ("C", 1001))
+        self.core.project_move(4, -1)                               # the drive moves up between two I/O devices
+        self.assertEqual(self.core.state()["devices"][3]["name"][:4], "ctrl")
+        moved = self.previous()
+        self.assertEqual(moved[3][1], ("B", 1003))                  # not paired with the bus any more: behind its neighbour
+        self.assertEqual(moved[4][1], ("B", 1004))                  # the I/O device that took its place chains after it
+        self.core.project_move(3, 1)
+        self.assertEqual(self.previous(), before)
+        p = self.core.plan()
+        self.assertEqual(p["warnings"], [])
+        with self.assertRaisesRegex(ConfigError, "the list is a configuration now"):
+            self.core.soe_read(4, 47)
+
+    def test_device_added_behind_the_drive_hangs_on_its_port_b(self):
+        self.core.project_add(*[self.core.esi.search("XI190202", limit=1)[0][k] for k in ("vendor", "product", "revision")])
+        slaves = self.previous()
+        self.assertEqual(slaves[5][1], ("B", 1005))                         # behind the drive (address 1005)
 
 
 class ProjectTest(unittest.TestCase):
@@ -79,6 +180,13 @@ class ProjectTest(unittest.TestCase):
     def add(self, type_name, **kw):
         d = self.lib[type_name]
         return self.core.project_add(d["vendor"], d["product"], d["revision"], **kw)
+
+    def entries(self):
+        with open(self.core.project_path, encoding="utf-8") as f:
+            return json.load(f)["devices"]
+
+    def names(self):
+        return [d["name"] for d in self.core.state()["devices"]]
 
     def files(self):
         folder = os.path.join(self.core.active_dir, "comm.ethercat.master", "config", "ethercatmaster")
@@ -128,50 +236,190 @@ class ProjectTest(unittest.TestCase):
 
     # --- the project list ----------------------------------------------------------------------------
 
-    def test_add_from_the_library_moves_the_edits_along(self):
+    def test_add_appends_and_keeps_the_others(self):
         self.scan()
         self.core.save_edit(2, {"name": "Analog"})
-        self.assertEqual(self.add("XI522001", after=0), 1)
+        self.assertEqual(self.add("XI522001"), 4)
         s = self.core.state()
         self.assertTrue(s["project"])
-        self.assertEqual([d["present"] for d in s["devices"]], [True, False, True, True, True])
-        self.assertEqual(self.core.edit_options(3)["name"], "Analog")
-        self.assertEqual(self.core.plan()["devices"][3]["name"], "Analog")
-        self.assertEqual(self.core.plan()["devices"][1]["name"], "XI522001_2")   # the running one keeps its name
-        self.scan()                                 # a rescan changes nothing about it
-        self.assertEqual(self.core.state()["devices"][1]["present"], False)
+        self.assertEqual([d["present"] for d in s["devices"]], [False] * 5)       # a configuration: no live data
+        self.assertEqual([d["state"] for d in s["devices"]], ["-"] * 5)
+        self.assertEqual(self.names(), ["XB_EC_12", "XI190202", "Analog", "XI522001", "XI522001"])
+        self.assertEqual(self.core.edit_options(2)["name"], "Analog")
+        p = self.core.plan()
+        self.assertEqual(p["devices"][4]["name"], "XI522001_2")                 # the running one keeps its name
+        old, new = eni.parse_eni(REFERENCE), eni.parse_eni(self.core.plan_file("eni"))
+        for i in (0, 1, 3):                                                      # appending changes nothing before it
+            a, b = new["slaves"][i], old["slaves"][i]
+            self.assertEqual((a["pdos"], a["sm"], a["coe_init"], a["variables"]), (b["pdos"], b["sm"], b["coe_init"], b["variables"]))
+        self.assertEqual(new["slaves"][2]["name"], "Analog")
+        self.assertEqual(p["warnings"], ["Position 4: XI522001_2 is not on the bus at the last scan"])
+        self.scan()                                 # a rescan changes nothing about the list
+        self.assertEqual(self.names(), ["XB_EC_12", "XI190202", "Analog", "XI522001", "XI522001"])
+        self.assertTrue(self.core.state()["project"])
+
+    def test_add_then_remove_is_the_running_configuration(self):
+        self.scan()
+        self.add("XI190202")
+        self.core.project_remove(4)
+        self.assertTrue(self.core.state()["project"])               # still a configuration until written or reset
+        p = self.core.plan()
+        self.assertTrue(p["identical"])
+        self.assertEqual(self.core.plan_file("eni"), REFERENCE)
+        self.assertEqual(p["warnings"], [])
 
     def test_port_of_an_added_device(self):
         self.scan()
-        self.add("XI190202", upstream=0, port="C")
-        from app import eni
+        self.add("XI190202")
         self.core.plan()
         parsed = eni.parse_eni(self.core.plan_file("eni"))
-        self.assertEqual(parsed["slaves"][4]["previous"], ("C", parsed["slaves"][0]["address"]))
+        self.assertEqual(parsed["slaves"][4]["previous"], ("B", parsed["slaves"][3]["address"]))     # port B of the device above
+        self.assertEqual(self.entries()[4]["port"], "B")
+        self.assertEqual(self.entries()[4]["upstream"], self.entries()[3]["uid"])
 
     def test_add_checks(self):
         self.scan()
         with self.assertRaisesRegex(ConfigError, "ESI library"):
             self.core.project_add(1, 2, 3)
-        for kw in ({"after": 99}, {"after": 1, "upstream": 3}, {"port": "A"}):
-            with self.assertRaises(ConfigError):
-                self.add("XI190202", **kw)
+        for bad in ("1abc", "a b", "x" * 65, 7):
+            with self.assertRaisesRegex(ConfigError, "name must start"):
+                self.add("XI190202", name=bad)
         self.assertFalse(self.core.state()["project"])
+        self.assertFalse(os.path.exists(self.core.project_path))
+        self.assertEqual(self.core.load_edits(), {})
 
-    def test_remove_and_move_only_absent_devices(self):
-        unplug(self.bus, XI190202)
+    def test_name_at_add(self):
         self.scan()
-        with self.assertRaisesRegex(ConfigError, "on the bus"):
-            self.core.project_remove(0)
-        with self.assertRaisesRegex(ConfigError, "on the bus"):
-            self.core.project_move(0, 1)
+        self.assertEqual(self.add("XI190202", name="Inputs_2"), 4)
+        self.assertEqual(self.names()[4], "Inputs_2")
+        self.assertEqual(self.core.edit_options(4)["name"], "Inputs_2")
+        self.assertEqual(self.core.plan()["devices"][4]["name"], "Inputs_2")
+
+    def test_move_any_device(self):
+        self.scan()
         self.assertEqual(self.core.project_move(1, 1), 2)
-        self.assertEqual([d["name"] for d in self.core.state()["devices"]], ["XB_EC_12", "XI422202", "XI190202", "XI522001"])
-        self.core.project_remove(2)
-        self.assertEqual(self.core.plan()["removed_devices"], ["XI190202"])
+        self.assertTrue(self.core.state()["project"])
+        self.assertEqual(self.names(), ["XB_EC_12", "XI422202", "XI190202", "XI522001"])
+        self.assertEqual(self.core.project_move(0, 1), 1)               # even the coupler
+        self.assertEqual(self.names(), ["XI422202", "XB_EC_12", "XI190202", "XI522001"])
+        self.assertEqual(self.core.project_move(0, -1), 0)              # past the top: nothing
+        self.assertEqual(self.core.project_move(3, 5), 3)
+        with self.assertRaises(ConfigError):
+            self.core.project_move(9, 1)
+        wiring_now = [(e["upstream"], e["port"]) for e in self.entries()]
+        self.assertEqual(wiring_now[0], (None, None))
+        self.assertTrue(all(p == "B" for _u, p in wiring_now[1:]))
+
+    def test_move_down_and_up_is_identical(self):
+        self.scan()
+        self.core.project_move(1, 1)
+        p = self.core.plan()
+        self.assertFalse(p["identical"])
+        self.assertEqual(len(p["warnings"]), 2)                     # moved: it warns on both sides
+        self.assertRegex(p["warnings"][0], r"^Position \d: XI\w+ is not on the bus at the last scan$")
+        self.assertRegex(p["warnings"][1], "^XI.+ is on the bus but not in this configuration$")
+        self.core.project_move(2, -1)
+        p = self.core.plan()
+        self.assertTrue(p["identical"])
+        self.assertEqual(self.core.plan_file("eni"), REFERENCE)
+        self.assertEqual(p["warnings"], [])
+
+    def test_moved_device_keeps_its_settings(self):
+        """Linked to the running configuration by station address, not by position or type order."""
+        self.scan()
+        self.core.project_move(1, 1)
+        self.assertEqual([s["eni_slave"]["name"] for s in self.core.sources], ["XB_EC_12", "XI422202", "XI190202", "XI522001"])
+        self.assertEqual(self.core.sources[1]["eni_slave"]["address"], 1003)
+        self.assertEqual([e["address"] for e in self.entries()], [1001, 1003, 1002, 1004])
+        # an entry without address key (project from before) is paired by type and order as in the live list
+        with open(self.core.project_path) as f:
+            data = json.load(f)
+        for e in data["devices"]:
+            del e["address"]
+        with open(self.core.project_path, "w") as f:
+            json.dump(data, f)
+        self.core._project_changed()
+        self.assertEqual([s["eni_slave"]["name"] for s in self.core.sources if s["eni_slave"]].count("XB_EC_12"), 1)
+        self.assertEqual(len([s for s in self.core.sources if s["eni_slave"]]), 3)
+
+    def test_edits_follow_a_move_with_duplicate_types(self):
+        self.scan()
+        self.add("XI190202")                                        # a second XI190202 at the bottom
+        self.core.save_edit(1, {"name": "Bus_one"})
+        self.core.save_edit(4, {"name": "New_one"})
+        self.assertEqual(self.core.project_move(4, -3), 1)          # the two of one type swap places
+        self.assertEqual(self.names(), ["XB_EC_12", "New_one", "Bus_one", "XI422202", "XI522001"])
+        self.assertEqual(self.core.edit_options(1)["name"], "New_one")
+        self.assertEqual(self.core.edit_options(2)["name"], "Bus_one")
+        self.assertEqual(sorted(self.core.load_edits()), [1, 2])
+        self.scan()                                                 # nothing guesses again
+        self.assertEqual(self.names(), ["XB_EC_12", "New_one", "Bus_one", "XI422202", "XI522001"])
+        self.core.project_remove(1)                                 # a removed device's edit goes with it
+        self.assertEqual(self.names(), ["XB_EC_12", "Bus_one", "XI422202", "XI522001"])
+        self.assertEqual(sorted(self.core.load_edits()), [1])
+        self.assertEqual(self.core.plan()["devices"][1]["name"], "Bus_one")
+
+    def test_bus_device_not_in_the_list(self):
+        self.scan()
+        self.core.project_remove(1)                                 # XI190202 is on the bus but leaves the list
+        self.assertEqual(self.names(), ["XB_EC_12", "XI422202", "XI522001"])
+        p = self.core.plan()
+        self.assertEqual(len(p["devices"]), 3)
+        self.assertEqual(len(p["warnings"]), 1)
+        self.assertRegex(p["warnings"][0], "^.+ is on the bus but not in this configuration$")
+        self.assertEqual(p["removed_devices"], ["XI190202"])
+        self.scan()                                                 # a scan doesn't put it back
+        self.assertEqual(self.names(), ["XB_EC_12", "XI422202", "XI522001"])
         self.core.project_reset()
-        self.assertFalse(self.core.state()["project"])
         self.assertEqual(len(self.core.state()["devices"]), 4)
+
+    def test_remove_all_devices(self):
+        self.scan()
+        for _ in range(4):
+            self.core.project_remove(0)
+        self.assertEqual(self.core.state()["devices"], [])
+        p = self.core.plan()
+        self.assertEqual(p["errors"], ["no devices"])
+        self.assertEqual(p["devices"], [])
+        self.add("XB-EC-12")                                        # and a list can start again
+        self.assertEqual(self.entries()[0]["upstream"], None)
+        self.assertEqual(self.core.plan()["errors"], [])
+
+    def test_configuration_state_has_no_online_access(self):
+        self.scan()
+        self.assertEqual(self.core._autoinc(1)["address"], (-1) & 0xFFFF)
+        self.add("XI190202")
+        for call in (lambda: self.core._autoinc(1), lambda: self.core.objects(2), lambda: self.core.sdo_write(2, 0x8000, 1, 1),
+                     lambda: self.core.process_data(),
+                     lambda: self.core.process_data(1), lambda: self.core.write_output("x", 1)):
+            with self.assertRaisesRegex(ConfigError, "the list is a configuration now"):
+                call()
+        self.core.project_reset()
+        self.assertEqual(self.core._autoinc(1)["address"], (-1) & 0xFFFF)
+        self.assertIn("variables", self.core.process_data(1))
+
+    def test_rename_alone_is_not_a_configuration(self):
+        self.scan()
+        self.core.save_edit(1, {"name": "Inputs"})
+        s = self.core.state()
+        self.assertFalse(s["project"])
+        self.assertEqual(self.names()[1], "Inputs")
+        self.assertEqual(self.core.device(1)["name"], "Inputs")
+        self.assertTrue(s["devices"][1]["present"])
+        self.assertFalse(os.path.exists(self.core.project_path))
+        self.core.reset_edit(1)
+        self.assertEqual(self.names()[1], "XI190202")
+
+    def test_reset_returns_to_the_live_list(self):
+        self.scan()
+        self.core.project_move(1, 1)
+        self.core.save_edit(2, {"name": "Moved"})
+        self.core.project_reset()
+        s = self.core.state()
+        self.assertFalse(s["project"])
+        self.assertEqual([d["present"] for d in s["devices"]], [True] * 4)
+        self.assertEqual(self.names(), ["XB_EC_12", "Moved", "XI422202", "XI522001"])      # the edit followed its device
+        self.assertEqual(self.core.plan()["devices"][1]["name"], "Moved")
 
     def test_changed_master_configuration_is_a_warning(self):
         self.scan()
@@ -210,7 +458,7 @@ class ProjectTest(unittest.TestCase):
         self.assertIn(b"<Name>Inputs</Name>", read(eni_path))
         self.assertTrue(read(ini_path))
         self.assertTrue(s["project"])                # the master doesn't hold it: nothing is lost
-        self.assertEqual([x["name"] for x in s["devices"]], ["XB_EC_12", "Inputs"])
+        self.assertEqual([x["name"] for x in s["devices"]], ["XB-EC-12", "Inputs"])
 
     def test_plan_without_a_scan_starts_from_the_files(self):
         self.scan()

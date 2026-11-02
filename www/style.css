@@ -95,6 +95,15 @@ button.primary:active:not(:disabled) { background: var(--accent-active); border-
 button.primary:disabled, button.danger:disabled { background: var(--disabled-bg); color: #fff; }
 button.danger { background: var(--err); border-color: var(--err); color: #fff; }
 button.danger:hover:not(:disabled), button.danger:active:not(:disabled) { background: #a80003; border-color: #a80003; color: #fff; }
+/* Search suggestions under an input (the input's parent is the positioned box) */
+.suggest-box { position: relative; flex: 1; min-width: 240px; max-width: 500px; }
+.row .suggest-box input[type=text] { width: 100%; max-width: none; }
+.suggest { position: absolute; left: 0; right: 0; top: 36px; z-index: 20; margin: 0; padding: 2px 0; list-style: none;
+  background: var(--card); border: 1px solid var(--line); box-shadow: 0 4px 14px rgba(0, 0, 0, .15); max-height: 340px; overflow-y: auto; }
+.sug { padding: 5px 10px; cursor: pointer; font-size: 14px; }
+.sug.active, .sug:hover { background: var(--sel); }
+td.name { cursor: text; }
+td.name input[type=text] { width: 150px; }
 .row-tools { display: inline-flex; gap: 4px; }
 button.small, td button { min-height: 28px; padding: 0 10px; font-size: 14px; }
 
@@ -109,7 +118,8 @@ button.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 
 /* Status chip in the title band (ctrlX "Operating" chip) */
 .chip { font-size: 14px; padding: 6px 12px; background: var(--tile); white-space: nowrap; }
-.chip.ok { background: var(--ok-bg); } .chip.bad { background: var(--err-bg); }
+.chip.ok { background: var(--ok-bg); } .chip.bad { background: var(--err-bg); } .chip.warn { background: var(--warn-bg); color: var(--warn); }
+h2 .chip { margin-left: 10px; vertical-align: middle; }
 
 /* Busy indicator in the title band: a turning toothed wheel in Bosch blue with what is running */
 .busy { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); white-space: nowrap; }

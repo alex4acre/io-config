@@ -40,7 +40,7 @@
 
     <section class="card" id="bus-card">
       <div class="row head">
-        <h2>Devices</h2>
+        <h2>Devices <span id="config-flag" class="chip warn" hidden title="The list is a configuration now: no live data until it is written or you go back">Configuration</span></h2>
         <button id="project-reset" hidden>Back to the running configuration</button>
       </div>
       <div class="scroll">
@@ -50,19 +50,19 @@
           <tbody></tbody>
         </table>
       </div>
-      <p class="hint">Click a device for its process data, settings, startup parameters and details.</p>
+      <p id="devices-hint" class="hint">Click a device for its <span id="hint-pd">process data, </span>settings, startup parameters and details; click a name to rename it.</p>
       <details id="add-box">
         <summary>Add device from ESI</summary>
-        <p class="hint">Adds a device to the project, also while it isn't on the bus or the master isn't working. It stays
-          "not present" until the device is found there; the configuration is built with a warning.</p>
+        <p class="hint">New devices go to the bottom of the list; place them with the arrows. The order of the list is the wiring
+          order: a device that is not on the bus is assumed to be connected to port B of the device above it until it is
+          scanned. Once the list is changed it is a configuration: no live data until it is written or you go back to
+          the running configuration.</p>
         <div class="row">
-          <input id="add-search" type="search" placeholder="Search the ESI library">
-          <select id="add-device"></select>
-        </div>
-        <div class="row">
-          <label class="check">Insert after <select id="add-after"></select></label>
-          <label class="check">Connected to <select id="add-upstream"></select></label>
-          <label class="check">Port <select id="add-port"><option>B</option><option>C</option><option>D</option></select></label>
+          <div class="suggest-box">
+            <input id="add-device" type="text" placeholder="Search the ESI library" autocomplete="off" spellcheck="false">
+            <ul id="add-suggest" class="suggest" hidden></ul>
+          </div>
+          <input id="add-name" type="text" placeholder="Name (optional)" maxlength="64" autocomplete="off">
           <button id="add" class="primary" disabled>Add device</button>
         </div>
       </details>

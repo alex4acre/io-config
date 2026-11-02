@@ -200,6 +200,20 @@ visible.
    - Known limits: Startup-parameter "add from object" for an absent CoE device needs the device online (the data type is
      read from it); SoE works from the dictionary. The Settings tab may show a new device's unsuffixed name while the plan
      gives it the _2 suffix.
+   - **Configuration state (1.6.0, rework 2026-11-02):** the list is the project's entries only, in wiring order.
+     No port choices: POST /project/devices takes {vendor, product, revision, name?}, a new device goes to the
+     bottom (upstream = the entry above, port B). Arrows and Remove on every row (no absent-only check),
+     `configure.move_entry/remove_entry/normalise` keep (upstream, port) a sensible chain (first child takes the
+     moved/removed device's place, normalise pass). Once project.json exists the Devices card shows the flag
+     "Configuration" and live data stops: state "-", no process data, no CoE/SoE online access (`_autoinc`,
+     `process_data`, `write_output` refuse), device card opens on Settings. `_assemble` pairs entries with the bus in
+     order (`pair_in_order`), no `merge`: bus devices not in the list are not inserted (a build warning each);
+     unpaired entries use their stored port ("not on the bus at the last scan" warning), paired ones their real port
+     (a drive on port C moved away and back is on C again). The running-configuration link of an entry is its station
+     address (entries from before have none and use the pairing). Edits follow the device explicitly
+     (`_remap_edits`), not by LCS. A rename alone (PUT edit) does not start the state; the table shows the saved
+     edit's name. UI: ▲ ▼ buttons, one input with a suggestion list for "Add device from ESI" (keys as in
+     plc-data-explorer), optional name, click-to-edit names.
 12. **Next:** more than one frame, free PDO mapping (editing PDO contents),
    modules from separate module files (EtherCATModule, e.g. ctrlX DRIVE FSoE).
 
