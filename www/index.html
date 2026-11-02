@@ -27,7 +27,7 @@
         <button id="scan" class="primary">Scan bus</button>
       </div>
       <p id="noscan" class="hint">Not scanned yet. The scan only reads: master status, the configuration it runs with
-        (ENI), and each device's online info and EEPROM.</p>
+        (ENI), and each device's online info and EEPROM. A project can be prepared without it.</p>
       <dl id="master" class="grid cols" hidden>
         <dt>State</dt><dd id="m-state"></dd>
         <dt>Devices</dt><dd id="m-devices"></dd>
@@ -38,16 +38,34 @@
       </dl>
     </section>
 
-    <section class="card" id="bus-card" hidden>
-      <h2>Devices</h2>
+    <section class="card" id="bus-card">
+      <div class="row head">
+        <h2>Devices</h2>
+        <button id="project-reset" hidden>Back to the running configuration</button>
+      </div>
       <div class="scroll">
         <table id="devices">
           <thead><tr><th>Pos</th><th>Name</th><th>Device</th><th>Address</th><th>Revision</th><th>State</th>
-            <th>ESI</th><th>ENI</th><th>EEPROM</th><th>Check</th></tr></thead>
+            <th>ESI</th><th>ENI</th><th>EEPROM</th><th>Check</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
       <p class="hint">Click a device for its process data, settings, startup parameters and details.</p>
+      <details id="add-box">
+        <summary>Add device from ESI</summary>
+        <p class="hint">Adds a device to the project, also while it isn't on the bus or the master isn't working. It stays
+          "not present" until the device is found there; the configuration is built with a warning.</p>
+        <div class="row">
+          <input id="add-search" type="search" placeholder="Search the ESI library">
+          <select id="add-device"></select>
+        </div>
+        <div class="row">
+          <label class="check">Insert after <select id="add-after"></select></label>
+          <label class="check">Connected to <select id="add-upstream"></select></label>
+          <label class="check">Port <select id="add-port"><option>B</option><option>C</option><option>D</option></select></label>
+          <button id="add" class="primary" disabled>Add device</button>
+        </div>
+      </details>
     </section>
 
     <section class="card" id="detail" hidden>
@@ -201,15 +219,15 @@
       </div>
     </section>
 
-    <section class="card" id="config-card" hidden>
+    <section class="card" id="config-card">
       <div class="row head">
         <h2>Configuration</h2>
         <label class="check">Cycle time <input id="cycle" type="number" min="125" max="100000" step="125"> µs</label>
         <button id="build" class="primary">Build configuration</button>
       </div>
-      <p class="hint">Builds the bus configuration (ENI + ini) for the devices found by the last scan: each device from
+      <p class="hint">Builds the bus configuration (ENI + ini) for the devices in the list above, present or not: each device from
         its ESI (without one: from the current configuration, else from its EEPROM), keeping the current configuration's choices for each device
-        (paired by device type in bus order, so inserting a device doesn't lose the others' settings). Nothing is written until you press "Write to the EtherCAT master".</p>
+        (paired by device type in bus order, so inserting a device doesn't lose the others' settings). Nothing is written until you press "Write to the EtherCAT master". If the master can't take it, it goes to its files and takes effect at the next master start.</p>
       <div id="plan" hidden>
         <p id="plan-summary"></p>
         <ul id="plan-messages" class="findings"></ul>

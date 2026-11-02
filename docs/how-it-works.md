@@ -1,6 +1,6 @@
 # io-config: how devices are identified, cross-checked and applied
 
-State: version 1.4.0, ctrlx-baseline 1.0.0 (2026-10-30). File paths are relative to the app folder `io-config/`.
+State: version 1.6.0, ctrlx-baseline 1.0.0 (2026-11-02). File paths are relative to the app folder `io-config/`.
 The code snippets are io-config's own code, shortened (marked `...`); the line numbers point to the full code. The
 shared parts every ctrlX app has (section 2) are described, not shown: their code and rules are in
 `ctrlx-baseline/` (`STANDARD.md`, `framework/`).
@@ -13,7 +13,7 @@ wire (its vendor ID, product code and revision from the master's online info). T
 | Column | Source | What the badge means |
 |---|---|---|
 | **ESI** | The ESI library (the XML device descriptions you uploaded, *EtherCAT Slave Information*) | `exact` = an ESI with the same vendor, product and revision. `other rev.` = same product, a different revision (the nearest one is used). `missing` = no ESI for this product. |
-| **ENI** | The configuration the master runs now (*EtherCAT Network Information*, the `ethercat.xml` written by I/O Engineering or by this app) | `same` = configured with the same identity. `other rev.` = same product, other revision. `different` = another device is configured there. `not configured` = the device is not in the running configuration (e.g. newly plugged in). `not on bus` = configured but missing. |
+| **ENI** | The configuration the master runs now (*EtherCAT Network Information*, the `ethercat.xml` written by I/O Engineering or by this app) | `same` = configured with the same identity. `other rev.` = same product, other revision. `different` = another device is configured there. `not configured` = the device is not in the running configuration (e.g. newly plugged in). `not on bus` = configured but missing (it stays in the configuration, see section 4.7). |
 | **EEPROM** | The device's own EEPROM (*SII*, slave information interface), read through the master | `read` = read and decoded. `error` = couldn't be read. |
 | **Check** | All findings for this position | `OK`, `Check (n)` = n warnings or notes, `Error (n)`. The Info tab of the device card lists them. |
 
@@ -377,14 +377,40 @@ _wait_state(bus, base, "op", op_timeout, log)
 ```
 
 Before this the app does two things ([app/core.py:370](../app/core.py#L370) `_download_thread`):
-- it checks that nobody wrote another configuration since the last scan (the master's ENI checksum);
-- it saves the running configuration as a **backup** (`io-config/backups/<time>/`, the last 20). **Restore**
-  writes a backup back the same way.
+- it notes if someone wrote another configuration since the last scan (since 1.6.0 this no longer stops the write);
+- it saves the running configuration as a **backup** (`io-config/backups/<time>/`, the last 20), read from the
+  master at that moment. **Restore** writes a backup back the same way.
+
+Since 1.6.0 each step of the sequence above is best effort: a step that fails becomes a warning (section 4.7), so the
+snippet shows the order of the steps, not the error handling.
 
 Saved configurations (1.4.0) use the same sequence. "Activate", by button, REST or Data Layer, backs up the
 running configuration, writes the saved ENI and ini, then restores the edits saved with them
 ([app/core.py:468](../app/core.py#L468) `start_activate`). The Data Layer way is the `io-config/activate` node
 (section 2.3).
+
+### 4.7 Without the devices or a working master (1.6.0)
+
+You can build and write a configuration for devices that are not on the bus yet, or while the master is not
+working. The app then only warns (one warning per absent device); it does not stop you.
+
+- The device list is the **project** merged with what is on the bus. The project is the running configuration's
+  devices, until you add, remove or move a device; then the app keeps your list in `io-config/project.json`.
+  A device you unplug now stays in the list (marked as not present) until you remove it.
+- **Add** a device from the ESI library: choose where to insert it, which device it is connected to and which port
+  (B, C or D). **Up**, **Down** and **Remove** work only for devices that are not present. **Back to the running
+  configuration** throws the project away.
+- A device that is not present has no online data: objects, drive parameters and process data writes answer "not
+  present on the bus". Startup parameters can be added from the object list only if the device is online (CoE);
+  drives (SoE) work from the dictionary.
+- If the master cannot be read, the scan shows state "unavailable" and the list comes from the files of the active
+  configuration.
+- Writing is best effort: Init, write, check the checksums, Op, then the files. A step that fails is a warning, and
+  the result says "Written, with warnings". If the master did not take the configuration, it takes effect at the
+  next master start. It is an error only if neither the master nor the files took it.
+- A configuration the master changed since your last scan no longer blocks the write. The backup taken first holds
+  what the master was really running.
+- When the master holds the written configuration, the project is deleted; if only the files took it, it stays.
 
 ## 5. Where to look for more
 

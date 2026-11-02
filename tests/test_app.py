@@ -235,8 +235,11 @@ class CompareTest(unittest.TestCase):
 
     def test_missing_device(self):
         s = self.eni["slaves"][3]
-        r = compare.device_report(3, None, None, None, s, "exact", None, None)
-        self.assertEqual((r["present"], r["level"], r["name"]), (False, "error", "XI522001"))
+        online = {"response": {"slaveIdentity": {"vendorId": s["vendor"], "productCode": s["product"],
+                                                 "revisionNumber": s["revision"], "serialNumber": 0}}}
+        r = compare.device_report(3, online, None, None, s, "exact", None, None, absent=True)
+        self.assertEqual((r["present"], r["level"], r["name"]), (False, "warning", "XI522001"))
+        self.assertEqual(r["findings"][0]["text"], "Not present on the bus")
         self.assertEqual(r["sources"]["eni"]["match"], "not found")
 
 
@@ -291,13 +294,13 @@ class CoreTest(unittest.TestCase):
         self.bus.slaves.pop()                     # XI522001 unplugged
         self.bus.nodes[MASTER + "admin/fieldbus_status/num_connected_slaves"] = {"response": {"numSlaves": 3}}
         s = self.scan()
-        self.assertEqual([(d["name"], d["present"], d["level"]) for d in s["devices"]][-1], ("XI522001", False, "error"))
+        self.assertEqual([(d["name"], d["present"], d["level"]) for d in s["devices"]][-1], ("XI522001", False, "warning"))
 
     def test_unknown_instance(self):
         self.core.update_config({"instance": "other"})
         s = self.scan()
         self.assertIn('no EtherCAT master instance "other" (found: ethercatmaster)', s["scan"]["error"])
-        self.assertIsNone(s["master"])
+        self.assertEqual((s["master"]["state"], s["master"]["connected"]), ("unavailable", 0))
 
     def test_config(self):
         with self.assertRaises(ConfigError):

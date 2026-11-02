@@ -10,9 +10,12 @@ build_plan() decides each device's description, in this order:
   I/O Engineering is reproduced unchanged.
 It also lists what changes for the users of the process image (realtime_data variables).
 
-download() writes the configuration: backup, master to Init, write fieldbus_config, compare the master's
+A project device that isn't on the bus (bus_pos None) is built like any other, only with a warning.
+
+write_config() writes the configuration, best effort: master to Init, write fieldbus_config, compare the master's
 checksums, master to Op, and make sure the active configuration holds the new files (the master
-loads comm.ethercat.master/config/<instance>/ethercat.xml + ethercat.ini at boot).
+loads comm.ethercat.master/config/<instance>/ethercat.xml + ethercat.ini at boot). What doesn't work is a warning,
+so a configuration can also be prepared while the master isn't working.
 """
 
 import os
@@ -50,6 +53,30 @@ def pair_in_order(old: list, new: list) -> dict:
             j += 1
     return out
 
+
+def merge(project: list, bus: list) -> list:
+    """The device list for project and bus identities: (project index or None, bus index or None) in order.
+    A project device with no partner is absent; a bus device with no partner stays at its place on the bus."""
+    paired = pair_in_order(project, bus)
+    taken = set(paired.values())
+    out, i, j = [], 0, 0
+    while i < len(project) or j < len(bus):
+        if i < len(project) and i not in paired:
+            out.append((i, None))
+            i += 1
+        elif j < len(bus) and j not in taken:
+            out.append((None, j))
+            j += 1
+        else:
+            out.append((i, j))
+            i, j = i + 1, j + 1
+    return out
+
+
+def absent(src: dict) -> bool:
+    return src.get("bus_pos", src["pos"]) is None
+
+
 def _variables(parsed) -> dict:
     out = {}
     for s in (parsed or {}).get("slaves", []):
@@ -60,7 +87,9 @@ def _variables(parsed) -> dict:
 
 def topology(sources: list) -> dict:
     """position -> (port letter, upstream position) from the master's online info: a device's port A leads to
-    its upstream device (portSlaveHandles[0]), previousPort is the port it is plugged into there."""
+    its upstream device (portSlaveHandles[0]), previousPort is the port it is plugged into there. An absent device
+    has src["previous"] instead; a device on the bus whose port that one occupies chains after it (the place the
+    device has on the bus now is only free because the other one is missing)."""
     by_handle = {}
     for src in sources:
         info = (src.get("online") or {}).get("response", {})
@@ -72,6 +101,15 @@ def topology(sources: list) -> dict:
         handles, port = info.get("portSlaveHandles") or [], info.get("previousPort")
         if src["pos"] > 0 and handles and handles[0] in by_handle and port is not None and 0 <= port < 4:
             out[src["pos"]] = (PORTS[port], by_handle[handles[0]])
+    occupied = set()
+    for src in sources:
+        pos = src["pos"]
+        if absent(src):
+            if src.get("previous"):
+                out[pos] = tuple(src["previous"])
+                occupied.add(out[pos])
+        elif out.get(pos) in occupied:
+            out[pos] = ("B", pos - 1)
     return out
 
 
@@ -126,7 +164,7 @@ def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = N
     """sources: per present device {"pos", "online", "eeprom", "eni_slave", "esi_match", "esi_device"};
     current: {"eni": bytes, "ini": bytes, "parsed": parse_eni() or None}; user_edits: position -> edit."""
     devices, rows, errors, warnings = [], [], [], []
-    used = set()
+    used = {src["eni_slave"]["name"] for src in sources if src.get("eni_slave")}       # also of devices further down
     ports = topology(sources)
     for src in sources:
         pos = src["pos"]
@@ -137,6 +175,8 @@ def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = N
             continue
         if warning:
             warnings.append(warning)
+        if absent(src):
+            warnings.append(f'Position {pos}: {dev["name"]} is not present on the bus')
         edit = (user_edits or {}).get(pos)
         if edit and edits.applies(src, edit):
             try:
@@ -149,6 +189,7 @@ def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = N
         used.add(dev["name"])
         devices.append(dev)
         rows.append({"position": pos, "name": dev["name"], "source": dev["source"], "note": "; ".join(note),
+                     "present": not absent(src),
                      "inputs": sum(e["bits"] for p in dev["pdos"] if p["dir"] == "tx" for e in p["entries"]) // 8,
                      "outputs": sum(e["bits"] for p in dev["pdos"] if p["dir"] == "rx" for e in p["entries"]) // 8})
 
@@ -198,41 +239,66 @@ def _wait_state(bus, base, wanted, timeout, log):
                         f'(now {state.get("currentState") if state else "?"}, requested {state.get("requestedState") if state else "?"})')
 
 
-def write_config(bus, base: str, eni: bytes, ini: bytes, active_files: tuple, log, op_timeout=60) -> list:
-    """The download sequence; returns the steps done as text. active_files: (eni path, ini path) of the
+def write_config(bus, base: str, eni: bytes, ini: bytes, active_files: tuple, log, op_timeout=60) -> tuple:
+    """The download sequence, best effort: returns (steps done, warnings, whether the master holds the configuration).
+    DownloadError only if neither the master nor the files took it. active_files: (eni path, ini path) of the
     master's files in the active configuration."""
-    steps = []
+    steps, warnings = [], []
 
     def step(text):
         steps.append(text)
         log(f"download: {text}")
 
-    bus.write(base + "admin/fieldbus_status/master_state", {"request": {"newState": "init"}})
-    _wait_state(bus, base, "init", 30, log)
-    step("master in Init")
-    bus.write(base + "admin/fieldbus_config", {"request": {"eni": list(eni), "ini": list(ini)}})
-    step(f"configuration written ({len(eni)} bytes ENI, {len(ini)} bytes ini)")
-    sums = {c["id"]: c["checksum"] for c in
-            bus.read(base + "admin/fieldbus_config/checksum").get("response", {}).get("checksums", [])}
-    if sums.get("eniCrc32") != generate.checksum(eni) or sums.get("iniCrc32") != generate.checksum(ini):
-        raise DownloadError(f"the master reports other checksums than the files written ({sums})")
-    step("master checksums match")
-    bus.write(base + "admin/fieldbus_status/master_state", {"request": {"newState": "op"}})
-    _wait_state(bus, base, "op", op_timeout, log)
-    step("master in Op")
+    def warn(text):
+        warnings.append(text)
+        log(f"download: {text}")
+
+    try:
+        bus.write(base + "admin/fieldbus_status/master_state", {"request": {"newState": "init"}})
+        _wait_state(bus, base, "init", 30, log)
+        step("master in Init")
+    except Exception as e:
+        warn(f"master not in Init: {e}")
+    took = False
+    try:
+        bus.write(base + "admin/fieldbus_config", {"request": {"eni": list(eni), "ini": list(ini)}})
+        step(f"configuration written ({len(eni)} bytes ENI, {len(ini)} bytes ini)")
+        sums = {c["id"]: c["checksum"] for c in
+                bus.read(base + "admin/fieldbus_config/checksum").get("response", {}).get("checksums", [])}
+        if sums.get("eniCrc32") == generate.checksum(eni) and sums.get("iniCrc32") == generate.checksum(ini):
+            took = True
+            step("master checksums match")
+        else:
+            warn(f"the master reports other checksums than the files written ({sums})")
+    except Exception as e:
+        warn(f"the master did not take the configuration: {e}")
+    try:
+        bus.write(base + "admin/fieldbus_status/master_state", {"request": {"newState": "op"}})
+        _wait_state(bus, base, "op", op_timeout, log)
+        step("master in Op")
+    except Exception as e:
+        warn(f"master not in Op: {e}")
     eni_path, ini_path = active_files
-    time.sleep(1.0)
+    if took:
+        time.sleep(1.0)
     if _same_file(eni_path, eni) and _same_file(ini_path, ini):
         step("the master stored the files in the active configuration itself")
     else:
-        os.makedirs(os.path.dirname(eni_path), exist_ok=True)
-        for path, data in ((eni_path, eni), (ini_path, ini)):
-            tmp = path + ".tmp"
-            with open(tmp, "wb") as f:
-                f.write(data)
-            os.replace(tmp, path)
-        step("files written to the active configuration (loaded at the next boot)")
-    return steps
+        try:
+            os.makedirs(os.path.dirname(eni_path), exist_ok=True)
+            for path, data in ((eni_path, eni), (ini_path, ini)):
+                tmp = path + ".tmp"
+                with open(tmp, "wb") as f:
+                    f.write(data)
+                os.replace(tmp, path)
+            step("files written to the active configuration (loaded at the next boot)")
+        except OSError as e:
+            if not took:
+                raise DownloadError(f'neither the master nor the files took the configuration: {"; ".join(warnings)}; {e}') from e
+            warn(f"files not written to the active configuration: {e}")
+    if not took:
+        warn("the master did not take the configuration: it takes effect at the next master start")
+    return steps, warnings, took
 
 
 def _same_file(path, data) -> bool:

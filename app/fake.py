@@ -110,6 +110,9 @@ class FakeBus:
         self.written = []                   # (eni, ini) of each configuration write
         self.coe = recorded_coe() if self.slaves else {}       # autoinc address -> object dictionary
         self.fail_op = False                # True: the master stays in PreOp after requesting Op
+        self.fail_init = False              # True: the master stays where it is after requesting Init
+        self.refuse_config = False          # True: writing fieldbus_config fails
+        self.gone = False                   # True: every access to the master fails
         self.soe = {}                       # (autoinc, idn) -> value bytes written (SoE), see _soe
         if not hasattr(self, "soe_recorded"):
             self.soe_recorded = {}          # idn -> value bytes read from the real drive (x3-drive-soe.json)
@@ -120,7 +123,12 @@ class FakeBus:
     def close(self):
         pass
 
+    def _check_gone(self, address: str):
+        if self.gone and address.startswith("fieldbuses"):
+            raise BusError(f"{address}: DL_INVALID_ADDRESS")
+
     def browse(self, address: str) -> list:
+        self._check_gone(address)
         prefix = address.strip("/") + "/" if address.strip("/") else ""
         with self.lock:
             children = {p[len(prefix):].split("/")[0] for p in self.nodes if p.startswith(prefix)}
@@ -138,6 +146,7 @@ class FakeBus:
     def read(self, address: str):
         with self.lock:
             self.calls.append(("read", address, None))
+            self._check_gone(address)
             if address not in self.nodes:
                 raise BusError(f"read {address}: DL_INVALID_ADDRESS")
             if self.nodes[address] is None:
@@ -155,6 +164,7 @@ class FakeBus:
     def read_args(self, address: str, args: dict):
         with self.lock:
             self.calls.append(("read_args", address, args))
+            self._check_gone(address)
             request = (args or {}).get("request", {})
             if address == MASTER + "device_access/slave_online_info":
                 return self._slave(request)["online_info"]
@@ -259,16 +269,22 @@ class FakeBus:
         the checksums follow). Configuration writes are kept in self.written for tests."""
         with self.lock:
             self.calls.append(("write", address, value))
+            self._check_gone(address)
             if address == MASTER + "admin/fieldbus_status/master_state":
                 new = (value or {}).get("request", {}).get("newState")
                 if new not in ("init", "preop", "safeop", "op"):
                     raise BusError(f"write {address}: DL_INVALID_VALUE")
+                if new == "init" and self.fail_init:
+                    self.nodes[address] = {"response": dict(self.nodes[address]["response"], requestedState="init")}
+                    return
                 if new == "op" and self.fail_op:
                     self.nodes[address] = {"response": {"currentState": "preop", "requestedState": "op"}}
                     return
                 self.nodes[address] = {"response": {"currentState": new, "requestedState": new}}
                 return
             if address == MASTER + "admin/fieldbus_config":
+                if self.refuse_config:
+                    raise BusError(f"write {address}: DL_FAILED")
                 state = self.nodes[MASTER + "admin/fieldbus_status/master_state"]["response"]["currentState"]
                 if state != "init":
                     raise BusError(f"write {address}: DL_FAILED (master not in Init)")

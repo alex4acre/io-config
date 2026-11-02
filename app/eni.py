@@ -82,6 +82,9 @@ def _slave(el, position: int) -> dict:
                              "data": _text(c, "Data"), "complete_access": flag(c.get("CompleteAccess"))})
     dc = el.find("DC")
     dc_activate = None
+    previous = el.find("PreviousPort[@Selected='1']")
+    if previous is None:
+        previous = el.find("PreviousPort")
     sm_control, fmmu, timeouts, check_high, check_low, sm_op_only = {}, [], {}, False, False, []
     for c in el.findall("InitCmds/InitCmd"):
         ado, comment = num(c.findtext("Ado")), (c.findtext("Comment") or "").strip()
@@ -132,6 +135,7 @@ def _slave(el, position: int) -> dict:
         "dc": {c.tag: (c.text or "").strip() for c in dc.iter() if c is not dc and not len(c)} if dc is not None else None,
         "dc_activate": dc_activate,
         "physics": _text(info, "Physics"),
+        "previous": None if previous is None else (_text(previous, "Port"), num(previous.findtext("PhysAddr"))),
         "harvest": {"sm_control": sm_control, "fmmu": fmmu, "timeouts": timeouts, "check_high": check_high,
                     "check_low": check_low, "sm_op_only": sm_op_only,
                     "mailbox": mbx,

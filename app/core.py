@@ -9,6 +9,11 @@ ctrlX CORE X3 and logged an error) and cached per device, so a rescan doesn't re
 The number of devices comes from num_connected_slaves: asking past the last device makes the master log
 "Device not found".
 
+The device list is the project merged with the bus (_assemble). The project is the running configuration's devices,
+or io-config/project.json once the user added, removed or moved a device. A project device missing on the bus is
+"absent": described from its ESI or the configuration, without online access. A master that can't be read is no
+obstacle: the scan then reports it and the list comes from the master's files in the active configuration.
+
 File handling as in the ctrlx-app-starter template:
 - config.json is written atomically (config.json.tmp, then rename; *.tmp is an appPrivateFile in the manifest,
   so it never ends up in a saved configuration);
@@ -77,6 +82,13 @@ def _bytes(value) -> bytes:
     return bytes(value or [])
 
 
+def _device_names(eni_bytes) -> list:
+    try:
+        return [s["name"] for s in eni.parse_eni(eni_bytes)["slaves"]]
+    except Exception:
+        return []
+
+
 class Core:
 
     def __init__(self, config_path: str, bus, esi_folder: str, log=print):
@@ -95,7 +107,7 @@ class Core:
         self.eeprom_cache = {}       # (position, vendor, product, revision, serial) -> words
         self.plan_data = None        # the last configuration built from a scan (what a download writes)
         self.plan_id = 0
-        self.download_state = {"running": False, "steps": [], "finished": None, "error": None}
+        self.download_state = {"running": False, "steps": [], "warnings": [], "finished": None, "error": None}
         self._thread = None
         # the active configuration: io-config/config.json is in it, and the master's files too
         self.active_dir = os.path.dirname(os.path.dirname(os.path.abspath(config_path)))
@@ -104,6 +116,9 @@ class Core:
         self.activation = {"state": "idle", "name": "", "error": "", "started": None, "finished": None}
         self.edits_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "edits.json")
         self.od_cache = {}           # (position, identity) -> object list
+        self.project_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "project.json")
+        self.raw = None              # the last scan, unmerged: master, onlines, eeproms, configured, current
+        self._start_from_files()
 
     # --- configuration file ------------------------------------------------------------------------
 
@@ -162,9 +177,11 @@ class Core:
                 "connected": self.bus.is_connected(),
                 "instance": self.config["instance"],
                 "scan": dict(self.scan_state),
-                "download": dict(self.download_state, steps=list(self.download_state["steps"])),
+                "download": dict(self.download_state, steps=list(self.download_state["steps"]),
+                                 warnings=list(self.download_state["warnings"])),
                 "activation": dict(self.activation),
                 "master": self.master,
+                "project": self._load_project() is not None,
                 "devices": [self._summary(d) for d in self.devices],
                 "esi": self.esi.summary(),
             }
@@ -219,63 +236,99 @@ class Core:
     def _scan_thread(self):
         error = None
         try:
-            master, devices, sources, current = self._scan()
+            raw = self._scan()
             with self.lock:
-                self.master, self.devices, self.sources, self.current = master, devices, sources, current
+                self.raw = raw
+                self._assemble()
                 self.plan_data = None
-                self._follow_edits()
+            error = raw["master"]["error"]
+            if error:
+                self.log(f"scan: {error}")
         except Exception as e:      # shown in the UI; the last good scan stays
             error = str(e)
             self.log(f"scan failed: {e}")
         with self.lock:
             self.scan_state = {"running": False, "progress": "", "finished": time.time(), "error": error}
 
-    def _scan(self):
+    def _active_files(self) -> tuple:
+        folder = os.path.join(self.active_dir, "comm.ethercat.master", "config", self.config["instance"])
+        return os.path.join(folder, "ethercat.xml"), os.path.join(folder, "ethercat.ini")
+
+    def _read_active_files(self) -> tuple:
+        """(ENI, ini) the master loads at boot, empty if there are none."""
+        out = []
+        for path in self._active_files():
+            try:
+                with open(path, "rb") as f:
+                    out.append(f.read())
+            except OSError:
+                out.append(b"")
+        return tuple(out)
+
+    def _start_from_files(self):
+        """Before the first scan: the list as the active configuration's files and the project give it."""
+        try:
+            eni_bytes, ini_bytes = self._read_active_files()
+            parsed = eni.parse_eni(eni_bytes) if eni_bytes else None
+            self.raw = {"master": None, "onlines": [], "eeproms": [],
+                        "configured": sorted((parsed or {}).get("slaves", []), key=lambda s: s["position"]),
+                        "current": {"eni": eni_bytes, "ini": ini_bytes, "parsed": parsed} if eni_bytes else None}
+            self._assemble()
+        except Exception as e:
+            self.raw = {"master": None, "onlines": [], "eeproms": [], "configured": [], "current": None}
+            self.log(f"active configuration not readable: {e}")
+
+    def _scan(self) -> dict:
         base = f'{INSTANCES}/{self.config["instance"]}/'
         self._progress("master status")
-        if self.config["instance"] not in self.instances():
-            raise ConfigError(f'no EtherCAT master instance "{self.config["instance"]}" '
-                              f'(found: {", ".join(self.instances()) or "none"})')
-        state = self.bus.read(base + "admin/fieldbus_status/master_state").get("response", {})
-        connected = self.bus.read(base + "admin/fieldbus_status/num_connected_slaves").get("response", {}).get("numSlaves", 0)
-        configured = self.bus.read(base + "admin/fieldbus_status/num_configured_slaves").get("response", {}).get("numSlaves", 0)
-        topology = self.bus.read(base + "admin/fieldbus_status/topology_status").get("response", {})
-        master = {"state": state.get("currentState", ""), "requested": state.get("requestedState", ""),
-                  "connected": connected, "configured": configured, "topology": topology.get("state", ""),
-                  "eni": None, "ini": {}, "eni_error": None}
+        master = {"state": "unavailable", "requested": "", "connected": 0, "configured": 0, "topology": "",
+                  "eni": None, "ini": {}, "eni_error": None, "error": None, "from_files": False}
+        try:
+            if self.config["instance"] not in self.instances():
+                raise ConfigError(f'no EtherCAT master instance "{self.config["instance"]}" '
+                                  f'(found: {", ".join(self.instances()) or "none"})')
+            state = self.bus.read(base + "admin/fieldbus_status/master_state").get("response", {})
+            connected = self.bus.read(base + "admin/fieldbus_status/num_connected_slaves").get("response", {}).get("numSlaves", 0)
+            configured = self.bus.read(base + "admin/fieldbus_status/num_configured_slaves").get("response", {}).get("numSlaves", 0)
+            topology = self.bus.read(base + "admin/fieldbus_status/topology_status").get("response", {})
+            master.update(state=state.get("currentState", ""), requested=state.get("requestedState", ""),
+                          connected=connected, configured=configured, topology=topology.get("state", ""))
+        except Exception as e:
+            master["error"] = str(e)
+        connected = master["connected"]
 
         self._progress("configuration (ENI)")
         config = None
         eni_bytes = ini_bytes = b""
         try:
-            cfg = self.bus.read(base + "admin/fieldbus_config").get("response", {})
-            eni_bytes, ini_bytes = _bytes(cfg.get("eni")), _bytes(cfg.get("ini"))
+            if not master["error"]:
+                cfg = self.bus.read(base + "admin/fieldbus_config").get("response", {})
+                eni_bytes, ini_bytes = _bytes(cfg.get("eni")), _bytes(cfg.get("ini"))
+            if not eni_bytes:
+                eni_bytes, ini_bytes = self._read_active_files()
+                master["from_files"] = bool(eni_bytes)
             if eni_bytes:
                 config = eni.parse_eni(eni_bytes)
                 master["eni"] = {"slaves": len(config["slaves"]), "inputs_bytes": config["inputs_bytes"],
                                  "outputs_bytes": config["outputs_bytes"], "size": len(eni_bytes)}
-            master["ini"] = eni.parse_ini(_bytes(cfg.get("ini")).decode("latin-1"))
+            master["ini"] = eni.parse_ini(ini_bytes.decode("latin-1"))
         except Exception as e:
             master["eni_error"] = str(e)
         cycle = master["ini"].get("EtherCAT.Master", {}).get("CycleTimeUs")
         master["cycle_us"] = int(cycle) if cycle and cycle.isdigit() else None
         configured_slaves = sorted((config or {}).get("slaves", []), key=lambda s: s["position"])
+        if master["error"]:
+            master["configured"] = len(configured_slaves)
 
-        onlines = []
+        onlines, eeproms = [], []
         for pos in range(connected):
             self._progress(f"device {pos + 1} of {connected}")
             address = {"addressType": "autoincrement", "address": (-pos) & 0xFFFF}
-            onlines.append(self.bus.read_args(base + "device_access/slave_online_info", {"request": address}))
-        # the running configuration's device for each position: same type, in bus order (not the same position,
-        # so a device inserted before others doesn't make them lose their settings)
-        bus_ids = [_identity(o) for o in onlines]
-        paired = configure.pair_in_order([[s["vendor"], s["product"]] for s in configured_slaves], bus_ids)
-        eni_slaves = {paired[k]: s for k, s in enumerate(configured_slaves) if k in paired}
-
-        devices, sources = [], []
-        master_op = master["state"] == "op"
-        for pos, online in enumerate(onlines):
-            address = {"addressType": "autoincrement", "address": (-pos) & 0xFFFF}
+            try:
+                online = self.bus.read_args(base + "device_access/slave_online_info", {"request": address})
+            except Exception as e:      # the devices behind it can't be asked either
+                master["error"] = f"device {pos} not readable: {e}"
+                break
             identity = online.get("response", {}).get("slaveIdentity", {})
             key = (pos, identity.get("vendorId"), identity.get("productCode"), identity.get("revisionNumber"),
                    identity.get("serialNumber"))
@@ -286,22 +339,68 @@ class Core:
                 eeprom = sii.decode(self.eeprom_cache[key])
             except Exception as e:
                 eeprom_error = str(e)
-            report, match, device = self._report(pos, online, eeprom, eeprom_error, eni_slaves.get(pos), master_op)
+            onlines.append(online)
+            eeproms.append((eeprom, eeprom_error))
+        return {"master": master, "onlines": onlines, "eeproms": eeproms, "configured": configured_slaves,
+                "current": {"eni": eni_bytes, "ini": ini_bytes, "parsed": config}}
+
+    def _assemble(self):
+        """self.devices and self.sources from the last scan and the project (no bus access). A position is the
+        place in this list; src["bus_pos"] is the device's place on the bus, None if it is absent."""
+        raw = self.raw
+        project = self._load_project()
+        configured = raw["configured"]
+        if project is not None:
+            entries = project["devices"]
+        else:
+            entries = [{"vendor": s["vendor"], "product": s["product"], "revision": s["revision"]} for s in configured]
+        bus_ids = [_identity(o) for o in raw["onlines"]]
+        walk = configure.merge([[e["vendor"], e["product"]] for e in entries], bus_ids)
+        ids = [bus_ids[b] if b is not None else [entries[e]["vendor"], entries[e]["product"]] for e, b in walk]
+        # the running configuration's device for each position: same type, in bus order (not the same position,
+        # so a device inserted before others doesn't make them lose their settings)
+        paired = configure.pair_in_order([[s["vendor"], s["product"]] for s in configured], ids)
+        eni_slaves = {paired[k]: s for k, s in enumerate(configured) if k in paired}
+        uid_pos = {entries[e]["uid"]: pos for pos, (e, _b) in enumerate(walk) if e is not None and "uid" in entries[e]}
+        address_pos = {s["address"]: paired[k] for k, s in enumerate(configured) if k in paired}
+
+        master_op = (raw["master"] or {}).get("state") == "op"
+        devices, sources = [], []
+        for pos, (e, b) in enumerate(walk):
+            entry = entries[e] if e is not None else {}
+            slave = eni_slaves.get(pos)
+            if b is not None:
+                online = raw["onlines"][b]
+                eeprom, eeprom_error = raw["eeproms"][b]
+            else:
+                online = {"response": {"slaveIdentity": {"vendorId": entry["vendor"], "productCode": entry["product"],
+                                                         "revisionNumber": entry["revision"], "serialNumber": 0}}}
+                eeprom, eeprom_error = None, None
+            report, match, device = self._report(pos, online, eeprom, eeprom_error, slave, master_op, absent=b is None)
             devices.append(report)
-            sources.append({"pos": pos, "online": online, "eeprom": eeprom, "eni_slave": eni_slaves.get(pos),
-                            "esi_match": match, "esi_device": device})
+            src = {"pos": pos, "bus_pos": b, "uid": entry.get("uid"), "online": online, "eeprom": eeprom,
+                   "eni_slave": slave, "esi_match": match, "esi_device": device}
+            if b is None:
+                src["previous"] = self._previous_port(pos, entry, slave, uid_pos, address_pos)
+            sources.append(src)
             if device and device.get("dictionary"):          # SoE drives: their parameter dictionary
                 try:
-                    sources[-1]["soe_dict"] = self.esi.dictionary(device["dictionary"])
+                    src["soe_dict"] = self.esi.dictionary(device["dictionary"])
                 except KeyError as e:
                     self.log(str(e))
-        missing = [s for k, s in enumerate(configured_slaves) if k not in paired]
-        for n, s in enumerate(missing):                   # configured but not on the bus: listed after the bus
-            report = self._report(connected + n, None, None, None, s, master_op)[0]
-            if s["position"] != connected + n:
-                report["findings"].insert(0, {"level": "info", "text": f'Configured at position {s["position"]}'})
-            devices.append(report)
-        return master, devices, sources, {"eni": eni_bytes, "ini": ini_bytes, "parsed": config}
+        self.master, self.devices, self.sources, self.current = raw["master"], devices, sources, raw["current"]
+        self._follow_edits()
+
+    @staticmethod
+    def _previous_port(pos, entry, slave, uid_pos, address_pos):
+        """(port letter, upstream position) of an absent device, None if unknown: a chain after the device before it."""
+        if "uid" in entry:
+            port, upstream = entry.get("port"), uid_pos.get(entry.get("upstream"))
+        elif slave and slave.get("previous"):
+            port, upstream = slave["previous"][0], address_pos.get(slave["previous"][1])
+        else:
+            return None
+        return (port, upstream) if port and port in configure.PORTS and upstream is not None and upstream < pos else None
 
     def _read_eeprom(self, base: str, address: dict) -> list:
         words = []
@@ -316,11 +415,9 @@ class Core:
                 break
         return words
 
-    def _report(self, pos, online, eeprom, eeprom_error, eni_slave, master_op):
-        identity = (online or {}).get("response", {}).get("slaveIdentity") or eni_slave or {}
-        vendor = identity.get("vendorId", identity.get("vendor"))
-        product = identity.get("productCode", identity.get("product"))
-        revision = identity.get("revisionNumber", identity.get("revision"))
+    def _report(self, pos, online, eeprom, eeprom_error, eni_slave, master_op, absent=False):
+        identity = online.get("response", {}).get("slaveIdentity", {})
+        vendor, product, revision = identity.get("vendorId"), identity.get("productCode"), identity.get("revisionNumber")
         match, entry, device, esi_error = self.esi.find(vendor, product, revision) + (None, None)
         if entry is not None:
             try:
@@ -328,19 +425,134 @@ class Core:
             except Exception as e:
                 esi_error = str(e)
         return compare.device_report(pos, online, eeprom, eeprom_error, eni_slave, match, entry, device,
-                                     esi_error=esi_error, master_op=master_op), match, device
+                                     esi_error=esi_error, master_op=master_op, absent=absent), match, device
+
+    # --- the project: the devices the configuration is built for (io-config/project.json) ---------------
+
+    def _load_project(self):
+        """{"eni_checksum", "devices": [{uid, vendor, product, revision, port, upstream (uid)}]}, None without one."""
+        try:
+            with open(self.project_path, encoding="utf-8") as f:
+                data = json.load(f)
+            for e in data["devices"]:
+                e["vendor"], e["product"], e["revision"], e["uid"]      # all of them or no project
+            return data
+        except FileNotFoundError:
+            return None
+        except (ValueError, OSError, KeyError, TypeError) as e:
+            self.log(f"{self.project_path}: {e!r}; ignoring the project")
+            return None
+
+    def _save_project(self, devices: list):
+        old = self._load_project()
+        running = (self.current or {}).get("eni")
+        data = {"eni_checksum": old["eni_checksum"] if old else generate.checksum(running) if running else None,
+                "devices": devices}
+        os.makedirs(os.path.dirname(self.project_path), exist_ok=True)
+        tmp = self.project_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, self.project_path)
+
+    def _project_changed(self):
+        self._assemble()
+        self.plan_data = None
+
+    def _project_entries(self) -> list:
+        """The device list now as project entries; every device gets a uid."""
+        used = {s["uid"] for s in self.sources if s["uid"] is not None}
+        fresh = iter(n for n in range(len(used) + len(self.sources) + 1) if n not in used)
+        uids = [s["uid"] if s["uid"] is not None else next(fresh) for s in self.sources]
+        ports = configure.topology(self.sources)
+        out = []
+        for s, uid in zip(self.sources, uids):
+            idn = s["online"]["response"]["slaveIdentity"]
+            port, upstream = ports.get(s["pos"], (None, None))
+            out.append({"uid": uid, "vendor": idn["vendorId"], "product": idn["productCode"], "revision": idn["revisionNumber"],
+                        "port": port, "upstream": None if upstream is None else uids[upstream]})
+        return out
+
+    def _project_edit(self):
+        if self._busy():
+            raise ConfigError("a scan or download is running")
+        return self._project_entries()
+
+    def project_add(self, vendor, product, revision, after=None, upstream=None, port="B") -> int:
+        """Inserts a device from the ESI library behind position after (-1: first, None: last), plugged into port
+        B, C or D of position upstream (None: of the device before it). Returns its position."""
+        with self.lock:
+            entries = self._project_edit()
+            if self.esi.find(vendor, product, revision)[0] != "exact":
+                raise ConfigError("no such device in the ESI library")
+            if after is None:
+                after = len(entries) - 1
+            if upstream is None:
+                upstream = after
+            if not isinstance(after, int) or not -1 <= after < len(entries):
+                raise ConfigError(f"insert after must be -1 to {len(entries) - 1}")
+            if not isinstance(upstream, int) or not -1 <= upstream <= after:
+                raise ConfigError("the device it is connected to must come before it in the list")
+            if port not in ("B", "C", "D"):
+                raise ConfigError("the port must be B, C or D")
+            uid = max((e["uid"] for e in entries), default=-1) + 1
+            entries.insert(after + 1, {"uid": uid, "vendor": vendor, "product": product, "revision": revision,
+                                       "port": port if upstream >= 0 else None,
+                                       "upstream": entries[upstream]["uid"] if upstream >= 0 else None})
+            self._save_project(entries)
+            self._project_changed()
+            return next((s["pos"] for s in self.sources if s["uid"] == uid), after + 1)
+
+    def _absent_position(self, position: int) -> None:
+        if not configure.absent(self._source(position)):
+            raise ConfigError(f"the device at position {position} is on the bus; only absent devices can be removed or moved")
+
+    def project_remove(self, position: int):
+        with self.lock:
+            entries = self._project_edit()
+            self._absent_position(position)
+            uid = entries.pop(position)["uid"]
+            for e in entries:
+                if e["upstream"] == uid:
+                    e["upstream"] = None
+            self._save_project(entries)
+            self._project_changed()
+
+    def project_move(self, position: int, by: int) -> int:
+        with self.lock:
+            entries = self._project_edit()
+            self._absent_position(position)
+            if not isinstance(by, int) or isinstance(by, bool):
+                raise ConfigError("by must be a number of places")
+            target = max(0, min(len(entries) - 1, position + by))
+            entries.insert(target, entries.pop(position))
+            self._save_project(entries)
+            self._project_changed()
+            return target
+
+    def project_reset(self):
+        """Back to the running configuration's devices."""
+        with self.lock:
+            if self._busy():
+                raise ConfigError("a scan or download is running")
+            if os.path.exists(self.project_path):
+                os.remove(self.project_path)
+            self._project_changed()
 
     # --- new configuration and download -------------------------------------------------------------
 
     def plan(self, cycle_us=None) -> dict:
-        """The configuration the last scan's bus gets (not written yet)."""
+        """The configuration the device list gets (not written yet); no scan needed."""
         with self.lock:
-            if self.current is None or self._busy():
-                raise ConfigError("scan the bus first" if self.current is None else "a scan or download is running")
+            if self._busy():
+                raise ConfigError("a scan or download is running")
             if cycle_us is not None and (not isinstance(cycle_us, int) or isinstance(cycle_us, bool)
                                          or not 125 <= cycle_us <= 100000):
                 raise ConfigError("cycle time must be 125 to 100000 µs")
-            p = configure.build_plan(self.sources, self.current, self.config["instance"], cycle_us, self.load_edits())
+            current = self.current or {"eni": b"", "ini": b"", "parsed": None}
+            p = configure.build_plan(self.sources, current, self.config["instance"], cycle_us, self.load_edits())
+            project = self._load_project()
+            if project and current["eni"] and project.get("eni_checksum") != generate.checksum(current["eni"]):
+                p["warnings"].append("The master's configuration changed since this project was started")
             self.plan_id += 1
             self.plan_data = dict(p, id=self.plan_id)
             return self.plan_summary()
@@ -367,7 +579,7 @@ class Core:
                 raise ConfigError("the configuration changed; build it again")
             if p["errors"] or not p["eni"]:
                 raise ConfigError("the configuration has errors: " + "; ".join(p["errors"]))
-            self.download_state = {"running": True, "steps": [], "finished": None, "error": None}
+            self.download_state = {"running": True, "steps": [], "warnings": [], "finished": None, "error": None}
             self._thread = threading.Thread(target=self._download_thread, args=(p["eni"], p["ini"], "download"),
                                             name="download", daemon=True)
             self._thread.start()
@@ -382,45 +594,56 @@ class Core:
         with self.lock:
             if self._busy():
                 raise ConfigError("a scan or download is already running")
-            self.download_state = {"running": True, "steps": [], "finished": None, "error": None}
+            self.download_state = {"running": True, "steps": [], "warnings": [], "finished": None, "error": None}
             self._thread = threading.Thread(target=self._download_thread, args=(eni_bytes, ini_bytes, f"restore {name}"),
                                             name="download", daemon=True)
             self._thread.start()
             return dict(self.download_state)
 
-    def _download_thread(self, eni_bytes, ini_bytes, what, fresh=False, after=None):
-        """fresh: back up what the master runs right now instead of checking it against the last scan (activation
-        of a saved configuration, also without a scan); after(): run once the configuration is written."""
+    def _running_config(self, steps: list) -> dict:
+        """What to back up: read from the master, else the last scan's, else the active configuration's files."""
+        known = self.current or {}
+        try:
+            cfg = self.bus.read(f'{INSTANCES}/{self.config["instance"]}/admin/fieldbus_config').get("response", {})
+            running = {"eni": _bytes(cfg.get("eni")), "ini": _bytes(cfg.get("ini"))}
+        except Exception as e:
+            self.log(f"the master's configuration not readable: {e}")
+            running = {}
+        if running.get("eni"):
+            if known.get("eni") and known["eni"] != running["eni"]:
+                steps.append("note: the master's configuration changed since the last scan")
+            return running
+        if known.get("eni"):
+            return known
+        eni_bytes, ini_bytes = self._read_active_files()
+        return {"eni": eni_bytes, "ini": ini_bytes}
+
+    def _download_thread(self, eni_bytes, ini_bytes, what, after=None):
+        """after(): run once the configuration is written. Warnings: what didn't work, the configuration is at least
+        in the files; an error: it isn't anywhere."""
         base = f'{INSTANCES}/{self.config["instance"]}/'
         error = None
-        steps = self.download_state["steps"]
+        steps, warnings = self.download_state["steps"], self.download_state["warnings"]
         try:
-            if fresh:
-                cfg = self.bus.read(base + "admin/fieldbus_config").get("response", {})
-                running = {"eni": _bytes(cfg.get("eni")), "ini": _bytes(cfg.get("ini"))}
-            else:
-                # never overwrite a configuration someone else downloaded since the last scan
-                sums = {c["id"]: c["checksum"] for c in
-                        self.bus.read(base + "admin/fieldbus_config/checksum").get("response", {}).get("checksums", [])}
-                if self.current and self.current["eni"] and sums.get("eniCrc32") != generate.checksum(self.current["eni"]):
-                    raise configure.DownloadError("the master's configuration changed since the last scan; scan again")
-                running = self.current or {}
+            running = self._running_config(steps)
             if running.get("eni"):
                 steps.append(f'backup {self._backup(running["eni"], running["ini"], what)}')
-            folder = os.path.join(self.active_dir, "comm.ethercat.master", "config", self.config["instance"])
-            steps += configure.write_config(self.bus, base, eni_bytes, ini_bytes,
-                                            (os.path.join(folder, "ethercat.xml"), os.path.join(folder, "ethercat.ini")),
-                                            self.log)
+            done, warned, took = configure.write_config(self.bus, base, eni_bytes, ini_bytes, self._active_files(), self.log)
+            steps += done
+            warnings += warned
+            if took and os.path.exists(self.project_path):      # the master holds it now: the project is done
+                os.remove(self.project_path)
             if after:
                 steps.append(after())
         except Exception as e:
             error = str(e)
             self.log(f"{what} failed: {e}")
         with self.lock:
-            self.download_state = {"running": False, "steps": steps, "finished": time.time(), "error": error}
+            self.download_state = {"running": False, "steps": steps, "warnings": warnings, "finished": time.time(), "error": error}
             self.plan_data = None
             if what.startswith("activate "):
-                self.activation.update(state="error" if error else "done", error=error or "", finished=time.time())
+                problem = error or "; ".join(warnings)
+                self.activation.update(state="error" if problem else "done", error=problem, finished=time.time())
         self.start_scan()
 
     # --- saved configurations (io-config/saved/<name>/ in the active configuration) -------------------
@@ -503,12 +726,12 @@ class Core:
             end = time.time() + 120
             while self.scan_state["running"] and time.time() < end:
                 time.sleep(0.2)
-            self._download_thread(eni_bytes, ini_bytes, f"activate {name}", fresh=True, after=restore_edits)
+            self._download_thread(eni_bytes, ini_bytes, f"activate {name}", after=restore_edits)
 
         with self.lock:
             if self.download_state["running"]:
                 raise ConfigError("a configuration is being written already")
-            self.download_state = {"running": True, "steps": [], "finished": None, "error": None}
+            self.download_state = {"running": True, "steps": [], "warnings": [], "finished": None, "error": None}
             self.activation = {"state": "running", "name": name, "error": "", "started": time.time(), "finished": None}
             self._thread = threading.Thread(target=run, name="activate", daemon=True)
             self._thread.start()
@@ -538,10 +761,15 @@ class Core:
         return [_identity(s["online"]) for s in self.sources]
 
     def _follow_edits(self):
-        """After a scan: move saved edits with their device when devices were inserted or removed before it.
-        Each edit keeps the bus it was made for ("bus"); edits saved before 1.3.4 have none and stay put."""
+        """After a change of the device list: move saved edits with their device when devices were inserted or removed
+        before it. Each edit keeps the list it was made for ("bus"); edits saved before 1.3.4 have none and stay put.
+        Without a good scan the list says nothing about the bus: an edit with no device then stays as it is."""
         all_edits = self.load_edits()
         now = self._bus_ids()
+        if not now:
+            return
+        master = (self.raw or {}).get("master")
+        trusted = bool(master) and not master["error"]
         moved, changed = {}, False
         for pos, edit in sorted(all_edits.items()):
             target = pos
@@ -549,7 +777,10 @@ class Core:
                 target = configure.pair_in_order(edit["bus"], now).get(pos)
                 changed = True
                 if target is None or target in moved:
-                    self.log(f"the saved edit of position {pos} has no device any more; dropped")
+                    if trusted:
+                        self.log(f"the saved edit of position {pos} has no device any more; dropped")
+                    else:
+                        moved.setdefault(pos, edit)
                     continue
                 edit = dict(edit, bus=now)
             moved[target] = edit
@@ -633,7 +864,14 @@ class Core:
         if protocols is not None and "CoE" not in protocols:
             raise ConfigError(f'the device at position {position} has no CoE mailbox '
                               f'({", ".join(protocols) or "no mailbox protocols"}), so it has no objects to read or write')
-        return {"addressType": "autoincrement", "address": (-position) & 0xFFFF}
+        return self._autoinc(position)
+
+    def _autoinc(self, position: int) -> dict:
+        """The device's address on the bus; a device that isn't there has none."""
+        bus_pos = self._source(position).get("bus_pos")
+        if bus_pos is None:
+            raise ConfigError(f"the device at position {position} is not present on the bus")
+        return {"addressType": "autoincrement", "address": (-bus_pos) & 0xFFFF}
 
     def _coe_base(self) -> str:
         return f'{INSTANCES}/{self.config["instance"]}/device_access/coe/'
@@ -717,8 +955,7 @@ class Core:
 
     def _device_state(self, position: int) -> str:
         """The device's EtherCAT state now (Init/PreOp/SafeOp/Op), read online."""
-        self._source(position)
-        a = {"addressType": "autoincrement", "address": (-position) & 0xFFFF}
+        a = self._autoinc(position)
         info = self.bus.read_args(f'{INSTANCES}/{self.config["instance"]}/device_access/slave_online_info',
                                   {"request": a}).get("response", {})
         return compare.al_state(info.get("alStatus")).split(" ")[0]
@@ -764,7 +1001,7 @@ class Core:
         return {"position": position, "parameters": out}
 
     def _soe_request(self, position: int, idn: int, flags: str, data=None, length=1024) -> dict:
-        req = {"addressType": "autoincrement", "address": (-position) & 0xFFFF, "driveNumber": 0,
+        req = {**self._autoinc(position), "driveNumber": 0,
                "elementFlags": flags, "idn": idn, "maxLength": length}
         if data is not None:
             req["data"] = list(data)
@@ -872,7 +1109,7 @@ class Core:
                 f.write(data)
         with open(os.path.join(folder, "info.json"), "w", encoding="utf-8") as f:
             json.dump({"time": time.time(), "before": why,
-                       "devices": [s["name"] for s in eni.parse_eni(eni_bytes)["slaves"]]}, f)
+                       "devices": _device_names(eni_bytes)}, f)
         for old in self.backups()[MAX_BACKUPS:]:
             shutil.rmtree(os.path.join(self.backup_dir, old["name"]), ignore_errors=True)
         return name

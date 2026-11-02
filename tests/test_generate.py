@@ -182,19 +182,23 @@ class DownloadTest(unittest.TestCase):
         self.assertEqual(self.bus.written[-1], (REFERENCE, REFERENCE_INI))
         self.assertEqual(self.core.state()["master"]["cycle_us"], 2000)
 
-    def test_stale_plan_and_changed_master_are_refused(self):
+    def test_stale_plan_is_refused_a_changed_master_is_backed_up(self):
         p = self.core.plan()
         self.core.plan()
         with self.assertRaises(ConfigError):
             self.core.start_download(p["id"])
         p = self.core.plan()
-        self.bus.nodes[MASTER + "admin/fieldbus_config/checksum"] = {"response": {"checksums": [
-            {"id": "eniCrc32", "checksum": [1, 2, 3, 4]}]}}
+        other = read(os.path.join(DATA, "x3-drive-ioe.xml"))
+        self.bus.nodes[MASTER + "admin/fieldbus_config"] = {"response": {"eni": list(other), "ini": list(REFERENCE_INI)}}
         self.core.start_download(p["id"])
         self.core.wait_scan()
         self.core.wait_scan()
-        self.assertIn("changed since the last scan", self.core.state()["download"]["error"])
-        self.assertEqual(self.bus.written, [])
+        s = self.core.state()["download"]
+        self.assertIsNone(s["error"])
+        self.assertTrue(any("changed since the last scan" in x for x in s["steps"]))
+        self.assertEqual(len(self.bus.written), 1)
+        backup = self.core.backups()[0]["name"]
+        self.assertEqual(read(os.path.join(self.core.backup_dir, backup, "ethercat.xml")), other)
 
     def test_master_not_reaching_op(self):
         import app.configure
@@ -208,7 +212,8 @@ class DownloadTest(unittest.TestCase):
             s = self.download()
         finally:
             app.configure._wait_state = old
-        self.assertIn("did not reach op", s["download"]["error"])
+        self.assertIsNone(s["download"]["error"])
+        self.assertTrue(any("did not reach op" in x for x in s["download"]["warnings"]))
         self.assertEqual(len(self.core.backups()), 1)
 
 
@@ -246,7 +251,8 @@ class WebTest(unittest.TestCase):
             return e.code, json.loads(e.read() or b"null")
 
     def test_plan_download_backups(self):
-        self.assertEqual(self.call("POST", "/plan")[0], 400)           # no scan yet
+        status, p = self.call("POST", "/plan")                         # no scan yet: nothing to build
+        self.assertEqual((status, p["errors"]), (200, ["no devices"]))
         self.call("POST", "/scan", {})
         app.web.core.wait_scan()
         status, p = self.call("POST", "/plan", {})

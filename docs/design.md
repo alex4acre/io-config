@@ -176,7 +176,31 @@ visible.
    EEPROM" notes for module PDOs.
    1.5.2: the Settings tab shows the PDOs of the chosen modules as soon as a slot changes (each module choice carries
    its PDOs, numbered for the slot), with a "Not saved yet" note; the Startup tab follows after Save.
-11. **Next:** offline add from the ESI library, more than one frame, free PDO mapping (editing PDO contents),
+11. **Project configuration (1.6.0, 2026-11-02):** a configuration can be built and written with devices absent or the
+   master not working. No checks, only a build warning per absent device.
+   - Device list = project merged with bus (`configure.merge`, `Core._assemble`, no bus access). The project is the
+     running ENI's devices, or `io-config/project.json` ({eni_checksum, devices[uid, vendor, product, revision, port,
+     upstream]}) once the user adds, removes or moves a device. An absent device is described from its ESI or the
+     running ENI; `src["bus_pos"]` is None; online access (objects, SoE, process data writes) is refused with "not
+     present on the bus". Behaviour change: a device that was dropped from the build when unplugged now STAYS in the
+     configuration until the user removes it.
+   - Editing: add from the ESI library (Insert after / Connected to / Port B, C or D); Up, Down and Remove only for
+     absent devices; "Back to the running configuration" deletes the project. REST: `POST /project/devices`,
+     `DELETE /project/devices/<pos>`, `POST /project/devices/<pos>/move {by}`, `DELETE /project`.
+   - Scan is tolerant: master unavailable -> state "unavailable", connected 0, message shown; the ENI falls back to the
+     active configuration's files. Before the first scan the list also comes from those files.
+   - Write is best effort: Init -> fieldbus_config + checksums -> Op -> files. Each failed step is a warning; the UI shows
+     "Written, with warnings"; if the master didn't take it: "takes effect at the next master start". Error only if
+     neither master nor files took it. Activating a saved configuration still reports state error on warnings.
+   - Guard removed: a master configuration changed since the last scan no longer refuses the write; it is a step note,
+     and the backup taken first holds what the master really ran (read fresh, else last scan, else files).
+   - project.json is deleted once the master holds a written configuration (checksums match), kept if only the files took
+     it. Build warning if the master's ENI changed since the project started.
+   - Fixed: a new device inserted ahead of a running device of the same type gets a suffix (_2) instead of a duplicate name.
+   - Known limits: Startup-parameter "add from object" for an absent CoE device needs the device online (the data type is
+     read from it); SoE works from the dictionary. The Settings tab may show a new device's unsuffixed name while the plan
+     gives it the _2 suffix.
+12. **Next:** more than one frame, free PDO mapping (editing PDO contents),
    modules from separate module files (EtherCATModule, e.g. ctrlX DRIVE FSoE).
 
 ## Open questions

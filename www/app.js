@@ -153,20 +153,21 @@ function renderState(s) {
   setBusy("scan", s.scan.running ? "Scanning the bus" : null);
   setBusy("download", s.download.running ? (s.activation.state === "running" ? `Activating "${s.activation.name}"`
     : "Writing to the EtherCAT master") : null);
-  if (s.scan.error && !s.scan.running && s.scan.finished !== lastFinished) banner("Scan failed: " + s.scan.error);
+  if (s.scan.error && !s.scan.running && s.scan.finished !== lastFinished) banner("Scan: " + s.scan.error);
 
   const m = s.master;
   $("noscan").hidden = !!m;
   $("master").hidden = !m;
-  $("bus-card").hidden = !m;
   if (m) {
-    $("m-state").textContent = m.state === m.requested ? m.state : `${m.state} (requested ${m.requested})`;
+    $("m-state").textContent = (m.state === m.requested || !m.requested ? m.state : `${m.state} (requested ${m.requested})`) +
+      (m.error ? " - " + m.error : "");   // stays visible: the banner goes when a device card opens
     $("m-devices").textContent = `${m.connected} connected, ${m.configured} configured`;
     $("m-topology").textContent = m.topology;
     $("m-cycle").textContent = m.cycle_us ? m.cycle_us + " µs" : "-";
     $("m-config").textContent = m.eni
       ? `ENI with ${m.eni.slaves} devices, ${m.eni.inputs_bytes} B inputs / ${m.eni.outputs_bytes} B outputs`
       : (m.eni_error ? "ENI not readable: " + m.eni_error : "no ENI loaded");
+    if (m.from_files) $("m-config").textContent += " (from the active configuration's files)";
     $("m-time").textContent = s.scan.finished ? new Date(s.scan.finished * 1000).toLocaleString() : "-";
   }
 
@@ -175,22 +176,105 @@ function renderState(s) {
   for (const d of s.devices) {
     const tr = row(tbody, [
       d.position, d.name, d.description, d.address ?? "-", hex(d.revision, 8),
-      d.present ? d.state : el("span", { class: "badge bad" }, "missing"),
+      d.present ? d.state : el("span", { class: "badge warn" }, "not present"),
       badge("esi", d.sources.esi), badge("eni", d.sources.eni), badge("eeprom", d.sources.eeprom),
-      levelBadge(d.level, d.findings),
+      levelBadge(d.level, d.findings), absentTools(d, s.devices.length),
     ], { class: "click" + (d.position === selected ? " selected" : "") });
     tr.onclick = () => openDevice(d.position);
   }
+  $("project-reset").hidden = !s.project;
+  renderAddForm(s.devices);
   if (s.scan.finished !== lastFinished) {
     lastFinished = s.scan.finished;
     if (selected !== null) openDevice(selected);
-    if (plan) {                     // a new scan makes a built configuration stale
-      plan = null;
-      $("plan").hidden = true;
-    }
+    dropPlan();                     // a new scan makes a built configuration stale
   }
   renderConfig(s);
 }
+
+function dropPlan() {
+  plan = null;
+  $("plan").hidden = true;
+}
+
+// --- project: devices added from the ESI library ---------------------------------------------------
+
+async function projectChange(fn) {
+  try {
+    banner("");
+    await fn();
+    dropPlan();
+    if (selected !== null) {
+      selected = null;
+      $("detail").hidden = true;
+    }
+    poll();
+  } catch (e) {
+    banner(e.message);
+  }
+}
+
+function absentTools(d, total) {
+  if (d.present) return "";
+  const tool = (text, title, disabled, fn) => {
+    const b = el("button", { class: "small", title }, text);
+    b.disabled = disabled;
+    b.onclick = (ev) => {
+      ev.stopPropagation();
+      projectChange(fn);
+    };
+    return b;
+  };
+  const move = (by) => () => api("POST", `/project/devices/${d.position}/move`, { by });
+  return el("span", { class: "row-tools" },
+    tool("Up", "Move up in the list", d.position === 0, move(-1)),
+    tool("Down", "Move down in the list", d.position === total - 1, move(1)),
+    tool("Remove", "Remove from the project", false, () => api("DELETE", "/project/devices/" + d.position)));
+}
+
+let addKey = null;
+
+function renderAddForm(devices) {
+  const key = devices.map((d) => d.name).join("|");
+  if (key === addKey) return;                  // keep what the user picked while the list is the same
+  addKey = key;
+  const fill = (sel, first) => {
+    sel.replaceChildren(el("option", { value: "-1" }, first),
+      ...devices.map((d) => el("option", { value: String(d.position) }, `${d.position}: ${d.name}`)));
+    sel.value = String(devices.length - 1);
+  };
+  fill($("add-after"), "(first in the list)");
+  fill($("add-upstream"), "(the master)");
+}
+
+let addTimer = null;
+let addDevices = [];
+
+async function loadAddChoices() {
+  try {
+    const r = await api("GET", "/esi?limit=100&q=" + encodeURIComponent($("add-search").value.trim()));
+    addDevices = r.devices;
+    $("add-device").replaceChildren(...r.devices.map((d, i) => el("option", { value: String(i) },
+      `${d.type} - ${d.name} (revision ${hex(d.revision, 8)})`)));
+    $("add").disabled = !r.devices.length;
+  } catch (e) {
+    banner(e.message);
+  }
+}
+
+$("add-box").ontoggle = () => { if ($("add-box").open) loadAddChoices(); };
+$("add-search").oninput = () => { clearTimeout(addTimer); addTimer = setTimeout(loadAddChoices, 250); };
+$("add-after").onchange = () => { $("add-upstream").value = $("add-after").value; };
+$("add").onclick = () => {
+  const d = addDevices[Number($("add-device").value)];
+  if (d) projectChange(() => api("POST", "/project/devices", { vendor: d.vendor, product: d.product, revision: d.revision,
+    after: Number($("add-after").value), upstream: Number($("add-upstream").value), port: $("add-port").value }));
+};
+$("project-reset").onclick = () => {
+  if (confirm("Forget the added, moved and removed devices and go back to the devices of the running configuration?")) {
+    projectChange(() => api("DELETE", "/project"));
+  }
+};
 
 async function poll() {
   try {
@@ -221,7 +305,7 @@ function sourceCell(s, fmt) {
 let panel = "pd";
 
 function showPanel(name) {
-  if ($("d-" + (name === "settings" ? "edit" : name)).hidden) name = "pd";
+  if ($("d-" + (name === "settings" ? "edit" : name)).hidden) name = $("d-pd").hidden ? "settings" : "pd";
   panel = name;
   for (const t of document.querySelectorAll(".subtabs .tab")) t.classList.toggle("active", t.dataset.panel === name);
   for (const p of document.querySelectorAll("#detail .panel")) p.hidden = p.id !== "p-" + name;
@@ -252,11 +336,14 @@ async function openDevice(pos) {
   }
   const protocols = d.sources.eeprom.mailbox || [];
   const known = d.sources.eeprom.match === "read" || protocols.length > 0;   // EEPROM read: its mailbox protocols count
+  $("d-writable").disabled = !d.present;
+  $("d-pd").hidden = !d.present;
   $("d-objects").hidden = !d.present || (known && !protocols.includes("CoE"));
   $("d-soe").hidden = !d.present || !protocols.includes("SoE");
-  $("d-edit").hidden = !d.present;
-  // startup parameters go through the CoE or SoE mailbox: none for devices without one (XI190202, XI112108, ...)
-  $("d-startup").hidden = !d.present || (known && !protocols.includes("CoE") && !protocols.includes("SoE"));
+  // startup parameters go through the CoE or SoE mailbox: none for devices without one (XI190202, XI112108, ...);
+  // an absent device has no EEPROM, its ESI tells
+  const mailbox = d.present ? (known ? protocols : ["CoE", "SoE"]) : (d.mailbox || []);
+  $("d-startup").hidden = !mailbox.includes("CoE") && !mailbox.includes("SoE");
   for (const tr of $("devices").tBodies[0].rows) tr.classList.toggle("selected", Number(tr.cells[0].textContent) === pos);
   $("detail").hidden = false;
   $("d-title").textContent = `${d.position}: ${d.name}`;
@@ -318,7 +405,7 @@ async function openDevice(pos) {
     (modes.length > 6 ? `; ... ${modes.length} in all` : "") : "-");
 
   if (other) {
-    showPanel(d.present ? "pd" : "info");
+    showPanel(d.present ? "pd" : "settings");
     $("detail").scrollIntoView({ behavior: "smooth", block: "nearest" });
   } else {
     showPanel(panel);
@@ -331,7 +418,6 @@ let plan = null;
 let downloadFinished = null;
 
 function renderConfig(s) {
-  $("config-card").hidden = !s.master;
   const busy = s.scan.running || s.download.running;
   $("build").disabled = busy;
   $("write").disabled = busy || !plan || plan.errors.length > 0;
@@ -343,9 +429,11 @@ function renderConfig(s) {
     const a = s.activation;                  // this write is the activation of a saved configuration?
     const act = a.state === "running" ? ` - activating "${a.name}"` :
       (a.finished && d.finished && Math.abs(a.finished - d.finished) < 1 ? ` - activation of "${a.name}"` : "");
-    $("dl-title").textContent = (d.running ? "Writing to the EtherCAT master ..." : (d.error ? "Writing failed" : "Written")) + act;
+    $("dl-title").textContent = (d.running ? "Writing to the EtherCAT master ..." :
+      (d.error ? "Writing failed" : (d.warnings.length ? "Written, with warnings" : "Written"))) + act;
     const ul = $("dl-steps");
-    ul.replaceChildren(...d.steps.map((t) => el("li", { class: "ok" }, t)));
+    ul.replaceChildren(...d.steps.map((t) => el("li", { class: "ok" }, t)),
+      ...d.warnings.map((t) => el("li", { class: "warning" }, t)));
     if (d.error) ul.append(el("li", { class: "error" }, d.error));
   }
   if (d.finished && d.finished !== downloadFinished) {
@@ -394,7 +482,7 @@ $("build").onclick = async () => {
   const msgs = $("plan-messages");
   msgs.replaceChildren(...plan.errors.map((t) => el("li", { class: "error" }, t)),
     ...plan.warnings.map((t) => el("li", { class: "warning" }, t)),
-    ...plan.removed_devices.map((n) => el("li", { class: "warning" }, `${n} is configured now but not on the bus: it will be removed`)));
+    ...plan.removed_devices.map((n) => el("li", { class: "warning" }, `${n} is in the running configuration but not in this project: it will be removed`)));
   const tb = $("plan-devices").tBodies[0];
   tb.replaceChildren();
   for (const d of plan.devices) row(tb, [d.position, d.name, d.note || d.source || "-", d.inputs + " B", d.outputs + " B"]);

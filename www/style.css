@@ -95,6 +95,7 @@ button.primary:active:not(:disabled) { background: var(--accent-active); border-
 button.primary:disabled, button.danger:disabled { background: var(--disabled-bg); color: #fff; }
 button.danger { background: var(--err); border-color: var(--err); color: #fff; }
 button.danger:hover:not(:disabled), button.danger:active:not(:disabled) { background: #a80003; border-color: #a80003; color: #fff; }
+.row-tools { display: inline-flex; gap: 4px; }
 button.small, td button { min-height: 28px; padding: 0 10px; font-size: 14px; }
 
 /* Tabs (ctrlX tab bar): text only, the active tab underlined in blue */

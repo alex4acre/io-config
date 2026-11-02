@@ -44,6 +44,10 @@ ROUTES = [
     ("GET", r"/devices/(\d+)/soe", "get_soe_list"),
     ("GET", r"/devices/(\d+)/soe/(\d+)", "get_soe"),
     ("PUT", r"/devices/(\d+)/soe/(\d+)", "put_soe"),
+    ("POST", r"/project/devices", "post_project_device"),
+    ("DELETE", r"/project/devices/(\d+)", "delete_project_device"),
+    ("POST", r"/project/devices/(\d+)/move", "post_project_move"),
+    ("DELETE", r"/project", "delete_project"),
     ("GET", r"/process-data", "get_process_data"),
     ("PUT", r"/process-data", "put_process_data"),
     ("POST", r"/plan", "post_plan"),
@@ -201,6 +205,26 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
     def get_device(self, position):
         self.send_json(200, core.device(int(position)))
+
+    # --- project: devices added from the ESI library, also without the device or a working master ----
+
+    def post_project_device(self):
+        d = self.read_json()
+        if not all(isinstance(d.get(k), int) for k in ("vendor", "product", "revision")):
+            raise HttpError(400, '{"vendor", "product", "revision"} are needed')
+        position = core.project_add(d["vendor"], d["product"], d["revision"], d.get("after"), d.get("upstream"), d.get("port", "B"))
+        self.send_json(201, {"position": position})
+
+    def delete_project_device(self, position):
+        core.project_remove(int(position))
+        self.send_json(200, {"ok": True})
+
+    def post_project_move(self, position):
+        self.send_json(200, {"position": core.project_move(int(position), self.read_json().get("by"))})
+
+    def delete_project(self):
+        core.project_reset()
+        self.send_json(200, {"ok": True})
 
     # --- edits: name, PDO selection, startup parameters ---------------------------------------------
 
