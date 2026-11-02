@@ -1,6 +1,6 @@
 # io-config: how devices are identified, cross-checked and applied
 
-State: version 1.7.0, ctrlx-baseline 1.0.0 (2026-11-02). File paths are relative to the app folder `io-config/`.
+State: version 1.7.1, ctrlx-baseline 1.0.0 (2026-11-02). File paths are relative to the app folder `io-config/`.
 The code snippets are io-config's own code, shortened (marked `...`); the line numbers point to the full code. The
 shared parts every ctrlX app has (section 2) are described, not shown: their code and rules are in
 `ctrlx-baseline/` (`STANDARD.md`, `framework/`).
@@ -433,10 +433,19 @@ The app then only warns; it does not stop you.
   not touched.
 - **Startup parameters from the Bus tab** ("Startup" on an object or SoE parameter) are saved for the Configuration
   row of the same device; if the device is not in the list the app says so.
-- **Master state.** The Bus tab's master card shows the state as a badge (op green, anything else yellow,
-  unavailable red, "(requested X)" when it differs) and has **Phase up (Op)** and **Phase down (Init)**. Both ask
-  first, are refused while a scan or download runs or when the master can't be read, and are followed by a scan.
-  If the master does not reach the state within about 15 s, the card keeps a message naming both states.
+- **Master state.** The Bus tab's master card shows the state as a badge (OP green, anything else yellow,
+  unavailable red, "(requested X)" when it differs). States are shown as Init, Pre-OP, Bootstrap, Safe-OP and OP;
+  the Data Layer values stay `init`, `preop`, `bootstrap`, `safeop`, `op`. A drop-down with those five and a **Set state**
+  button request a state on the real bus. Choosing does nothing by itself, and the 2 s poll leaves your choice alone
+  until the request is done. Set state asks first, naming the transition ("Requests Safe-OP on the real bus (now OP).
+  Outputs stop when leaving OP."; Bootstrap is only meant for firmware updates), and is off while a scan, download or
+  request runs, when the master can't be read, or when the choice is the state already. A scan follows the request.
+  If the master refuses the request (its answer is shown on the card) or does not reach the state within about 15 s,
+  the card keeps a message naming both states.
+- **Names are unique** (case ignored) in the list. A rename or an add that would repeat another row's name is
+  refused with "the name ... is already used by position N". A device without a name gets its ESI name, with _2, _3
+  ... when needed, and the list shows exactly the names Build will use. Duplicates that already exist (older saved
+  edits, an opened old save) are not renamed; Build refuses and names them and their positions.
 - If the master cannot be read, the scan shows state "unavailable" and the Bus tab's list comes from the files of the
   active configuration.
 

@@ -105,6 +105,7 @@ button.danger:hover:not(:disabled), button.danger:active:not(:disabled) { backgr
 .sug.active, .sug:hover { background: var(--sel); }
 td.name { cursor: text; }
 td.name input[type=text] { width: 150px; }
+.rename-msg { display: block; margin-top: 2px; font-size: 13px; }
 .row-tools { display: inline-flex; gap: 4px; }
 button.small, td button { min-height: 28px; padding: 0 10px; font-size: 14px; }
 

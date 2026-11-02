@@ -153,7 +153,7 @@ let cfgDevices = [];
 
 function stateBadge(state, requested, reason) {
   const cls = state === "op" ? "ok" : (!state || state === "unavailable" || state === "unknown") ? "bad" : "warn";
-  const text = (state || "unknown") + (requested && requested !== state ? ` (requested ${requested})` : "");
+  const text = stateName(state || "unknown") + (requested && requested !== state ? ` (requested ${stateName(requested)})` : "");
   return el("span", { class: "badge big " + cls, title: reason || "" }, text);
 }
 
@@ -169,7 +169,9 @@ function renderState(s) {
   setBusy("scan", s.scan.running ? "Scanning the bus" : null);
   setBusy("download", downloading ? (s.activation.state === "running" ? `Activating "${s.activation.name}"`
     : "Writing to the EtherCAT master") : null);
-  setBusy("master", requesting ? `Requesting ${s.master_request.requested === "op" ? "Op" : "Init"}` : null);
+  setBusy("master", requesting ? `Requesting ${stateName(s.master_request.requested)}` : null);
+  if (masterRequesting && !requesting) stateTouched = false;          // a request is done: the select follows the state again
+  masterRequesting = requesting;
   if (s.scan.error && !s.scan.running && s.scan.finished !== lastFinished) banner("Scan: " + s.scan.error);
   scanState = { busy: busyNow };
   $("m-request").hidden = !s.master_request.message;
@@ -215,10 +217,18 @@ function renderState(s) {
 
 // --- the master's state, live without a scan, and phasing up or down --------------------------------
 
+let masterRequesting = false;
 let liveStamp = 0;                               // when the live state was read last (0: not yet)
 let liveState = null;                            // {state, requested, error}
 let scanReason = "";
 let scanState = { busy: false };
+
+// The master's states as the Data Layer names them, and how people read them (the same table as compare.STATE_NAMES)
+const STATE_NAMES = { init: "Init", preop: "Pre-OP", bootstrap: "Bootstrap", safeop: "Safe-OP", op: "OP" };
+const stateName = (v) => STATE_NAMES[v] || v;
+$("state-select").replaceChildren(...Object.keys(STATE_NAMES).map((v) => el("option", { value: v }, STATE_NAMES[v])));
+
+let stateTouched = false;                        // the user chose in the select: the poll leaves it alone until a request is done
 
 function setMasterState(state, requested, error) {
   $("m-live").replaceChildren(stateBadge(state, requested, error));
@@ -226,14 +236,20 @@ function setMasterState(state, requested, error) {
 }
 
 function renderPhase() {
+  const sel = $("state-select");
   const unreadable = !liveState || liveState.error || liveState.state === "unavailable";
-  for (const [id, text] of [["phase-up", "Requests Op on the real bus: devices start exchanging process data"],
-    ["phase-down", "Requests Init: all devices leave Op and outputs stop"]]) {
-    $(id).disabled = scanState.busy || !!unreadable;
-    $(id).title = unreadable ? "The master can't be read" + (liveState && liveState.error ? ": " + liveState.error : "")
-      : scanState.busy ? "Not while a scan or download runs" : text;
-  }
+  if (!stateTouched && document.activeElement !== sel && liveState && STATE_NAMES[liveState.state]) sel.value = liveState.state;
+  const same = !unreadable && sel.value === liveState.state && (!liveState.requested || sel.value === liveState.requested);
+  $("state-set").disabled = scanState.busy || !!unreadable || same;
+  $("state-set").title = unreadable ? "The master can't be read" + (liveState && liveState.error ? ": " + liveState.error : "")
+    : scanState.busy ? "Not while a scan, download or state request runs"
+    : same ? "The master is in this state already" : "Requests " + stateName(sel.value);
 }
+
+$("state-select").onchange = () => {
+  stateTouched = true;
+  renderPhase();
+};
 
 async function refreshLive() {
   if (currentView !== "bus") return;
@@ -248,20 +264,26 @@ async function refreshLive() {
   renderPhase();
 }
 
-async function phase(state, text) {
-  if (!confirm(text)) return;
+function stateQuestion(target, current) {
+  let text = `Requests ${stateName(target)} on the real bus (now ${stateName(current)}).`;
+  if (current === "op" && target !== "op") text += " Outputs stop when leaving OP.";
+  if (target === "op") text += " Devices start exchanging process data.";
+  if (target === "bootstrap") text += " Only meant for firmware updates; devices that don't support it will refuse it.";
+  return text + " Continue?";
+}
+
+$("state-set").onclick = async () => {
+  const target = $("state-select").value;
+  if (!confirm(stateQuestion(target, liveState ? liveState.state : ""))) return;
   try {
     banner("");
-    await api("POST", "/master/state", { state });
-    $("phase-up").disabled = $("phase-down").disabled = true;
+    await api("POST", "/master/state", { state: target });
+    $("state-set").disabled = true;
     poll();
   } catch (e) {
     banner(e.message);
   }
-}
-
-$("phase-up").onclick = () => phase("op", "Requests Op on the real bus: devices start exchanging process data.\n\nPhase up?");
-$("phase-down").onclick = () => phase("init", "Requests Init: all devices leave Op and outputs stop.\n\nPhase down?");
+};
 
 function dropPlan() {
   plan = null;
@@ -341,32 +363,39 @@ function startRename(d, cell) {
   if (renaming) return;
   renaming = true;
   const input = el("input", { type: "text", maxlength: "64", value: d.name });
+  const msg = el("span", { class: "form-msg rename-msg" });
   let done = false;
-  const finish = async (save) => {
-    if (done) return;
+  const close = () => {
     done = true;
-    const name = input.value.trim();
     renaming = false;
     cell.textContent = d.name;
-    if (save && name && name !== d.name) {
-      try {
-        banner("");
-        await api("PUT", `/devices/${d.position}/edit`, { name });
-        dropPlan();
-        if (cselected === d.position) openCfgDevice(d.position);
-      } catch (e) {
-        banner(e.message);
-      }
-    }
     poll();
+  };
+  const finish = async (save) => {
+    if (done) return;
+    const name = input.value.trim();
+    if (!save || !name || name === d.name) return close();
+    try {
+      banner("");
+      await api("PUT", `/devices/${d.position}/edit`, { name });
+    } catch (e) {
+      msg.textContent = e.message;                // the refusal next to the input; the input stays open
+      input.onblur = () => finish(false);
+      input.focus();
+      return;
+    }
+    dropPlan();
+    if (cselected === d.position) openCfgDevice(d.position);
+    close();
   };
   input.onkeydown = (ev) => {
     if (ev.key === "Enter") finish(true);
     else if (ev.key === "Escape") finish(false);
   };
+  input.oninput = () => { msg.textContent = ""; };
   input.onblur = () => finish(true);
   input.onclick = (ev) => ev.stopPropagation();
-  cell.replaceChildren(input);
+  cell.replaceChildren(input, msg);
   input.focus();
   input.select();
 }
@@ -389,6 +418,8 @@ function checkAdd(serverMessage) {
   let msg = serverMessage || "";
   if (!msg && typed && !addPick) msg = "Pick a device from the list";
   if (!msg && name && !NAME_RULE.test(name)) msg = "The name must start with a letter and contain only letters, digits and _ (max 64)";
+  const clash = name && cfgDevices.find((d) => d.name.toLowerCase() === name.toLowerCase());
+  if (!msg && clash) msg = `The name "${name}" is already used by position ${clash.position}`;
   $("add-msg").textContent = msg;
   $("add-msg").hidden = !msg;
   $("add").disabled = !addPick || !!msg;
@@ -1146,9 +1177,9 @@ async function openObjects(pos, refresh) {
 }
 
 function accessText(a) {
-  const r = ["PreOp", "SafeOp", "Op"].filter((s) => a["read_" + s.toLowerCase()]);
-  const w = ["PreOp", "SafeOp", "Op"].filter((s) => a["write_" + s.toLowerCase()]);
-  return (r.length ? "R" : "") + (w.length ? "W" : "") + (w.length && w.length < 3 ? ` (write ${w.join("/")})` : "");
+  const r = ["preop", "safeop", "op"].filter((s) => a["read_" + s]);
+  const w = ["preop", "safeop", "op"].filter((s) => a["write_" + s]);
+  return (r.length ? "R" : "") + (w.length ? "W" : "") + (w.length && w.length < 3 ? ` (write ${w.map(stateName).join("/")})` : "");
 }
 
 async function openObject(index) {

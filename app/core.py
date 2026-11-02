@@ -38,6 +38,7 @@ from app.esi import EsiLibrary
 
 DEFAULTS = {"instance": "ethercatmaster"}
 INSTANCES = "fieldbuses/ethercat/master/instances"
+REQUESTABLE = ("init", "preop", "bootstrap", "safeop", "op")       # EthercatState without "unknown" (ethercat_state.fbs)
 EEPROM_CHUNK_WORDS = 64
 EEPROM_MAX_WORDS = 8192
 MAX_BACKUPS = 20
@@ -257,9 +258,9 @@ class Core:
             return dict(self.live)
 
     def request_master_state(self, state) -> dict:
-        """Requests Op or Init (the verified values) on the real bus; a thread waits for it and scans afterwards."""
-        if state not in ("op", "init"):
-            raise ConfigError('the state must be "op" or "init"')
+        """Requests one of the master's states (REQUESTABLE) on the real bus; a thread waits for it and scans afterwards."""
+        if state not in REQUESTABLE:
+            raise ConfigError("the state must be one of: " + ", ".join(REQUESTABLE))
         with self.lock:
             if self._busy():
                 raise ConfigError("a scan or download is running")
@@ -284,9 +285,10 @@ class Core:
                     break
                 time.sleep(0.3)
             if now != state:
-                message = f"The master did not reach {state.capitalize()}: it is in {now or '?'}, {state.capitalize()} is requested."
+                message = (f"The master did not reach {compare.state_name(state)}: it is in "
+                           f"{compare.state_name(now) if now else '?'}, {compare.state_name(state)} is requested.")
         except Exception as e:
-            message = f"Requesting {state.capitalize()} failed: {e}"
+            message = f"Requesting {compare.state_name(state)} failed: {e}"
             self.log(message)
         with self.lock:
             self.live["time"] = 0.0
@@ -545,12 +547,18 @@ class Core:
         self._edit_names()
 
     def _edit_names(self):
-        """The names in the Configuration list: the saved edit's name, else the configuration's or the ESI's."""
-        user = self.load_edits()
-        for d, src in zip(self.cfg_devices, self.cfg_sources):
-            edit = user.get(src["pos"])
-            if edit and edit.get("name") and edits.applies(src, edit):
-                d["name"] = edit["name"]
+        """The names in the Configuration list: the ones Build will use (configure.device_names)."""
+        for d, name in zip(self.cfg_devices, configure.device_names(self.cfg_sources, self.load_edits())):
+            if name:
+                d["name"] = name
+
+    def _check_free_name(self, name, own_position=None):
+        """ConfigError if another row of the Configuration list (as displayed) already has this name (case ignored)."""
+        if not name:
+            return
+        for d in self.cfg_devices:
+            if d["position"] != own_position and d["name"].lower() == name.lower():
+                raise ConfigError(f'the name "{name}" is already used by position {d["position"]}')
 
     @staticmethod
     def _previous_port(pos, entry, slave, uid_pos, address_pos):
@@ -689,6 +697,7 @@ class Core:
             if self.esi.find(vendor, product, revision)[0] != "exact":
                 raise ConfigError("no such device in the ESI library")
             self._check_name(name)
+            self._check_free_name(name)
             uid = max((e["uid"] for e in entries), default=-1) + 1
             entries.append({"uid": uid, "vendor": vendor, "product": product, "revision": revision,
                             "port": "B" if entries else None, "upstream": entries[-1]["uid"] if entries else None,
@@ -1156,6 +1165,9 @@ class Core:
                 edit = None
             dev = configure.device_for(src, {position: edit} if edit else {})
             out = edits.options(src, dev, edit)
+            shown = next((d["name"] for d in self.cfg_devices if d["position"] == position), None)
+            if shown and out["name"] and not (edit or {}).get("name"):
+                out["name"] = shown                         # the name Build gives it (with _2 ... if another has its name)
             if edit and "startup" in edit:
                 out["startup"] = edit["startup"]
             else:                       # not edited yet: what the configuration keeps now, as the starting point
@@ -1194,6 +1206,7 @@ class Core:
             merged = {k: v for k, v in old.items() if k != "identity"}
             merged.update({k: v for k, v in change.items() if k in ("name", "pdos", "startup", "soe_mdt", "soe_at", "modules", "dc_mode")})
             checked = edits.validate(src, merged)
+            self._check_free_name(checked.get("name"), position)
             configure.device_for(src, {position: checked})          # raises EditError if it can't be applied
             all_edits[position] = dict(checked, bus=self._cfg_ids())
             self._save_edits(all_edits)
@@ -1295,11 +1308,11 @@ class Core:
         if not e["writable"]:
             raise ConfigError(f"{index:#06x}:{sub} is read-only")
         state = self._device_state(position)
-        allowed = {"PreOp": "write_preop", "SafeOp": "write_safeop", "Op": "write_op"}.get(state)
+        allowed = {"preop": "write_preop", "safeop": "write_safeop", "op": "write_op"}.get(state)
         if allowed and not e["access"][allowed]:
-            when = [s for s, k in (("PreOp", "write_preop"), ("SafeOp", "write_safeop"), ("Op", "write_op")) if e["access"][k]]
+            when = [compare.state_name(s) for s in ("preop", "safeop", "op") if e["access"]["write_" + s]]
             raise ConfigError(f'{index:#06x}:{sub} "{e["name"]}" can only be written in {" / ".join(when)}; the device is in '
-                              f"{state}. Add it as a startup parameter: the master writes it at every start-up.")
+                              f"{compare.state_name(state)}. Add it as a startup parameter: the master writes it at every start-up.")
         data = coe.encode(value, e["data_type"], e["bits"])
         self.bus.write_json(base + "sdo", {"request": {**a, "objectIndex": index, "subIndex": sub, "flags": "noFlags",
                                                          "data": list(data), "maxLength": len(data)}})
@@ -1310,11 +1323,11 @@ class Core:
                 "show": coe.show(raw, e["data_type"], e["bits"])}
 
     def _device_state(self, position: int) -> str:
-        """The device's EtherCAT state now (Init/PreOp/SafeOp/Op), read online."""
+        """The device's EtherCAT state now (init, preop, bootstrap, safeop, op as the Data Layer names them), read online."""
         a = self._autoinc(position)
         info = self.bus.read_args(f'{INSTANCES}/{self.config["instance"]}/device_access/slave_online_info',
                                   {"request": a}).get("response", {})
-        return compare.al_state(info.get("alStatus")).split(" ")[0]
+        return compare.AL_CODES.get((info.get("alStatus") or 0) & 0x0F, "")
 
     def startup_entry(self, position: int, index: int, sub: int, value, comment="") -> dict:
         """A startup parameter for the edit: the value encoded for the entry's data type (read from the device)."""
@@ -1397,9 +1410,10 @@ class Core:
         state = self._device_state(position)
         if attr["command"]:
             raise ConfigError(f"{soe.idn_text(idn)} is a procedure command; starting commands is not supported")
-        if attr["write_protected"].get(state):
-            free = [s for s, p in attr["write_protected"].items() if not p]
-            raise ConfigError(f"{soe.idn_text(idn)} is write-protected in {state}"
+        key = {"preop": "PreOp", "safeop": "SafeOp", "op": "Op"}.get(state)      # soe.py's names for the states
+        if key and attr["write_protected"].get(key):
+            free = [compare.state_name(s.lower()) for s, p in attr["write_protected"].items() if not p]
+            raise ConfigError(f"{soe.idn_text(idn)} is write-protected in {compare.state_name(state)}"
                               + (f" (writable in {' / '.join(free)}); add it as a startup parameter" if free else ""))
         data = soe.encode(value, attr)
         self.bus.write_json(f'{INSTANCES}/{self.config["instance"]}/device_access/soe/parameter',
@@ -1413,7 +1427,7 @@ class Core:
         if attr["command"]:
             raise ConfigError(f"{soe.idn_text(idn)} is a procedure command")
         if attr["write_protected"].get("PreOp"):
-            raise ConfigError(f"{soe.idn_text(idn)} is write-protected in PreOp, a startup parameter can't set it")
+            raise ConfigError(f"{soe.idn_text(idn)} is write-protected in {compare.state_name('preop')}, a startup parameter can't set it")
         name = (self.soe_dictionary(position).get(idn) or {}).get("name", "")
         return {"idn": idn, "data": soe.encode(value, attr).hex().upper(), "transitions": ["PS"],
                 "comment": f"{soe.idn_text(idn)} {name} = {value}"[:120]}

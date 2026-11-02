@@ -17,7 +17,7 @@ import traceback
 from urllib.parse import parse_qs, unquote, urlparse
 
 from app.bus import BusError
-from app.core import ConfigError
+from app.core import REQUESTABLE, ConfigError
 
 BASE = "/io-config"
 API = BASE + "/api/v1"
@@ -211,8 +211,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
     def post_master_state(self):
         state = self.read_json().get("state")
-        if state not in ("op", "init"):
-            raise HttpError(400, '{"state": "op" or "init"} is needed')
+        if state not in REQUESTABLE:
+            raise HttpError(400, '{"state": ' + " | ".join(f'"{x}"' for x in REQUESTABLE) + "} is needed")
         self.send_json(202, core.request_master_state(state))
 
     def get_device(self, position):

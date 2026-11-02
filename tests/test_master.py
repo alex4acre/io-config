@@ -12,6 +12,7 @@ import urllib.request
 
 import app.web
 
+from app.bus import BusError
 from app.core import ConfigError, Core
 from app.fake import MASTER, FakeBus
 from tests.test_app import ESI_DIR, ESI_FILES, read
@@ -72,10 +73,30 @@ class MasterStateTest(unittest.TestCase):
         self.assertEqual(self.bus.written, [])                                   # no configuration written
         self.assertEqual(len(self.core.state()["configuration"]["devices"]), 4)  # the list is untouched
 
-    def test_only_op_and_init(self):
-        for bad in ("preop", "safeop", "", None, "OP", 1):
-            with self.assertRaisesRegex(ConfigError, "op"):
+    def test_all_five_states_and_nothing_else(self):
+        for state in ("preop", "bootstrap", "safeop", "op", "init"):
+            self.request(state)
+            self.assertEqual(self.bus.nodes[STATE]["response"]["currentState"], state)
+            self.assertEqual(self.core.state()["master"]["state"], state)
+        for bad in ("unknown", "", None, "OP", "Pre-OP", 1):
+            with self.assertRaisesRegex(ConfigError, "must be one of"):
                 self.core.request_master_state(bad)
+
+    def test_a_refused_write_is_shown_with_the_masters_answer_and_the_scan_runs(self):
+        orig = self.bus.write
+
+        def refuse(address, value):
+            if address == STATE:
+                raise BusError(f"write {address}: DL_FAILED (Ecat: transition not allowed)")
+            return orig(address, value)
+        self.bus.write = refuse
+        before = self.core.scan_state["finished"]
+        self.request("bootstrap")
+        m = self.core.state()["master_request"]
+        self.assertIn("Requesting Bootstrap failed", m["message"])
+        self.assertIn("transition not allowed", m["message"])
+        self.assertGreater(self.core.scan_state["finished"], before)             # the scan ran anyway
+        self.assertEqual(self.core.state()["master"]["state"], "op")
 
     def test_refused_while_busy_or_unreadable(self):
         self.core.scan_state["running"] = True
@@ -96,8 +117,8 @@ class MasterStateTest(unittest.TestCase):
         self.bus.fail_op = True
         self.request("op")
         m = self.core.state()["master_request"]
-        self.assertIn("did not reach Op", m["message"])
-        self.assertIn("preop", m["message"])
+        self.assertIn("did not reach OP", m["message"])
+        self.assertIn("it is in Pre-OP, OP is requested", m["message"])
         self.assertEqual(self.core.state()["master"]["state"], "preop")
         self.request("init")                                                     # the message goes with the next request
         self.assertEqual(self.core.state()["master_request"]["message"], "")
@@ -139,7 +160,7 @@ class RoutesTest(unittest.TestCase):
 
     def test_master_state_routes(self):
         self.assertEqual(self.call("GET", "/master/state")[1]["state"], "op")
-        for bad in ({"state": "preop"}, {"state": "safeop"}, {}, {"state": 3}):
+        for bad in ({"state": "unknown"}, {"state": "OP"}, {}, {"state": 3}):
             self.assertEqual(self.call("POST", "/master/state", bad)[0], 400)
         status, r = self.call("POST", "/master/state", {"state": "init"})
         self.assertEqual((status, r["running"], r["requested"]), (202, True, "init"))

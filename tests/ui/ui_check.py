@@ -81,7 +81,32 @@ try:
     check(until("document.querySelectorAll('#devices tbody tr').length === 4"), "scan shows 4 devices")
     names = js("return [...document.querySelectorAll('#devices tbody tr')].map(r => r.cells[1].textContent)")
     check(names == ["XB_EC_12", "XI190202", "XI422202", "XI522001"], f"device names {names}")
-    check(text("m-live") == "op" and "4 connected, 4 configured" in text("m-devices"), "master overview")
+    check(text("m-live") == "OP" and "4 connected, 4 configured" in text("m-devices"), "master overview")
+    # the master card: a select of all states, a confirm, and a poll that leaves the choice alone
+    check(js("return [...document.getElementById('state-select').options].map(o => o.textContent).join(',')") ==
+          "Init,Pre-OP,Bootstrap,Safe-OP,OP", "the select lists Init, Pre-OP, Bootstrap, Safe-OP, OP")
+    check(js("return document.getElementById('state-select').value") == "op" and
+          js("return document.getElementById('state-set').disabled"), "it shows OP, and Set state is off for the current state")
+    js("window.__confirms = []; window.confirm = (m) => { window.__confirms.push(m); return true; }")
+    js("const sl = document.getElementById('state-select'); sl.value = 'safeop'; sl.dispatchEvent(new Event('change'))")
+    time.sleep(5)                                                   # more than two polls of the live state
+    check(js("return document.getElementById('state-select').value") == "safeop", "the poll doesn't reset a changed choice")
+    check(js("return !document.getElementById('state-set').disabled") and text("m-live") == "OP", "choosing does nothing by itself")
+    js("document.getElementById('state-set').click()")
+    check(js("return window.__confirms[0]") == "Requests Safe-OP on the real bus (now OP). Outputs stop when leaving OP. Continue?",
+          f"confirm names the transition: {js('return window.__confirms[0]')}")
+    check(until("document.getElementById('m-live').textContent === 'Safe-OP'", 15), "the master is in Safe-OP: " + text("m-live"))
+    check(js("return document.getElementById('m-live').firstChild.classList.contains('warn')"), "as a warn badge")
+    check(until("!document.getElementById('scan').disabled"), "scan after the request")
+    check(js("return !/\\b(Op|op|PreOp|SafeOp)\\b/.test(document.querySelector('#view-bus .card').innerText)"),
+          "no Op/op/PreOp/SafeOp in the master card: " + js("return document.querySelector('#view-bus .card').innerText").replace("\n", " | "))
+    js("const sl = document.getElementById('state-select'); sl.value = 'op'; sl.dispatchEvent(new Event('change')); "
+       "document.getElementById('state-set').click()")
+    check(js("return window.__confirms[1]") == "Requests OP on the real bus (now Safe-OP). Devices start exchanging process data. Continue?",
+          f"confirm for OP: {js('return window.__confirms[1]')}")
+    check(until("document.getElementById('m-live').textContent === 'OP'", 15), "back in OP")
+    check(until("!document.getElementById('scan').disabled"), "scan after the second request")
+    js("window.confirm = () => true")
     esi = js("return [...document.querySelectorAll('#devices tbody tr')].map(r => r.cells[6].textContent)")
     check(esi == ["exact", "exact", "exact", "missing"], f"ESI column {esi} (XI522001 has no ESI yet)")
     check(js("return document.querySelectorAll('#devices tbody tr')[3].cells[9].textContent") == "Check (1)", "XI522001 flagged")
@@ -188,7 +213,7 @@ try:
              [...r.querySelectorAll('button')].some(b => b.textContent === 'Write now' && !b.disabled))""")
     js("""const r = [...document.querySelectorAll('#o-entries tbody tr')].find(r => r.cells[1].textContent === 'User gain');
           window.confirm = () => true; [...r.querySelectorAll('button')].find(b => b.textContent === 'Write now').click();""")
-    check(until("document.getElementById('banner').textContent.includes('can only be written in PreOp')"),
+    check(until("document.getElementById('banner').textContent.includes('can only be written in Pre-OP')"),
           "online write of a PreOp-only object is explained")
 
     # process data of the device (writable is on)

@@ -13,8 +13,17 @@ differ between the sources (the EEPROM says BOOL where the ENI says BIT) without
 
 from app import modules
 
-AL_STATES = {1: "Init", 2: "PreOp", 3: "Boot", 4: "SafeOp", 8: "Op"}
+# The master's states as the Data Layer names them (EthercatState), and how people read them. The one place for it:
+# the UI has the same table (stateName in app.js) for the values the API gives.
+STATE_NAMES = {"init": "Init", "preop": "Pre-OP", "bootstrap": "Bootstrap", "safeop": "Safe-OP", "op": "OP"}
+AL_CODES = {1: "init", 2: "preop", 3: "bootstrap", 4: "safeop", 8: "op"}      # the AL status of a device
+AL_STATES = {code: STATE_NAMES[name] for code, name in AL_CODES.items()}
 LEVELS = ("ok", "info", "warning", "error")
+
+
+def state_name(value) -> str:
+    """A state value of the Data Layer (init, preop, bootstrap, safeop, op) for people; unknown values as read."""
+    return STATE_NAMES.get(value, value)
 
 
 def al_state(status) -> str:
@@ -66,7 +75,7 @@ def device_report(position, online, eeprom, eeprom_error, eni_slave, esi_match, 
         if al is not None and al & 0x10:
             add("error", f"Device reports an error: AL status {al_state(al)}, code {hx(info.get('alStatusCode', 0))}")
         elif al is not None and master_op and al & 0x0F != 8:
-            add("warning", f"Device is in {al_state(al)} while the master is in Op")
+            add("warning", f"Device is in {al_state(al)} while the master is in {state_name('op')}")
 
     # --- current configuration (ENI)
     if eni_slave is None and info:

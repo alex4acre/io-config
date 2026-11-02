@@ -26,8 +26,9 @@
         <span id="m-live" title="The master's state, read every 2 s without a scan"></span><span id="m-reason" class="muted"></span>
         <span class="spacer"></span>
         <span id="progress" class="muted"></span>
-        <button id="phase-up" title="Requests Op on the real bus">Phase up (Op)</button>
-        <button id="phase-down" title="Requests Init">Phase down (Init)</button>
+        <label class="check" title="The state the master is asked for; nothing happens until you press Set state">Request
+          <select id="state-select"></select></label>
+        <button id="state-set">Set state</button>
         <label class="check"><input id="reread" type="checkbox"> Reread EEPROMs</label>
         <button id="scan" class="primary">Scan bus</button>
       </div>
@@ -106,7 +107,7 @@
       <div id="p-soe" class="panel" hidden>
         <h3 id="s-title"></h3>
         <p class="hint">The drive's parameters from its SoE dictionary; values are read online (the drive must be in
-          PreOp or higher, i.e. configured). "Write now" changes the drive until its next start; "Startup" keeps the value
+          Pre-OP or higher, i.e. configured). "Write now" changes the drive until its next start; "Startup" keeps the value
           in the configuration.</p>
         <div class="cols2 panes">
           <div class="pane">
@@ -245,7 +246,7 @@
       </div>
 
       <div id="p-startup" class="panel" hidden>
-        <p class="hint">Parameters the master writes at every start-up (PreOp → SafeOp). Add them with "Startup" in the
+        <p class="hint">Parameters the master writes at every start-up (Pre-OP → Safe-OP). Add them with "Startup" in the
           "Objects (CoE)" or "Parameters (SoE)" tab; removing one here saves at once. The PDO assignment
           (0x1C12/0x1C13) is added automatically.</p>
         <div class="scroll"><table id="e-startup"><thead><tr><th>Object</th><th>Value</th><th>Transition</th><th>Comment</th>

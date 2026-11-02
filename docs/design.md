@@ -240,13 +240,22 @@ visible.
      with `error`, openable, not activatable). `POST /saved {name, kind, overwrite, cycle_us}`, `POST /saved/<n>/open
      {confirm}` (refused during a download; active saves become entries from their ENI incl. PreviousPort topology).
    - **Live master state** (`GET /master/state`, light read of master_state only, cached 1.5 s, errors logged on change)
-     and **phasing** (`POST /master/state {state: op|init}`; refused when busy/unreadable; a thread writes the request,
+     and **phasing** (`POST /master/state {state}`, 1.7.1: all five EthercatState values; refused when busy/unreadable; a thread writes the request,
      waits up to 15 s, leaves a message if not reached, then scans). The list, edits and base are untouched.
      Fake: `IO_CONFIG_FAKE_FAIL_OP=1` keeps the master in PreOp.
-   - UI: Bus tab (master card with state badge and phase buttons, device table without tools, device card with Process
+   - UI: Bus tab (master card with state badge and state select, device table without tools, device card with Process
      data / Objects / Parameters / Info); Configuration tab (list with ▲ ▼ and a trash icon button, name click-to-edit,
      note + "Update from the active bus", add form with a message line above the button, device card with Settings /
      Startup, build/plan/write, saved configurations with Kind, backups).
+   - **1.7.1:** (a) unique names: `configure.device_names` is the one rule for the plan and the Configuration table (explicit
+     edit name first, else the base ENI's name, else the ESI name with _2, _3 against all names, case ignored; explicit
+     names are seeded first, so a default never takes a name another row asks for). `save_edit` and `project_add` refuse a
+     name another displayed row has; Build lists old duplicates by name and positions as a plan error (the generate.py
+     check stays the last guard). (b) State text: `compare.STATE_NAMES` / `AL_CODES` (Init, Pre-OP, Bootstrap, Safe-OP, OP)
+     and `stateName` in app.js are the only mappings; Data Layer values unchanged; device AL status text and messages
+     use them (`write_config` step texts are unchanged). (c) A drop-down + "Set state" for all five requestable states
+     (`REQUESTABLE`, from `ethercat_state.fbs`; `unknown` is not requestable); a refused write shows the master's answer
+     and the scan still runs.
 13. **Next:** more than one frame, free PDO mapping (editing PDO contents),
    modules from separate module files (EtherCATModule, e.g. ctrlX DRIVE FSoE).
 

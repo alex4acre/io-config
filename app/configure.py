@@ -195,6 +195,47 @@ def describe(src: dict, used: set = None):
     return dev, note, warning, None
 
 
+def device_names(sources: list, user_edits: dict = None) -> list:
+    """The name each source gets in the configuration (None if it can't be described). One rule for the plan and the
+    Configuration table: an explicit name (the user's edit) first, else the name the base configuration has for the
+    device, else a default that is unique: the ESI's device name, with _2, _3, ... against all other names, whatever
+    their order in the list (case does not matter)."""
+    fixed = {}
+    for src in sources:
+        info = (src.get("online") or {}).get("response", {}).get("slaveIdentity", {})
+        edit, slave = (user_edits or {}).get(src["pos"]), src.get("eni_slave")
+        if edit and edit.get("name") and edits.applies(src, edit):
+            fixed[src["pos"]] = edit["name"]
+        elif slave is not None and (slave["vendor"], slave["product"]) == (info.get("vendorId"), info.get("productCode")):
+            fixed[src["pos"]] = slave["name"]
+    used = {n.lower() for n in fixed.values()}
+    out = []
+    for src in sources:
+        if src["pos"] in fixed:
+            out.append(fixed[src["pos"]])
+            continue
+        dev = describe(src)[0]
+        if dev is None:
+            out.append(None)
+            continue
+        name, i = dev["name"], 1
+        while name.lower() in used:
+            i += 1
+            name = f'{dev["name"]}_{i}'
+        used.add(name.lower())
+        out.append(name)
+    return out
+
+
+def duplicate_names(names: list) -> list:
+    """[(name as first written, [positions])] of names that more than one position has (case does not matter)."""
+    seen = {}
+    for pos, n in enumerate(names):
+        if n:
+            seen.setdefault(n.lower(), (n, []))[1].append(pos)
+    return [v for v in seen.values() if len(v[1]) > 1]
+
+
 def device_for(src: dict, user_edits: dict, used: set = None) -> dict:
     """The device as the configuration gets it, the user's edit for its position applied (None if it can't be described)."""
     dev, _note, _warning, _error = describe(src, used)
@@ -211,15 +252,19 @@ def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = N
     unlisted: None for the live list; for a project (the list is a configuration) the descriptions of the bus
     devices that are not in it. ini: the ini to start from (the list's base), default the current one."""
     devices, rows, errors, warnings = [], [], [], []
-    used = {src["eni_slave"]["name"] for src in sources if src.get("eni_slave")}       # also of devices further down
+    names = device_names(sources, user_edits)
+    for name, positions in duplicate_names(names):
+        errors.append(f'The name "{name}" is used by positions {", ".join(str(p) for p in positions)}: names must be unique '
+                      "(rename one of them)")
     ports = topology(sources)
-    for src in sources:
+    for src, name in zip(sources, names):
         pos = src["pos"]
-        dev, note, warning, error = describe(src, used)
+        dev, note, warning, error = describe(src)
         if error:
             errors.append(error)
             rows.append({"position": pos, "name": "?", "source": None, "note": "", "inputs": 0, "outputs": 0})
             continue
+        dev["name"] = name
         if warning:
             warnings.append(warning)
         if absent(src):
@@ -234,7 +279,6 @@ def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = N
                 errors.append(f"Position {pos}: {e}")
         elif edit:
             warnings.append(f"Position {pos}: the saved edit was made for another device and is not used")
-        used.add(dev["name"])
         devices.append(dev)
         rows.append({"position": pos, "name": dev["name"], "source": dev["source"], "note": "; ".join(note),
                      "present": not absent(src),

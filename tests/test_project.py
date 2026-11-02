@@ -244,7 +244,7 @@ class ProjectTest(unittest.TestCase):
         s = self.core.state()["configuration"]
         self.assertEqual([d["present"] for d in s["devices"]], [False] * 5)       # the list has no live data
         self.assertEqual([d["state"] for d in s["devices"]], ["-"] * 5)
-        self.assertEqual(self.names(), ["XB_EC_12", "XI190202", "Analog", "XI522001", "XI522001"])
+        self.assertEqual(self.names(), ["XB_EC_12", "XI190202", "Analog", "XI522001", "XI522001_2"])
         self.assertEqual(self.core.edit_options(2)["name"], "Analog")
         p = self.core.plan()
         self.assertEqual(p["devices"][4]["name"], "XI522001_2")                 # the running one keeps its name
@@ -255,7 +255,7 @@ class ProjectTest(unittest.TestCase):
         self.assertEqual(new["slaves"][2]["name"], "Analog")
         self.assertEqual(p["warnings"], ["Position 4: XI522001_2 is not on the bus at the last scan"])
         self.scan()                                 # a rescan changes nothing about the list
-        self.assertEqual(self.names(), ["XB_EC_12", "XI190202", "Analog", "XI522001", "XI522001"])
+        self.assertEqual(self.names(), ["XB_EC_12", "XI190202", "Analog", "XI522001", "XI522001_2"])
         self.assertTrue(self.core.state()["configuration"]["differs"])
 
     def test_add_then_remove_is_the_running_configuration(self):
@@ -494,6 +494,75 @@ class ProjectTest(unittest.TestCase):
         self.assertTrue(os.path.exists(self.core.project_path))
         self.assertEqual(self.names(), ["XB_EC_12", "XI190202", "XI422202", "XI522001"])
         self.assertTrue(os.path.exists(self.core.base_paths[0]))
+
+    # --- unique names ---------------------------------------------------------------------------------
+
+    def plan_names(self):
+        p = self.core.plan()
+        self.assertEqual(p["errors"], [])
+        return [d["name"] for d in p["devices"]]
+
+    def test_table_names_are_the_names_build_uses(self):
+        """Two same-type devices without names, an explicit name equal to another device's default, a moved device."""
+        self.scan()
+        self.add("XI190202")                                        # default XI190202_2
+        self.add("XI422202")                                        # default XI422202_2
+        self.assertEqual(self.names()[-2:], ["XI190202_2", "XI422202_2"])
+        self.assertEqual(self.names(), self.plan_names())
+        self.core.project_move(5, -1)                               # the new XI422202 moves above the new XI190202
+        self.assertEqual(self.names()[4:], ["XI422202_2", "XI190202_2"])        # defaults stay where they can
+        self.assertEqual(self.names(), self.plan_names())
+        self.core.save_edit(5, {"name": "XI422202_2x"})
+        self.core.save_edit(1, {"name": "XI190202_2"})              # an explicit name equal to a default further down
+        self.assertEqual(self.names()[1], "XI190202_2")
+        self.assertEqual(self.names()[4:], ["XI422202_2", "XI422202_2x"])
+        self.assertEqual(len({n.lower() for n in self.names()}), 6)
+        self.assertEqual(self.names(), self.plan_names())
+
+    def test_explicit_name_wins_over_a_default_further_down(self):
+        self.scan()
+        self.add("XI190202")                                        # position 4, default XI190202_2
+        self.assertEqual(self.names()[4], "XI190202_2")
+        self.core.save_edit(1, {"name": "Digital"})                 # nobody has XI190202 now: the default is plain
+        self.assertEqual(self.names()[4], "XI190202")
+        self.assertEqual(self.names(), self.plan_names())
+        self.core.reset_edit(1)
+        self.assertEqual(self.names()[4], "XI190202_2")
+        with self.assertRaisesRegex(ConfigError, "already used by position 1"):
+            self.core.save_edit(4, {"name": "XI190202"})            # position 1 has that name as displayed
+
+    def test_duplicate_names_are_refused(self):
+        self.scan()
+        with self.assertRaisesRegex(ConfigError, 'the name "xi422202" is already used by position 2'):
+            self.core.save_edit(1, {"name": "xi422202"})               # case does not matter
+        self.core.save_edit(1, {"name": "Valve1"})
+        with self.assertRaisesRegex(ConfigError, 'the name "VALVE1" is already used by position 1'):
+            self.core.save_edit(2, {"name": "VALVE1"})
+        self.core.save_edit(1, {"name": "VALVE1"})                  # its own name, only the case changes
+        self.assertEqual(self.names()[1], "VALVE1")
+        self.core.save_edit(1, {"name": "VALVE1"})                  # keeping it
+        with self.assertRaisesRegex(ConfigError, 'already used by position 1'):
+            self.add("XI190202", name="valve1")
+        self.assertEqual(len(self.names()), 4)                      # nothing changed
+        self.assertEqual(self.core.load_edits()[1]["name"], "VALVE1")
+
+    def test_old_duplicates_stay_and_build_names_them(self):
+        self.scan()
+
+        def identity(i):
+            info = self.core.cfg_sources[i]["online"]["response"]["slaveIdentity"]
+            return [info[k] for k in ("vendorId", "productCode", "revisionNumber")]
+        self.core._save_edits({1: {"name": "Same", "identity": identity(1)}, 2: {"name": "same", "identity": identity(2)}})
+        self.core._assemble_cfg()
+        self.assertEqual(self.names()[1:3], ["Same", "same"])           # not renamed
+        p = self.core.plan()
+        self.assertEqual(len(p["errors"]), 1)
+        self.assertIn('"Same" is used by positions 1, 2', p["errors"][0])
+
+    def test_edit_options_show_the_displayed_name(self):
+        self.scan()
+        self.add("XI190202")
+        self.assertEqual(self.core.edit_options(4)["name"], "XI190202_2")
 
     def test_written_list_stays_identical_and_keeps_its_settings(self):
         self.scan()

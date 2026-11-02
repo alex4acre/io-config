@@ -3,7 +3,7 @@
 """End-to-end UI check of the Bus and Configuration tabs, in headless Firefox (see ui_check.py). Three runs, set by an
 environment variable for the backend AND the check:
   IO_CONFIG_FAKE_GONE=1     no devices and no master: the list is built from nothing, phasing is disabled
-  (none)                    the fake bus: live state, phase down and up, the list and the Bus tab side by side
+  (none)                    the fake bus: live state, Init and back to OP, the list and the Bus tab side by side
   IO_CONFIG_FAKE_FAIL_OP=1  the master stays below Op: the message after phasing up
 
     IO_CONFIG_FAKE=1 [IO_CONFIG_FAKE_GONE=1|IO_CONFIG_FAKE_FAIL_OP=1] IO_CONFIG_CONFIG=<new path> IO_CONFIG_ESI=<dir with XB-EC-12, XI190202, XI422202> python3 -m app.main
@@ -135,6 +135,11 @@ def confirms():
     js("window.__confirms = []; window.confirm = (m) => { window.__confirms.push(m); return window.__answer !== false; }")
 
 
+def choose(value):
+    """Picks a state in the master card's select the way a user does (a change event) and returns."""
+    js(f"const s = document.getElementById('state-select'); s.value = '{value}'; s.dispatchEvent(new Event('change'))")
+
+
 def master_text():
     return js("return document.getElementById('m-live').textContent")
 
@@ -148,15 +153,18 @@ try:
     check(until("document.getElementById('m-live').textContent !== ''"), "the master's state shows before any scan")
 
     if FAIL_OP:
-        check(until("document.getElementById('m-live').textContent === 'op'"), "state op without a scan: " + master_text())
-        js("document.getElementById('phase-down').click()")
-        check(until("document.getElementById('m-live').textContent === 'init'", 15), "phased down: " + master_text())
-        js("document.getElementById('phase-up').click()")
-        check(until("!document.getElementById('m-request').hidden", 20), "a message when Op is not reached")
+        check(until("document.getElementById('m-live').textContent === 'OP'"), "state OP without a scan: " + master_text())
+        choose("init")
+        js("document.getElementById('state-set').click()")
+        check(until("document.getElementById('m-live').textContent === 'Init'", 15), "set to Init: " + master_text())
+        choose("op")
+        js("document.getElementById('state-set').click()")
+        check(until("!document.getElementById('m-request').hidden", 20), "a message when OP is not reached")
         msg = text("m-request")
-        check("did not reach Op" in msg and "preop" in msg, f"the message names both states: {msg}")
-        check(until("document.getElementById('m-live').textContent.startsWith('preop')", 10), "badge shows preop: " + master_text())
-        check(js("return document.getElementById('m-live').firstChild.classList.contains('warn')"), "preop is a warn badge")
+        check("did not reach OP" in msg and "Pre-OP" in msg, f"the message names both states: {msg}")
+        check(until("document.getElementById('m-live').textContent.startsWith('Pre-OP')", 10), "badge shows Pre-OP: " + master_text())
+        check("(requested OP)" in master_text(), "with the requested state: " + master_text())
+        check(js("return document.getElementById('m-live').firstChild.classList.contains('warn')"), "Pre-OP is a warn badge")
         time.sleep(3)
         check(not js("return document.getElementById('m-request').hidden"), "the message stays visible")
         shot("phase-failed")
@@ -167,15 +175,14 @@ try:
         check(js("return !document.getElementById('noscan').hidden"), "not scanned yet")
         check(until("document.getElementById('m-live').textContent === 'unavailable'"), "state unavailable: " + master_text())
         check(js("return document.getElementById('m-live').firstChild.classList.contains('bad')"), "unavailable is a bad badge")
-        check(js("return document.getElementById('phase-up').disabled && document.getElementById('phase-down').disabled"),
-              "phase buttons off when the master can't be read")
-        check("can't be read" in js("return document.getElementById('phase-up').title"), "with the reason as title")
+        check(js("return document.getElementById('state-set').disabled"), "Set state is off when the master can't be read")
+        check("can't be read" in js("return document.getElementById('state-set').title"), "with the reason as title")
         tab("config")
         check(js("return !document.getElementById('cfg-note').hidden && document.getElementById('cfg-note').textContent.includes('no list yet')"),
               "note: no list yet")
     else:
-        check(until("document.getElementById('m-live').textContent === 'op'"), "state op without a scan: " + master_text())
-        check(js("return document.getElementById('m-live').firstChild.classList.contains('ok')"), "op is an ok badge")
+        check(until("document.getElementById('m-live').textContent === 'OP'"), "state OP without a scan: " + master_text())
+        check(js("return document.getElementById('m-live').firstChild.classList.contains('ok')"), "OP is an ok badge")
         check(js("return !document.getElementById('noscan').hidden"), "(not scanned yet)")
         js("document.getElementById('scan').click()")
         check(until("document.querySelectorAll('#devices tbody tr').length === 4 && !document.getElementById('scan').disabled", 30),
@@ -183,23 +190,26 @@ try:
         check(js("return document.querySelectorAll('#devices tbody tr button').length") == 0, "the Bus tab has no list tools")
         check(js("return [...document.querySelectorAll('#devices tbody tr')].every((r) => r.cells[7].textContent === 'same')"),
               "all devices are in the active configuration")
-        # phase down and up, with confirmation
+        # Init and back to OP, with confirmation
         js("window.__answer = false")
-        js("document.getElementById('phase-down').click()")
-        check(js("return window.__confirms.length") == 1 and "Requests Init: all devices leave Op and outputs stop" in js("return window.__confirms[0]"),
-              "phase down asks first: " + str(js("return window.__confirms")))
+        choose("init")
+        js("document.getElementById('state-set').click()")
+        check(js("return window.__confirms.length") == 1 and "Requests Init on the real bus (now OP). Outputs stop when leaving OP." in js("return window.__confirms[0]"),
+              "Init asks first: " + str(js("return window.__confirms")))
         time.sleep(1)
-        check(master_text() == "op", "declining changes nothing")
+        check(master_text() == "OP", "declining changes nothing")
         js("window.__answer = true")
-        js("document.getElementById('phase-down').click()")
-        check(until("document.getElementById('m-live').textContent === 'init'", 15), "phased down: " + master_text())
-        check(js("return document.getElementById('m-live').firstChild.classList.contains('warn')"), "init is a warn badge")
+        js("document.getElementById('state-set').click()")
+        check(until("document.getElementById('m-live').textContent === 'Init'", 15), "set to Init: " + master_text())
+        check(js("return document.getElementById('m-live').firstChild.classList.contains('warn')"), "Init is a warn badge")
         check(until("!document.getElementById('scan').disabled && document.querySelectorAll('#devices tbody tr').length === 4"),
               "the scan after it finished")
-        js("document.getElementById('phase-up').click()")
-        check("Requests Op on the real bus: devices start exchanging process data" in js("return window.__confirms[window.__confirms.length - 1]"),
-              "phase up asks first")
-        check(until("document.getElementById('m-live').textContent === 'op'", 15), "phased up: " + master_text())
+        check(js("return document.getElementById('state-select').value") == "init", "the select follows the state after a request")
+        choose("op")
+        js("document.getElementById('state-set').click()")
+        check("Devices start exchanging process data" in js("return window.__confirms[window.__confirms.length - 1]"),
+              "OP asks first")
+        check(until("document.getElementById('m-live').textContent === 'OP'", 15), "set to OP: " + master_text())
         check(js("return document.getElementById('m-request').hidden"), "no message when it worked")
         check(until("!document.getElementById('scan').disabled"), "scan done")
         tab("config")
@@ -242,11 +252,18 @@ try:
     pick("XI190202")
     pick("XI422202")
     check(len(rows()) == first + 3, f"3 devices added {rows()}")
-    check(names()[-3:] == ["Coupler", "XI190202", "XI422202"], f"new devices at the bottom: {names()}")
+    dup = "" if GONE else "_2"                                         # on the bus the same types exist already: unique defaults
+    check(names()[-3:] == ["Coupler", "XI190202" + dup, "XI422202" + dup], f"new devices at the bottom: {names()}")
     if not GONE:
         check(bus_names() == ["XB_EC_12", "XI190202", "XI422202", "XI522001"], "the Bus tab did not change")
         check(js("return !document.getElementById('cfg-note').hidden"), "note: the list differs from the Bus tab")
         check("differs from the Bus tab" in text("cfg-note"), "note text: " + text("cfg-note"))
+
+    # a name another row has (any case): live message above the button
+    keys("#add-name", names()[0].upper())
+    check(until("document.getElementById('add-msg').textContent.includes('already used by position 0')"),
+          "duplicate name in the add form: " + text("add-msg"))
+    js("document.getElementById('add-name').value = ''; document.getElementById('add-name').oninput()")
 
     # bad names: live message, and the server's refusal above the button
     n = len(rows())
@@ -300,6 +317,14 @@ try:
     time.sleep(2.5)                                                   # longer than the 1 s poll
     check(js(f"return !!document.querySelector('#cfg-devices tbody tr:nth-child({row_i + 1}) td input')"), "the poll keeps the input")
     shot("rename")
+    js(f"document.querySelector('#cfg-devices tbody tr:nth-child({row_i + 1}) td input').value = ''")
+    keys(f"#cfg-devices tbody tr:nth-child({row_i + 1}) td input", names()[0].lower() + "\ue007")      # another row's name, in lower case
+    check(until(f"document.querySelector('#cfg-devices tbody tr:nth-child({row_i + 1}) .rename-msg').textContent.includes('already used by position 0')"),
+          "a duplicate name is refused next to the input: " + js(f"return document.querySelector('#cfg-devices tbody tr:nth-child({row_i + 1}) .rename-msg').textContent"))
+    check(js(f"return !!document.querySelector('#cfg-devices tbody tr:nth-child({row_i + 1}) td input')"), "the input stays open")
+    check(js("return document.getElementById('banner').hidden"), "no banner for it")
+    shot("rename-duplicate")
+    js(f"document.querySelector('#cfg-devices tbody tr:nth-child({row_i + 1}) td input').value = ''")
     keys(f"#cfg-devices tbody tr:nth-child({row_i + 1}) td input", "Zzz\ue00c")           # type, Escape
     check(until(f"document.querySelectorAll('#cfg-devices tbody tr')[{row_i}].cells[1].textContent === '{before[last]}'"), "Escape cancels")
     js(f"document.querySelectorAll('#cfg-devices tbody tr')[{row_i}].cells[1].click()")

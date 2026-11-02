@@ -272,7 +272,7 @@ class FakeBus:
             self._check_gone(address)
             if address == MASTER + "admin/fieldbus_status/master_state":
                 new = (value or {}).get("request", {}).get("newState")
-                if new not in ("init", "preop", "safeop", "op"):
+                if new not in ("init", "preop", "bootstrap", "safeop", "op"):
                     raise BusError(f"write {address}: DL_INVALID_VALUE")
                 if new == "init" and self.fail_init:
                     self.nodes[address] = {"response": dict(self.nodes[address]["response"], requestedState="init")}

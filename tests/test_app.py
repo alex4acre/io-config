@@ -215,9 +215,9 @@ class CompareTest(unittest.TestCase):
         online["response"]["alStatus"] = 0x12
         online["response"]["alStatusCode"] = 0x1D
         r = self.report(1, online=online)
-        self.assertEqual(r["findings"][0], {"level": "error", "text": "Device reports an error: AL status PreOp (error), code #x001D"})
+        self.assertEqual(r["findings"][0], {"level": "error", "text": "Device reports an error: AL status Pre-OP (error), code #x001D"})
         online["response"]["alStatus"] = 0x04
-        self.assertIn("SafeOp while the master is in Op", self.report(1, online=online)["findings"][0]["text"])
+        self.assertIn("Safe-OP while the master is in OP", self.report(1, online=online)["findings"][0]["text"])
 
     def test_pdo_problems(self):
         slave = copy.deepcopy(self.eni["slaves"][2])
