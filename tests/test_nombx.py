@@ -139,6 +139,7 @@ class RealBusTest(unittest.TestCase):
         old_bus = [[36, 0x242A0F], [36, 0x242A36], [36, 0x242A1F], [36, 0x242A2C], [36, 0x21005311]]
         with open(self.core.edits_path, "w", encoding="utf-8") as f:
             json.dump({"4": {"name": "Drive1", "identity": [36, 0x21005311, 3], "bus": old_bus}}, f)
+        os.remove(self.core.project_path)               # an edits.json of 1.5.x without a list: it follows the bus once
         self.core.start_scan()
         self.core.wait_scan()
         edits = self.core.load_edits()

@@ -214,7 +214,40 @@ visible.
      (`_remap_edits`), not by LCS. A rename alone (PUT edit) does not start the state; the table shows the saved
      edit's name. UI: ▲ ▼ buttons, one input with a suggestion list for "Add device from ESI" (keys as in
      plc-data-explorer), optional name, click-to-edit names.
-12. **Next:** more than one frame, free PDO mapping (editing PDO contents),
+12. **Bus and Configuration tabs (1.7.0, 2026-11-02):** the 1.6.1 "Configuration state" (list changes switch live data
+   off) is replaced by two tabs.
+   - **Two views in the core.** `devices/sources` = the Bus view, always `merge` of the running configuration and the
+     bus, no edit names, online access through it (the 1.6.1 refusals and `configuring` are gone). `cfg_devices/
+     cfg_sources` = the Configuration view from project.json (entries only, in order, LCS-paired with the bus devices
+     for real online info/EEPROM/`bus_pos`, `configuration=True` reports, edit names). `_source` = bus,
+     `_cfg_source` = configuration; `/devices/<pos>/edit` (GET/PUT/DELETE) and the edit options mean a Configuration
+     row; `POST /devices/<pos>/edit/startup` takes a Bus position (it reads the device) and saves for the row found
+     by `cfg_position` (same `bus_pos`), else ConfigError. A scan refreshes the pairing only.
+   - **The list always exists once there is data** (`_ensure_project` from the Bus view, `_follow_edits` one last time
+     so 1.5.x edits.json stays valid); after that edits follow only through `_remap_edits`. Add/move/remove are refused
+     only during a download.
+   - **Base ENI** `project-base.xml/.ini` (atomic writes; the whole `io-config/` folder is in the active configuration,
+     `*.tmp` private): the list's settings link (station address) to this, not to the running ENI. Build compares with
+     the running one (identical, diff, "changed since" checksum) but starts from the base's ini/cycle. A project
+     without a base uses the running configuration.
+   - **Update from the active bus** (`POST /project/update`, confirm; replaces `DELETE /project`): entries from the Bus
+     view with fresh uids and topology, base = running ENI, edits cleared. On a matching bus the next plan is
+     byte-identical. **After a successful plan write** (`_after_write`): list kept, base = written ENI/ini, entries
+     relinked by index, checksum updated, edits stay. Restore and activation do not touch list, edits or base (edits
+     are no longer restored by activation; the "changed since" warning covers it).
+   - **Saved configurations**: kind `active` (master ENI/ini, fallback active files, no edits; old saves without a kind
+     are active) or `proposed` (project.json + base + edits + ENI/ini built with the cycle field; unbuildable ones saved
+     with `error`, openable, not activatable). `POST /saved {name, kind, overwrite, cycle_us}`, `POST /saved/<n>/open
+     {confirm}` (refused during a download; active saves become entries from their ENI incl. PreviousPort topology).
+   - **Live master state** (`GET /master/state`, light read of master_state only, cached 1.5 s, errors logged on change)
+     and **phasing** (`POST /master/state {state: op|init}`; refused when busy/unreadable; a thread writes the request,
+     waits up to 15 s, leaves a message if not reached, then scans). The list, edits and base are untouched.
+     Fake: `IO_CONFIG_FAKE_FAIL_OP=1` keeps the master in PreOp.
+   - UI: Bus tab (master card with state badge and phase buttons, device table without tools, device card with Process
+     data / Objects / Parameters / Info); Configuration tab (list with ▲ ▼ and a trash icon button, name click-to-edit,
+     note + "Update from the active bus", add form with a message line above the button, device card with Settings /
+     Startup, build/plan/write, saved configurations with Kind, backups).
+13. **Next:** more than one frame, free PDO mapping (editing PDO contents),
    modules from separate module files (EtherCATModule, e.g. ctrlX DRIVE FSoE).
 
 ## Open questions

@@ -2,8 +2,9 @@
 
 """Saved configurations (io-config/saved/<name>/), against the recorded X3 bus:  python3 -m unittest -q
 
-Saving keeps what the master runs (ENI + ini, read from the master) and the app's edits; activating writes it back
-(backup first) and restores the edits, also without a scan first (REST / Data Layer).
+An active save keeps what the master runs (ENI + ini, read from the master); a proposed one the Configuration list with
+its base, edits and the ENI/ini built from it. Activating writes an ENI back (backup first, the list and its edits stay),
+also without a scan first (REST / Data Layer); opening makes a save the Configuration list.
 """
 
 import os
@@ -45,7 +46,7 @@ class SavedTest(unittest.TestCase):
 
     def test_save_list_delete(self):
         s = self.core.save_current("Line A")
-        self.assertEqual((s["name"], s["active"], s["edits"]), ("Line A", True, 0))
+        self.assertEqual((s["name"], s["active"], s["edits"], s["kind"]), ("Line A", True, 0, "active"))
         self.assertEqual(s["devices"], ["XB_EC_12", "XI190202", "XI422202", "XI522001"])
         self.assertEqual(self.core.saved_file("Line A", "eni"), self.running_eni())
         with self.assertRaises(ConfigError):
@@ -59,29 +60,102 @@ class SavedTest(unittest.TestCase):
         with self.assertRaises(KeyError):
             self.core.start_activate("Line A")
 
-    def test_activate_brings_back_the_configuration_and_its_edits(self):
-        self.core.save_edit(2, {"name": "AO1"})
-        self.core.save_current("with AO1")
+    def test_activation_leaves_the_list_and_its_edits_alone(self):
+        self.core.save_current("plain")
         original = self.running_eni()
-        # change the bus configuration: another cycle time, written through the app; forget the edit
-        self.core.reset_edit(2)
-        p = self.core.plan(1000)
+        self.core.save_edit(2, {"name": "AO1"})
+        p = self.core.plan(1000)                                    # another cycle time, written through the app
         self.core.start_download(p["id"])
         self.core.wait_scan()
         self.core.wait_scan()
         self.assertNotEqual(self.running_eni(), original)
-        self.assertFalse(self.core.saved()[0]["active"])
-        self.assertEqual(self.core.load_edits(), {})
-
-        self.activate(self.core, "with AO1")
+        entries = [dict(e) for e in self.core._load_project()["devices"]]
+        self.activate(self.core, "plain")
         st = self.core.state()
         self.assertEqual((st["activation"]["state"], st["activation"]["name"], st["download"]["error"]),
-                         ("done", "with AO1", None))
+                         ("done", "plain", None))
         self.assertEqual(self.running_eni(), original)
-        self.assertEqual(self.core.load_edits()[2]["name"], "AO1")
-        self.assertTrue(self.core.saved()[0]["active"])
-        self.assertIn("edits of with AO1 restored (1)", st["download"]["steps"])
+        self.assertEqual(self.core.load_edits()[2]["name"], "AO1")             # the edits are not restored or dropped
+        self.assertEqual(self.core._load_project()["devices"], entries)
         self.assertTrue(any(s.startswith("backup ") for s in st["download"]["steps"]))
+        self.assertIn("The master's configuration changed since this list was started", self.core.plan()["warnings"])
+
+    def test_save_proposed_and_open(self):
+        self.core.save_edit(2, {"name": "AO1"})
+        self.add_and_move()
+        s = self.core.save_proposed("next", cycle_us=1000)
+        self.assertEqual((s["kind"], s["error"], s["edits"]), ("proposed", None, 1))
+        self.assertIn("AO1", s["devices"])
+        self.assertTrue(self.core.saved_file("next", "eni"))
+        self.assertIn(b"1000000", self.core.saved_file("next", "eni"))          # the cycle field's value
+        before = [dict(e) for e in self.core._load_project()["devices"]]
+        self.core.project_update()                                  # forget it, then open the save
+        self.assertEqual(self.core.load_edits(), {})
+        self.core.open_saved("next")
+        self.assertEqual(self.core._load_project()["devices"], before)
+        self.assertEqual(self.core.load_edits()[1]["name"], "AO1")             # it moved with its device
+        self.assertEqual([d["name"] for d in self.core.state()["configuration"]["devices"]][1], "AO1")
+        self.assertEqual(len(self.bus.written), 0)                  # the bus isn't touched
+
+    def add_and_move(self):
+        lib = {d["type"]: d for d in self.core.esi.search("", limit=100)}
+        d = lib["XI190202"]
+        self.core.project_add(d["vendor"], d["product"], d["revision"])
+        self.core.project_move(1, 1)
+
+    def test_open_an_active_save(self):
+        self.core.save_current("A")
+        self.add_and_move()
+        self.core.open_saved("A")
+        cfg = self.core.state()["configuration"]
+        self.assertEqual([d["name"] for d in cfg["devices"]], ["XB_EC_12", "XI190202", "XI422202", "XI522001"])
+        self.assertFalse(cfg["differs"])
+        self.assertEqual(self.core.load_edits(), {})
+        self.assertEqual([e["address"] for e in self.core._load_project()["devices"]], [1001, 1002, 1003, 1004])
+        self.assertTrue(self.core.plan()["identical"])
+
+    def test_proposed_that_does_not_build(self):
+        for _ in range(4):
+            self.core.project_remove(0)                             # an empty list builds nothing
+        s = self.core.save_proposed("empty")
+        self.assertEqual(s["kind"], "proposed")
+        self.assertTrue(s["error"])
+        with self.assertRaisesRegex(ConfigError, "can't be activated"):
+            self.core.start_activate("empty")
+        with self.assertRaises(KeyError):
+            self.core.saved_file("empty", "eni")
+        self.core.project_update()
+        self.core.open_saved("empty")
+        self.assertEqual(self.core.state()["configuration"]["devices"], [])
+
+    def test_open_is_refused_while_writing(self):
+        self.core.save_current("A")
+        self.core.download_state["running"] = True
+        try:
+            with self.assertRaisesRegex(ConfigError, "being written"):
+                self.core.open_saved("A")
+        finally:
+            self.core.download_state["running"] = False
+
+    def test_old_save_without_a_kind_is_active(self):
+        self.core.save_current("old")
+        import json
+        path = os.path.join(self.core.saved_dir, "old", "info.json")
+        with open(path) as f:
+            info = json.load(f)
+        info.pop("kind")
+        with open(path, "w") as f:
+            json.dump(info, f)
+        self.assertEqual(self.core.saved()[0]["kind"], "active")
+        self.core.open_saved("old")
+
+    def test_active_save_falls_back_to_the_files(self):
+        self.core.save_current("A")
+        self.activate(self.core, "A")                               # the files hold it now
+        self.bus.gone = True
+        s = self.core.save_current("B")
+        self.assertEqual(s["kind"], "active")
+        self.assertEqual(self.core.saved_file("B", "eni"), self.running_eni())
 
     def test_activate_without_a_scan(self):
         """A PLC activates through the Data Layer right after the app started: no scan has run yet."""

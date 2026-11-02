@@ -123,7 +123,7 @@ class DriveProjectTest(unittest.TestCase):
         before = self.previous()
         self.assertEqual(before[4][1], ("C", 1001))
         self.core.project_move(4, -1)                               # the drive moves up between two I/O devices
-        self.assertEqual(self.core.state()["devices"][3]["name"][:4], "ctrl")
+        self.assertEqual(self.core.state()["configuration"]["devices"][3]["name"][:4], "ctrl")
         moved = self.previous()
         self.assertEqual(moved[3][1], ("B", 1003))                  # not paired with the bus any more: behind its neighbour
         self.assertEqual(moved[4][1], ("B", 1004))                  # the I/O device that took its place chains after it
@@ -131,8 +131,6 @@ class DriveProjectTest(unittest.TestCase):
         self.assertEqual(self.previous(), before)
         p = self.core.plan()
         self.assertEqual(p["warnings"], [])
-        with self.assertRaisesRegex(ConfigError, "the list is a configuration now"):
-            self.core.soe_read(4, 47)
 
     def test_device_added_behind_the_drive_hangs_on_its_port_b(self):
         self.core.project_add(*[self.core.esi.search("XI190202", limit=1)[0][k] for k in ("vendor", "product", "revision")])
@@ -186,6 +184,9 @@ class ProjectTest(unittest.TestCase):
             return json.load(f)["devices"]
 
     def names(self):
+        return [d["name"] for d in self.core.state()["configuration"]["devices"]]
+
+    def bus_names(self):
         return [d["name"] for d in self.core.state()["devices"]]
 
     def files(self):
@@ -200,12 +201,12 @@ class ProjectTest(unittest.TestCase):
         self.assertEqual([(d["name"], d["present"]) for d in s["devices"]],
                          [("XB_EC_12", True), ("XI190202", False), ("XI422202", True), ("XI522001", True)])
         self.assertEqual(s["devices"][1]["level"], "warning")
-        self.assertFalse(s["project"])
+        self.assertEqual(s["devices"][0]["sources"]["eni"], "same")
         p = self.core.plan()
         self.assertTrue(p["identical"])
         self.assertEqual(self.core.plan_file("eni"), REFERENCE)
         self.assertEqual(p["removed_devices"], [])
-        self.assertEqual(p["warnings"], ["Position 1: XI190202 is not present on the bus"])
+        self.assertEqual(p["warnings"], ["Position 1: XI190202 is not on the bus at the last scan"])
 
     def test_device_taking_the_port_of_an_absent_one_chains_after_it(self):
         coupler = self.bus.slaves[0]["online_info"]["response"]
@@ -240,9 +241,8 @@ class ProjectTest(unittest.TestCase):
         self.scan()
         self.core.save_edit(2, {"name": "Analog"})
         self.assertEqual(self.add("XI522001"), 4)
-        s = self.core.state()
-        self.assertTrue(s["project"])
-        self.assertEqual([d["present"] for d in s["devices"]], [False] * 5)       # a configuration: no live data
+        s = self.core.state()["configuration"]
+        self.assertEqual([d["present"] for d in s["devices"]], [False] * 5)       # the list has no live data
         self.assertEqual([d["state"] for d in s["devices"]], ["-"] * 5)
         self.assertEqual(self.names(), ["XB_EC_12", "XI190202", "Analog", "XI522001", "XI522001"])
         self.assertEqual(self.core.edit_options(2)["name"], "Analog")
@@ -256,13 +256,12 @@ class ProjectTest(unittest.TestCase):
         self.assertEqual(p["warnings"], ["Position 4: XI522001_2 is not on the bus at the last scan"])
         self.scan()                                 # a rescan changes nothing about the list
         self.assertEqual(self.names(), ["XB_EC_12", "XI190202", "Analog", "XI522001", "XI522001"])
-        self.assertTrue(self.core.state()["project"])
+        self.assertTrue(self.core.state()["configuration"]["differs"])
 
     def test_add_then_remove_is_the_running_configuration(self):
         self.scan()
         self.add("XI190202")
         self.core.project_remove(4)
-        self.assertTrue(self.core.state()["project"])               # still a configuration until written or reset
         p = self.core.plan()
         self.assertTrue(p["identical"])
         self.assertEqual(self.core.plan_file("eni"), REFERENCE)
@@ -284,8 +283,7 @@ class ProjectTest(unittest.TestCase):
         for bad in ("1abc", "a b", "x" * 65, 7):
             with self.assertRaisesRegex(ConfigError, "name must start"):
                 self.add("XI190202", name=bad)
-        self.assertFalse(self.core.state()["project"])
-        self.assertFalse(os.path.exists(self.core.project_path))
+        self.assertEqual(self.names(), ["XB_EC_12", "XI190202", "XI422202", "XI522001"])
         self.assertEqual(self.core.load_edits(), {})
 
     def test_name_at_add(self):
@@ -298,7 +296,6 @@ class ProjectTest(unittest.TestCase):
     def test_move_any_device(self):
         self.scan()
         self.assertEqual(self.core.project_move(1, 1), 2)
-        self.assertTrue(self.core.state()["project"])
         self.assertEqual(self.names(), ["XB_EC_12", "XI422202", "XI190202", "XI522001"])
         self.assertEqual(self.core.project_move(0, 1), 1)               # even the coupler
         self.assertEqual(self.names(), ["XI422202", "XB_EC_12", "XI190202", "XI522001"])
@@ -328,8 +325,8 @@ class ProjectTest(unittest.TestCase):
         """Linked to the running configuration by station address, not by position or type order."""
         self.scan()
         self.core.project_move(1, 1)
-        self.assertEqual([s["eni_slave"]["name"] for s in self.core.sources], ["XB_EC_12", "XI422202", "XI190202", "XI522001"])
-        self.assertEqual(self.core.sources[1]["eni_slave"]["address"], 1003)
+        self.assertEqual([s["eni_slave"]["name"] for s in self.core.cfg_sources], ["XB_EC_12", "XI422202", "XI190202", "XI522001"])
+        self.assertEqual(self.core.cfg_sources[1]["eni_slave"]["address"], 1003)
         self.assertEqual([e["address"] for e in self.entries()], [1001, 1003, 1002, 1004])
         # an entry without address key (project from before) is paired by type and order as in the live list
         with open(self.core.project_path) as f:
@@ -339,8 +336,8 @@ class ProjectTest(unittest.TestCase):
         with open(self.core.project_path, "w") as f:
             json.dump(data, f)
         self.core._project_changed()
-        self.assertEqual([s["eni_slave"]["name"] for s in self.core.sources if s["eni_slave"]].count("XB_EC_12"), 1)
-        self.assertEqual(len([s for s in self.core.sources if s["eni_slave"]]), 3)
+        self.assertEqual([s["eni_slave"]["name"] for s in self.core.cfg_sources if s["eni_slave"]].count("XB_EC_12"), 1)
+        self.assertEqual(len([s for s in self.core.cfg_sources if s["eni_slave"]]), 3)
 
     def test_edits_follow_a_move_with_duplicate_types(self):
         self.scan()
@@ -370,14 +367,14 @@ class ProjectTest(unittest.TestCase):
         self.assertEqual(p["removed_devices"], ["XI190202"])
         self.scan()                                                 # a scan doesn't put it back
         self.assertEqual(self.names(), ["XB_EC_12", "XI422202", "XI522001"])
-        self.core.project_reset()
-        self.assertEqual(len(self.core.state()["devices"]), 4)
+        self.core.project_update()
+        self.assertEqual(len(self.core.state()["configuration"]["devices"]), 4)
 
     def test_remove_all_devices(self):
         self.scan()
         for _ in range(4):
             self.core.project_remove(0)
-        self.assertEqual(self.core.state()["devices"], [])
+        self.assertEqual(self.core.state()["configuration"]["devices"], [])
         p = self.core.plan()
         self.assertEqual(p["errors"], ["no devices"])
         self.assertEqual(p["devices"], [])
@@ -385,41 +382,131 @@ class ProjectTest(unittest.TestCase):
         self.assertEqual(self.entries()[0]["upstream"], None)
         self.assertEqual(self.core.plan()["errors"], [])
 
-    def test_configuration_state_has_no_online_access(self):
+    def test_bus_keeps_its_online_access_while_the_list_changes(self):
         self.scan()
-        self.assertEqual(self.core._autoinc(1)["address"], (-1) & 0xFFFF)
         self.add("XI190202")
-        for call in (lambda: self.core._autoinc(1), lambda: self.core.objects(2), lambda: self.core.sdo_write(2, 0x8000, 1, 1),
-                     lambda: self.core.process_data(),
-                     lambda: self.core.process_data(1), lambda: self.core.write_output("x", 1)):
-            with self.assertRaisesRegex(ConfigError, "the list is a configuration now"):
-                call()
-        self.core.project_reset()
-        self.assertEqual(self.core._autoinc(1)["address"], (-1) & 0xFFFF)
+        self.core.project_move(1, 1)
+        self.assertEqual(self.core._autoinc(1)["address"], (-1) & 0xFFFF)       # the Bus view's positions
         self.assertIn("variables", self.core.process_data(1))
+        self.assertTrue(self.core.state()["devices"][1]["present"])
+        self.assertEqual(self.bus_names(), ["XB_EC_12", "XI190202", "XI422202", "XI522001"])
 
-    def test_rename_alone_is_not_a_configuration(self):
+    def test_cfg_position_maps_a_bus_device_to_its_row(self):
+        self.scan()
+        self.assertEqual([self.core.cfg_position(i) for i in range(4)], [0, 1, 2, 3])
+        self.core.project_remove(1)                                 # XI190202 leaves the list; the others move up
+        self.assertEqual([self.core.cfg_position(i) for i in (0, 2, 3)], [0, 1, 2])
+        with self.assertRaisesRegex(ConfigError, "not in the Configuration list"):
+            self.core.cfg_position(1)
+
+    def test_rename_shows_in_the_list_not_on_the_bus(self):
         self.scan()
         self.core.save_edit(1, {"name": "Inputs"})
         s = self.core.state()
-        self.assertFalse(s["project"])
         self.assertEqual(self.names()[1], "Inputs")
-        self.assertEqual(self.core.device(1)["name"], "Inputs")
+        self.assertEqual(self.bus_names()[1], "XI190202")
         self.assertTrue(s["devices"][1]["present"])
-        self.assertFalse(os.path.exists(self.core.project_path))
         self.core.reset_edit(1)
         self.assertEqual(self.names()[1], "XI190202")
 
-    def test_reset_returns_to_the_live_list(self):
+    def new_device_on_the_bus(self):
+        """A ctrlX DRIVE joins the bus after the list exists."""
+        from app.fake import add_drive
+        for name in sorted(os.listdir(DRIVE_DIR)):
+            self.core.esi.add(name, read(os.path.join(DRIVE_DIR, name)))
+        add_drive(self.bus.nodes, self.bus.slaves)
+
+    def test_rescan_with_a_new_device_leaves_the_list_and_flags_it(self):
+        self.scan()
+        self.core.save_edit(2, {"name": "Analog"})
+        self.assertFalse(self.core.state()["configuration"]["differs"])
+        self.new_device_on_the_bus()
+        s = self.scan()
+        self.assertEqual(len(s["devices"]), 5)                      # the Bus view shows it ...
+        self.assertEqual((s["devices"][4]["present"], s["devices"][4]["sources"]["eni"]), (True, "none"))   # ... not in the active configuration
+        self.assertEqual(len(s["configuration"]["devices"]), 4)     # the list doesn't change
+        self.assertTrue(s["configuration"]["differs"])
+        self.assertEqual(self.names()[2], "Analog")
+        p = self.core.plan()
+        self.assertEqual(len(p["warnings"]), 1)
+        self.assertRegex(p["warnings"][0], "is on the bus but not in this configuration")
+
+    def test_update_from_the_bus_brings_the_new_device_and_clears_the_edits(self):
+        self.scan()
+        self.core.save_edit(2, {"name": "Analog"})
+        self.new_device_on_the_bus()
+        self.scan()
+        self.core.project_update()
+        s = self.core.state()
+        self.assertEqual(len(s["configuration"]["devices"]), 5)
+        self.assertFalse(s["configuration"]["differs"])
+        self.assertEqual(self.core.load_edits(), {})
+        self.assertEqual(self.names()[2], "XI422202")
+        self.assertEqual(self.core.plan()["warnings"], [])
+
+    def test_update_on_a_matching_bus_is_identical(self):
         self.scan()
         self.core.project_move(1, 1)
-        self.core.save_edit(2, {"name": "Moved"})
-        self.core.project_reset()
-        s = self.core.state()
-        self.assertFalse(s["project"])
-        self.assertEqual([d["present"] for d in s["devices"]], [True] * 4)
-        self.assertEqual(self.names(), ["XB_EC_12", "Moved", "XI422202", "XI522001"])      # the edit followed its device
-        self.assertEqual(self.core.plan()["devices"][1]["name"], "Moved")
+        self.core.save_edit(2, {"name": "Analog"})
+        self.core.project_update()
+        self.assertEqual(self.names(), ["XB_EC_12", "XI190202", "XI422202", "XI522001"])
+        p = self.core.plan()
+        self.assertTrue(p["identical"])
+        self.assertEqual(self.core.plan_file("eni"), REFERENCE)
+
+    def test_update_is_refused_while_busy(self):
+        self.scan()
+        self.core.download_state["running"] = True
+        try:
+            with self.assertRaises(ConfigError):
+                self.core.project_update()
+            with self.assertRaisesRegex(ConfigError, "being written"):
+                self.core.project_move(1, 1)
+        finally:
+            self.core.download_state["running"] = False
+
+    def test_base_survives_an_external_change_of_the_running_configuration(self):
+        self.scan()
+        self.core.save_edit(2, {"name": "Analog"})
+        other = read(os.path.join(DATA, "x3-drive-ioe.xml"))
+        self.bus.nodes[MASTER + "admin/fieldbus_config"]["response"]["eni"] = list(other)
+        self.scan()
+        p = self.core.plan()
+        self.assertFalse(p["identical"])
+        self.assertIn("The master's configuration changed since this list was started", p["warnings"])
+        x = eni.parse_eni(self.core.plan_file("eni"))
+        self.assertEqual([s["name"] for s in x["slaves"]], ["XB_EC_12", "XI190202", "Analog", "XI522001"])
+        self.assertEqual(x["slaves"][3]["coe_init"], eni.parse_eni(REFERENCE)["slaves"][3]["coe_init"])
+
+    def test_project_without_a_base_uses_the_running_configuration(self):
+        """A project.json of 1.6.x has no base files."""
+        self.scan()
+        self.core._remove_base()
+        self.core._assemble()
+        self.assertIsNone(self.core._load_base())
+        self.assertEqual(self.core.cfg_sources[1]["eni_slave"]["name"], "XI190202")
+        self.assertTrue(self.core.plan()["identical"])
+
+    def test_the_list_is_created_once_there_is_data(self):
+        self.assertFalse(self.core.state()["configuration"]["exists"])         # nothing known before the first scan
+        self.assertFalse(os.path.exists(self.core.project_path))
+        self.scan()
+        self.assertTrue(os.path.exists(self.core.project_path))
+        self.assertEqual(self.names(), ["XB_EC_12", "XI190202", "XI422202", "XI522001"])
+        self.assertTrue(os.path.exists(self.core.base_paths[0]))
+
+    def test_written_list_stays_identical_and_keeps_its_settings(self):
+        self.scan()
+        self.core.save_edit(2, {"name": "Analog"})
+        self.core.project_move(1, 1)
+        s = self.write()
+        self.assertIsNone(s["download"]["error"])
+        self.assertEqual(self.names(), ["XB_EC_12", "Analog", "XI190202", "XI522001"])
+        self.assertEqual(self.core.load_edits()[1]["name"], "Analog")
+        p = self.core.plan()
+        self.assertTrue(p["identical"])
+        self.assertEqual(self.core.plan_file("eni"), bytes(self.bus.nodes[MASTER + "admin/fieldbus_config"]["response"]["eni"]))
+        self.assertEqual([e["address"] for e in self.core._load_project()["devices"]], [1001, 1002, 1003, 1004])
 
     def test_changed_master_configuration_is_a_warning(self):
         self.scan()
@@ -427,17 +514,19 @@ class ProjectTest(unittest.TestCase):
         other = read(os.path.join(DATA, "x3-drive-ioe.xml"))
         self.bus.nodes[MASTER + "admin/fieldbus_config"]["response"]["eni"] = list(other)
         self.scan()
-        self.assertIn("The master's configuration changed since this project was started", self.core.plan()["warnings"])
+        self.assertIn("The master's configuration changed since this list was started", self.core.plan()["warnings"])
 
-    def test_good_write_ends_the_project(self):
+    def test_good_write_keeps_the_list(self):
         self.scan()
         self.add("XI190202")
         s = self.write()
         self.assertIsNone(s["download"]["error"])
         self.assertEqual(s["download"]["warnings"], [])
-        self.assertFalse(s["project"])
+        self.assertTrue(s["configuration"]["exists"])
         self.assertEqual([d["present"] for d in s["devices"]], [True, True, True, True, False])
-        self.assertEqual(s["devices"][4]["name"], "XI190202_2")         # now from the running configuration
+        self.assertEqual(s["devices"][4]["name"], "XI190202_2")         # the Bus view: from the running configuration
+        self.assertEqual(self.names()[4], "XI190202_2")                 # the list: from its new base
+        self.assertTrue(self.core.plan()["identical"])
 
     # --- without a working master -----------------------------------------------------------------------
 
@@ -446,7 +535,7 @@ class ProjectTest(unittest.TestCase):
         s = self.scan()
         self.assertIn("no EtherCAT master instance", s["scan"]["error"])
         self.assertEqual(s["master"]["state"], "unavailable")
-        self.assertEqual(self.add("XB-EC-12"), 0)
+        self.assertEqual(self.add("XB-EC-12"), 0)                   # the list starts empty without data
         self.assertEqual(self.add("XI190202"), 1)
         self.core.save_edit(1, {"name": "Inputs"})
         s = self.write()
@@ -457,8 +546,8 @@ class ProjectTest(unittest.TestCase):
         eni_path, ini_path = self.files()
         self.assertIn(b"<Name>Inputs</Name>", read(eni_path))
         self.assertTrue(read(ini_path))
-        self.assertTrue(s["project"])                # the master doesn't hold it: nothing is lost
-        self.assertEqual([x["name"] for x in s["devices"]], ["XB-EC-12", "Inputs"])
+        self.assertTrue(s["configuration"]["exists"])
+        self.assertEqual([x["name"] for x in s["configuration"]["devices"]], ["XB_EC_12", "Inputs"])
 
     def test_plan_without_a_scan_starts_from_the_files(self):
         self.scan()
@@ -478,16 +567,14 @@ class ProjectTest(unittest.TestCase):
         self.assertEqual([d["present"] for d in s["devices"]], [False] * 4)
         self.assertEqual(s["master"]["cycle_us"], 2000)
 
-    def test_lost_master_doesnt_drop_edits_of_unconfigured_devices(self):
+    def test_lost_master_doesnt_touch_the_list_or_its_edits(self):
         self.scan()
-        self.add("XI190202")
-        self.core.project_reset()
         self.core.save_edit(3, {"name": "Serial"})
-        self.bus.nodes[MASTER + "admin/fieldbus_config"]["response"]["eni"] = []    # not in any configuration
-        self.scan()
         self.bus.gone = True
         self.scan()
         self.assertIn(3, self.core.load_edits())
+        self.assertEqual(self.names()[3], "Serial")
+        self.assertEqual(len(self.names()), 4)
 
     def steps_of(self, **flags):
         self.scan()

@@ -205,11 +205,11 @@ def device_for(src: dict, user_edits: dict, used: set = None) -> dict:
 
 
 def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = None, user_edits: dict = None,
-               unlisted: list = None) -> dict:
+               unlisted: list = None, ini: bytes = None) -> dict:
     """sources: per present device {"pos", "online", "eeprom", "eni_slave", "esi_match", "esi_device"};
     current: {"eni": bytes, "ini": bytes, "parsed": parse_eni() or None}; user_edits: position -> edit.
     unlisted: None for the live list; for a project (the list is a configuration) the descriptions of the bus
-    devices that are not in it."""
+    devices that are not in it. ini: the ini to start from (the list's base), default the current one."""
     devices, rows, errors, warnings = [], [], [], []
     used = {src["eni_slave"]["name"] for src in sources if src.get("eni_slave")}       # also of devices further down
     ports = topology(sources)
@@ -243,7 +243,7 @@ def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = N
 
     warnings += [f"{d} is on the bus but not in this configuration" for d in unlisted or []]
 
-    ini_text = (current.get("ini") or b"").decode("latin-1")
+    ini_text = ((current.get("ini") or b"") if ini is None else ini).decode("latin-1")
     cycle = cycle_us or int(eni_mod.parse_ini(ini_text).get("EtherCAT.Master", {}).get("CycleTimeUs", 0) or 0) or 2000
     eni_bytes = ini_bytes = None
     if not errors:

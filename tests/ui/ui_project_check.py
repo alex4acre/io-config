@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: MIT
 
-"""End-to-end UI check of the device list as a configuration, in headless Firefox (see ui_check.py). Two runs:
-without devices and without a master (IO_CONFIG_FAKE_GONE=1 for the backend and the check) and on the fake bus.
+"""End-to-end UI check of the Bus and Configuration tabs, in headless Firefox (see ui_check.py). Three runs, set by an
+environment variable for the backend AND the check:
+  IO_CONFIG_FAKE_GONE=1     no devices and no master: the list is built from nothing, phasing is disabled
+  (none)                    the fake bus: live state, phase down and up, the list and the Bus tab side by side
+  IO_CONFIG_FAKE_FAIL_OP=1  the master stays below Op: the message after phasing up
 
-    IO_CONFIG_FAKE=1 [IO_CONFIG_FAKE_GONE=1] IO_CONFIG_CONFIG=<new path> IO_CONFIG_ESI=<dir with XB-EC-12, XI190202, XI422202> python3 -m app.main
+    IO_CONFIG_FAKE=1 [IO_CONFIG_FAKE_GONE=1|IO_CONFIG_FAKE_FAIL_OP=1] IO_CONFIG_CONFIG=<new path> IO_CONFIG_ESI=<dir with XB-EC-12, XI190202, XI422202> python3 -m app.main
     /snap/bin/firefox.geckodriver --port 4444
     [IO_CONFIG_FAKE_GONE=1] python3 tests/ui/ui_project_check.py ~/snap/firefox/common/io-config-ui/shots-project
 """
@@ -20,6 +23,7 @@ PORT = int(os.environ.get("IO_CONFIG_PORT", "12617"))
 URL = f"http://127.0.0.1:{PORT}/io-config/?token=dev"
 OUT = sys.argv[1] if len(sys.argv) > 1 else None
 GONE = bool(os.environ.get("IO_CONFIG_FAKE_GONE"))
+FAIL_OP = bool(os.environ.get("IO_CONFIG_FAKE_FAIL_OP"))
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 failures = []
 
@@ -71,11 +75,15 @@ def text(id_):
 
 
 def rows():
-    return js("return [...document.querySelectorAll('#devices tbody tr')].map((r) => [r.cells[1].textContent, r.cells[5].textContent])")
+    return js("return [...document.querySelectorAll('#cfg-devices tbody tr')].map((r) => [r.cells[1].textContent, r.cells[3].textContent])")
 
 
 def names():
     return [r[0] for r in rows()]
+
+
+def bus_names():
+    return js("return [...document.querySelectorAll('#devices tbody tr')].map((r) => r.cells[1].textContent)")
 
 
 def keys(css, text_):
@@ -90,11 +98,15 @@ def field(id_):
     return js(f"return document.getElementById('{id_}').value")
 
 
+def tab(name):
+    js(f"document.getElementById('tab-{name}').click()")
+
+
 def pick(search, name=None):
     """Adds a device the way a user does: type, arrow keys, Enter."""
     js("document.getElementById('add-device').value = ''")
     keys("#add-device", search)
-    check(until(f"document.querySelectorAll('#add-suggest .sug').length >= 1 && "
+    check(until("document.querySelectorAll('#add-suggest .sug').length >= 1 && "
                 f"document.querySelector('#add-suggest .sug').textContent.includes('{search}')"), f"suggestions for {search}")
     time.sleep(0.8)                                                   # the list follows the typed text (debounce + request)
     keys("#add-device", "\ue015")                                    # ArrowDown: preview
@@ -107,69 +119,104 @@ def pick(search, name=None):
         keys("#add-name", name)
     n = len(rows())
     js("document.getElementById('add').click()")
-    check(until(f"document.querySelectorAll('#devices tbody tr').length === {n + 1}"), f"{search} added to the list")
+    check(until(f"document.querySelectorAll('#cfg-devices tbody tr').length === {n + 1}"), f"{search} added to the list")
     return names()[-1]
 
 
 def tools(i):
-    return js(f"return [...document.querySelectorAll('#devices tbody tr')[{i}].querySelectorAll('.row-tools button')].map((b) => b.textContent)")
+    return js(f"return [...document.querySelectorAll('#cfg-devices tbody tr')[{i}].querySelectorAll('.row-tools button')].map((b) => b.textContent)")
 
 
 def click_tool(i, n):
-    js(f"document.querySelectorAll('#devices tbody tr')[{i}].querySelectorAll('.row-tools button')[{n}].click()")
+    js(f"document.querySelectorAll('#cfg-devices tbody tr')[{i}].querySelectorAll('.row-tools button')[{n}].click()")
 
 
-def configuration_state(on):
-    check(until(f"document.getElementById('config-flag').hidden === {str(not on).lower()}"), f"Configuration flag {'shown' if on else 'hidden'}")
-    if on:
-        check(text("config-flag") == "Configuration", "flag reads exactly Configuration: " + text("config-flag"))
-        check(not js("return document.getElementById('devices-hint').innerText.includes('process data')"),
-              "hint without process data in the configuration state")
-        check(js("return [...document.querySelectorAll('#devices tbody tr')].every((r) => r.cells[5].textContent === '-')"),
-              "State column - for every row")
-        check("not present" not in js("return document.getElementById('devices').textContent"), "no 'not present' badge")
+def confirms():
+    js("window.__confirms = []; window.confirm = (m) => { window.__confirms.push(m); return window.__answer !== false; }")
+
+
+def master_text():
+    return js("return document.getElementById('m-live').textContent")
 
 
 try:
     call("POST", S + "/url", {"url": URL})
     check(until("document.getElementById('conn').textContent.includes('connected')"), "page loaded")
+    confirms()
+    check(js("return !document.getElementById('tab-bus').hidden && !document.getElementById('tab-config').hidden "
+             "&& !document.getElementById('tab-esi').hidden"), "tabs Bus, Configuration, ESI library")
+    check(until("document.getElementById('m-live').textContent !== ''"), "the master's state shows before any scan")
+
+    if FAIL_OP:
+        check(until("document.getElementById('m-live').textContent === 'op'"), "state op without a scan: " + master_text())
+        js("document.getElementById('phase-down').click()")
+        check(until("document.getElementById('m-live').textContent === 'init'", 15), "phased down: " + master_text())
+        js("document.getElementById('phase-up').click()")
+        check(until("!document.getElementById('m-request').hidden", 20), "a message when Op is not reached")
+        msg = text("m-request")
+        check("did not reach Op" in msg and "preop" in msg, f"the message names both states: {msg}")
+        check(until("document.getElementById('m-live').textContent.startsWith('preop')", 10), "badge shows preop: " + master_text())
+        check(js("return document.getElementById('m-live').firstChild.classList.contains('warn')"), "preop is a warn badge")
+        time.sleep(3)
+        check(not js("return document.getElementById('m-request').hidden"), "the message stays visible")
+        shot("phase-failed")
+        print("FAILED: " + "; ".join(failures) if failures else "all good")
+        sys.exit(1 if failures else 0)
+
     if GONE:
         check(js("return !document.getElementById('noscan').hidden"), "not scanned yet")
-        check(js("return !document.getElementById('bus-card').hidden && !document.getElementById('config-card').hidden"),
-              "devices and configuration cards without a scan")
+        check(until("document.getElementById('m-live').textContent === 'unavailable'"), "state unavailable: " + master_text())
+        check(js("return document.getElementById('m-live').firstChild.classList.contains('bad')"), "unavailable is a bad badge")
+        check(js("return document.getElementById('phase-up').disabled && document.getElementById('phase-down').disabled"),
+              "phase buttons off when the master can't be read")
+        check("can't be read" in js("return document.getElementById('phase-up').title"), "with the reason as title")
+        tab("config")
+        check(js("return !document.getElementById('cfg-note').hidden && document.getElementById('cfg-note').textContent.includes('no list yet')"),
+              "note: no list yet")
     else:
+        check(until("document.getElementById('m-live').textContent === 'op'"), "state op without a scan: " + master_text())
+        check(js("return document.getElementById('m-live').firstChild.classList.contains('ok')"), "op is an ok badge")
+        check(js("return !document.getElementById('noscan').hidden"), "(not scanned yet)")
         js("document.getElementById('scan').click()")
         check(until("document.querySelectorAll('#devices tbody tr').length === 4 && !document.getElementById('scan').disabled", 30),
               "scan finds the 4 devices")
-        configuration_state(False)
-        check(js("return document.getElementById('devices').tBodies[0].rows[1].cells[5].textContent !== '-'"), "live State column")
-        # arrows on an on-bus row
-        check(tools(1) == ["\u25b2", "\u25bc", "Remove"], f"arrows and Remove on an on-bus row {tools(1)}")
-        check(js("return document.querySelectorAll('#devices tbody tr')[1].querySelector('.row-tools button').title") == "Move up in the list",
-              "title of the up arrow")
-        click_tool(1, 1)                                              # XI190202 down
-        check(until("document.querySelectorAll('#devices tbody tr')[2].cells[1].textContent === 'XI190202'"), "on-bus device moved down")
-        configuration_state(True)
-        shot("configuration-bus")
-        js("document.querySelectorAll('#devices tbody tr')[2].click()")
-        check(until("!document.getElementById('detail').hidden && !document.getElementById('p-settings').hidden"),
-              "a device of the configuration opens on Settings")
-        tabs = js("return [...document.querySelectorAll('.subtabs .tab')].filter((t) => !t.hidden).map((t) => t.dataset.panel)")
-        check("pd" not in tabs and tabs[0] == "settings", f"no Process data tab {tabs}")
-        check(js("return document.getElementById('d-writable').closest('label').hidden"), "Writable hidden")
-        js("document.getElementById('d-close').click()")
-        click_tool(2, 0)                                              # and back up
-        check(until("document.querySelectorAll('#devices tbody tr')[1].cells[1].textContent === 'XI190202'"), "moved back up")
-        js("window.confirm = () => true; document.getElementById('project-reset').click()")
-        configuration_state(False)
-        check(js("return document.getElementById('devices').tBodies[0].rows[1].cells[5].textContent !== '-'"), "live State column again")
-        check(js("return document.getElementById('devices').tBodies[0].rows[1].cells[5].textContent !== ''"), "state text back")
+        check(js("return document.querySelectorAll('#devices tbody tr button').length") == 0, "the Bus tab has no list tools")
+        check(js("return [...document.querySelectorAll('#devices tbody tr')].every((r) => r.cells[7].textContent === 'same')"),
+              "all devices are in the active configuration")
+        # phase down and up, with confirmation
+        js("window.__answer = false")
+        js("document.getElementById('phase-down').click()")
+        check(js("return window.__confirms.length") == 1 and "Requests Init: all devices leave Op and outputs stop" in js("return window.__confirms[0]"),
+              "phase down asks first: " + str(js("return window.__confirms")))
+        time.sleep(1)
+        check(master_text() == "op", "declining changes nothing")
+        js("window.__answer = true")
+        js("document.getElementById('phase-down').click()")
+        check(until("document.getElementById('m-live').textContent === 'init'", 15), "phased down: " + master_text())
+        check(js("return document.getElementById('m-live').firstChild.classList.contains('warn')"), "init is a warn badge")
+        check(until("!document.getElementById('scan').disabled && document.querySelectorAll('#devices tbody tr').length === 4"),
+              "the scan after it finished")
+        js("document.getElementById('phase-up').click()")
+        check("Requests Op on the real bus: devices start exchanging process data" in js("return window.__confirms[window.__confirms.length - 1]"),
+              "phase up asks first")
+        check(until("document.getElementById('m-live').textContent === 'op'", 15), "phased up: " + master_text())
+        check(js("return document.getElementById('m-request').hidden"), "no message when it worked")
+        check(until("!document.getElementById('scan').disabled"), "scan done")
+        tab("config")
+        check(until("document.querySelectorAll('#cfg-devices tbody tr').length === 4"), "the list has the 4 devices of the bus")
+        check(js("return document.getElementById('cfg-note').hidden"), "no note while the list equals the bus")
+        check(js("return document.querySelectorAll('#cfg-devices thead th').length") == 5, "list columns: Pos, Name, Device, Revision, tools")
 
+    # --- the add form: message above the button
     js("document.getElementById('add-box').open = true")
     check(until("document.querySelectorAll('#add-suggest .sug').length >= 3"), "the list opens on focus with an empty query")
     shot("suggestions")
+    order = js("return [...document.getElementById('add-box').querySelectorAll('.row, #add-msg')].map((e) => e.id || e.className)")
+    check(order[-2:] == ["add-msg", "row"] or "add-msg" in order, f"layout {order}")
     keys("#add-device", "XB-EC")
     check(until("document.querySelectorAll('#add-suggest .sug').length >= 1"), "suggestions while typing")
+    check(js("return document.getElementById('add-msg').textContent") == "Pick a device from the list", "message: pick a device")
+    check(js("return !document.getElementById('add-msg').hidden && document.getElementById('add').disabled"), "message shown, Add disabled")
     time.sleep(0.8)
     keys("#add-device", "\ue015")
     typed = field("add-device")
@@ -178,22 +225,30 @@ try:
     keys("#add-device", "\ue015")                                    # opens the list again
     check(until("document.querySelectorAll('#add-suggest .sug').length >= 1"), "ArrowDown opens the list")
     keys("#add-device", "\ue015\ue007")
-    check(not js("return document.getElementById('add').disabled"), "picked")
+    check(not js("return document.getElementById('add').disabled") and js("return document.getElementById('add-msg').hidden"),
+          "picked: message gone, Add enabled")
     keys("#add-device", "x")
-    check(js("return document.getElementById('add').disabled"), "editing the text clears the pick")
+    check(js("return document.getElementById('add').disabled") and js("return !document.getElementById('add-msg').hidden"),
+          "editing the text clears the pick (message again)")
     js("document.getElementById('add-device').value = ''; document.getElementById('add-name').value = ''")
+    js("document.getElementById('add-device').oninput()")
+    time.sleep(0.5)
 
     first = len(rows())
     pick("XB-EC-12", "Coupler")
-    configuration_state(True)
-    check(names()[-1] == "Coupler", f"name given at add shows in the table: {names()}")
+    check(names()[-1] == "Coupler", f"name given at add shows in the list: {names()}")
     check(field("add-device") == "" and field("add-name") == "", "the form is cleared after an add")
+    check(js("return document.getElementById('add-msg').hidden"), "the message is cleared after an add")
     pick("XI190202")
     pick("XI422202")
     check(len(rows()) == first + 3, f"3 devices added {rows()}")
     check(names()[-3:] == ["Coupler", "XI190202", "XI422202"], f"new devices at the bottom: {names()}")
-    check(not js("return document.getElementById('project-reset').hidden"), "reset button with a project")
-    # a bad name refuses the add and keeps the form
+    if not GONE:
+        check(bus_names() == ["XB_EC_12", "XI190202", "XI422202", "XI522001"], "the Bus tab did not change")
+        check(js("return !document.getElementById('cfg-note').hidden"), "note: the list differs from the Bus tab")
+        check("differs from the Bus tab" in text("cfg-note"), "note text: " + text("cfg-note"))
+
+    # bad names: live message, and the server's refusal above the button
     n = len(rows())
     keys("#add-device", "XI190202")
     check(until("document.querySelectorAll('#add-suggest .sug').length >= 1 && "
@@ -201,50 +256,69 @@ try:
     time.sleep(0.8)
     keys("#add-device", "\ue015\ue007")
     keys("#add-name", "1bad")
-    js("document.getElementById('add').click()")
-    check(until("!document.getElementById('banner').hidden && document.getElementById('banner').textContent.includes('name must start')"),
-          "bad name: " + text("banner"))
+    check(js("return document.getElementById('add-msg').textContent").startswith("The name must start with a letter"),
+          "live message for a bad name: " + text("add-msg"))
+    check(js("return document.getElementById('add').disabled"), "Add disabled with a bad name")
+    js("document.getElementById('add-name').value = '1bad'; document.getElementById('add').disabled = false; document.getElementById('add').click()")
+    check(until("document.getElementById('add-msg').textContent.includes('name must start')"), "server refusal above the button: " + text("add-msg"))
+    check(js("return document.getElementById('banner').hidden"), "not in the top banner")
+    js("document.getElementById('add-msg').scrollIntoView({block: 'center'})")
+    shot("add-message")
     check(len(rows()) == n and field("add-name") == "1bad", "nothing added, the form keeps what was typed")
-    js("document.getElementById('add-name').value = ''; document.getElementById('add-device').value = ''")
+    js("document.getElementById('add-name').value = ''; document.getElementById('add-device').value = ''; "
+       "document.getElementById('add-device').oninput()")
     shot("project")
 
     last = len(rows()) - 1
-    check(tools(last) == ["\u25b2", "\u25bc", "Remove"] and tools(0) == ["\u25b2", "\u25bc", "Remove"], "arrows and Remove on every row")
-    check(js("return document.querySelectorAll('#devices tbody tr')[0].querySelector('.row-tools button').disabled") and
-          js(f"return document.querySelectorAll('#devices tbody tr')[{last}].querySelectorAll('.row-tools button')[1].disabled"),
+    check(tools(last) == ["\u25b2", "\u25bc", ""] and tools(0) == ["\u25b2", "\u25bc", ""], "arrows and a trash button on every row")
+    trash = js(f"return document.querySelectorAll('#cfg-devices tbody tr')[0].querySelectorAll('.row-tools button')[2]")
+    check(js("const b = document.querySelectorAll('#cfg-devices tbody tr')[0].querySelectorAll('.row-tools button')[2]; "
+             "return b.getAttribute('aria-label') === 'Remove' && b.title === 'Remove' && !!b.querySelector('svg') && b.textContent.trim() === ''"),
+          "trash button: svg icon with title and aria-label Remove")
+    check(js("return document.querySelectorAll('#cfg-devices tbody tr')[0].querySelector('.row-tools button').title") == "Move up in the list",
+          "title of the up arrow")
+    check(js("return document.querySelectorAll('#cfg-devices tbody tr')[0].querySelector('.row-tools button').disabled") and
+          js(f"return document.querySelectorAll('#cfg-devices tbody tr')[{last}].querySelectorAll('.row-tools button')[1].disabled"),
           "no up arrow at the top, no down arrow at the bottom")
     before = names()
     click_tool(last, 0)
-    check(until(f"document.querySelectorAll('#devices tbody tr')[{last - 1}].cells[1].textContent === '{before[last]}'"), "moved up")
+    check(until(f"document.querySelectorAll('#cfg-devices tbody tr')[{last - 1}].cells[1].textContent === '{before[last]}'"), "moved up")
     click_tool(last - 1, 1)
-    check(until(f"document.querySelectorAll('#devices tbody tr')[{last}].cells[1].textContent === '{before[last]}'"), "moved down")
+    check(until(f"document.querySelectorAll('#cfg-devices tbody tr')[{last}].cells[1].textContent === '{before[last]}'"), "moved down")
+    if not GONE:                                                      # an on-bus row moves too
+        click_tool(1, 1)
+        check(until("document.querySelectorAll('#cfg-devices tbody tr')[2].cells[1].textContent === 'XI190202'"), "an on-bus device moved down")
+        click_tool(2, 0)
+        check(until("document.querySelectorAll('#cfg-devices tbody tr')[1].cells[1].textContent === 'XI190202'"), "and back up")
+        check(bus_names() == ["XB_EC_12", "XI190202", "XI422202", "XI522001"], "the Bus tab never changed")
 
     # click-to-edit name
     row_i = last
-    js(f"document.querySelectorAll('#devices tbody tr')[{row_i}].cells[1].click()")
-    check(until(f"!!document.querySelector('#devices tbody tr:nth-child({row_i + 1}) td input')"), "click on a name opens an input")
-    check(js("return document.getElementById('detail').hidden"), "the device card did not open")
+    js(f"document.querySelectorAll('#cfg-devices tbody tr')[{row_i}].cells[1].click()")
+    check(until(f"!!document.querySelector('#cfg-devices tbody tr:nth-child({row_i + 1}) td input')"), "click on a name opens an input")
+    check(js("return document.getElementById('cdetail').hidden"), "the device card did not open")
     time.sleep(2.5)                                                   # longer than the 1 s poll
-    check(js(f"return !!document.querySelector('#devices tbody tr:nth-child({row_i + 1}) td input')"), "the poll keeps the input")
+    check(js(f"return !!document.querySelector('#cfg-devices tbody tr:nth-child({row_i + 1}) td input')"), "the poll keeps the input")
     shot("rename")
-    keys(f"#devices tbody tr:nth-child({row_i + 1}) td input", "Zzz\ue00c")           # type, Escape
-    check(until(f"document.querySelectorAll('#devices tbody tr')[{row_i}].cells[1].textContent === '{before[last]}'"), "Escape cancels")
-    js(f"document.querySelectorAll('#devices tbody tr')[{row_i}].cells[1].click()")
-    check(until(f"!!document.querySelector('#devices tbody tr:nth-child({row_i + 1}) td input')"), "input again")
-    js(f"document.querySelector('#devices tbody tr:nth-child({row_i + 1}) td input').value = ''")
-    keys(f"#devices tbody tr:nth-child({row_i + 1}) td input", "Analog_out\ue007")
-    check(until(f"document.querySelectorAll('#devices tbody tr')[{row_i}].cells[1].textContent === 'Analog_out'", 10), "Enter saves the name")
-    check(js("return document.getElementById('detail').hidden"), "still no device card")
-    js(f"document.querySelectorAll('#devices tbody tr')[{row_i}].click()")
-    check(until("!document.getElementById('detail').hidden && !document.getElementById('p-settings').hidden"),
+    keys(f"#cfg-devices tbody tr:nth-child({row_i + 1}) td input", "Zzz\ue00c")           # type, Escape
+    check(until(f"document.querySelectorAll('#cfg-devices tbody tr')[{row_i}].cells[1].textContent === '{before[last]}'"), "Escape cancels")
+    js(f"document.querySelectorAll('#cfg-devices tbody tr')[{row_i}].cells[1].click()")
+    check(until(f"!!document.querySelector('#cfg-devices tbody tr:nth-child({row_i + 1}) td input')"), "input again")
+    js(f"document.querySelector('#cfg-devices tbody tr:nth-child({row_i + 1}) td input').value = ''")
+    keys(f"#cfg-devices tbody tr:nth-child({row_i + 1}) td input", "Analog_out\ue007")
+    check(until(f"document.querySelectorAll('#cfg-devices tbody tr')[{row_i}].cells[1].textContent === 'Analog_out'", 10), "Enter saves the name")
+    check(js("return document.getElementById('cdetail').hidden"), "still no device card")
+    if not GONE:
+        check(bus_names()[-1] == "XI522001" and "Analog_out" not in bus_names(), "the Bus tab does not show the new name")
+    js(f"document.querySelectorAll('#cfg-devices tbody tr')[{row_i}].cells[2].click()")
+    check(until("!document.getElementById('cdetail').hidden && !document.getElementById('p-settings').hidden"),
           "a device opens on Settings")
-    check(until("document.getElementById('d-title').textContent.includes('Analog_out')"), "card title shows the saved name")
-    tabs = js("return [...document.querySelectorAll('.subtabs .tab')].filter((t) => !t.hidden).map((t) => t.dataset.panel)")
-    check(tabs == ["settings", "startup", "info"], f"tabs of a CoE device in the configuration {tabs}")
+    check(until("document.getElementById('c-title').textContent.includes('Analog_out')"), "card title shows the saved name")
+    tabs = js("return [...document.querySelectorAll('#cdetail .subtabs .tab')].filter((t) => !t.hidden).map((t) => t.dataset.panel)")
+    check(tabs == ["settings", "startup"], f"tabs of a CoE device on the Configuration card {tabs}")
     check(until("document.getElementById('e-name').value === 'Analog_out'"), "its name in Settings")
-    check(js("return document.getElementById('d-writable').closest('label').hidden"), "Writable hidden")
     shot("device-in-configuration")
-    js("document.getElementById('d-close').click()")
+    js("document.getElementById('c-close').click()")
 
     js("document.getElementById('build').click()")
     check(until("!document.getElementById('plan').hidden"), "builds the list")
@@ -260,19 +334,27 @@ try:
         check(until("document.getElementById('dl-title').textContent.startsWith('Written, with warnings')", 60),
               "written with warnings: " + text("dl-title"))
         check("next master start" in text("dl-steps"), "takes effect at the next master start")
-        check(until("document.querySelectorAll('#devices tbody tr').length === 3"), "the project stays listed")
-        check(until("document.getElementById('m-state').textContent.startsWith('unavailable - no EtherCAT master instance')"),
-              "master shown as unavailable, with the reason: " + text("m-state"))
+        check(until("document.querySelectorAll('#cfg-devices tbody tr').length === 3"), "the list stays")
+        tab("bus")
+        check(until("document.getElementById('m-live').textContent === 'unavailable'"), "master shown as unavailable: " + master_text())
+        check("DL_INVALID_ADDRESS" in text("m-reason"), "with the reason: " + text("m-reason"))
         shot("written")
-        check(until("!document.querySelectorAll('#devices tbody tr .row-tools button')[2].disabled"), "tools enabled when the rescan is over")
-        click_tool(0, 2)                                              # Remove the coupler
-        check(until("document.querySelectorAll('#devices tbody tr').length === 2"), "removed")
-        js("window.confirm = () => true; document.getElementById('project-reset').click()")
-        configuration_state(False)
+        tab("config")
+        check(until("!document.querySelectorAll('#cfg-devices tbody tr .row-tools button')[2].disabled"), "tools enabled when the rescan is over")
+        click_tool(0, 2)                                              # remove the coupler with the trash button
+        check(until("document.querySelectorAll('#cfg-devices tbody tr').length === 2"), "removed")
     else:
         check(until("document.getElementById('dl-title').textContent.startsWith('Written')", 60), "written: " + text("dl-title"))
-        configuration_state(False)                                    # the master holds it: the configuration state ends
-        check(until("document.querySelectorAll('#devices tbody tr').length === 7", 30), "7 devices after the write: " + str(rows()))
+        check(until("!document.getElementById('scan').disabled"), "scan after the write")
+        check(until("document.querySelectorAll('#cfg-devices tbody tr').length === 7", 30), "the list stays after the write: " + str(rows()))
+        check(until("document.querySelectorAll('#devices tbody tr').length === 7", 30), "the Bus tab shows what the master runs now")
+        # Update from the active bus: confirm, replaces the list
+        confirms()
+        js("document.getElementById('project-update').click()")
+        check(js("return window.__confirms.length") == 1 and "Replaces the list and all unwritten changes with what the Bus tab shows" in
+              js("return window.__confirms[0]"), "Update asks first: " + str(js("return window.__confirms")))
+        check(until("document.querySelectorAll('#cfg-devices tbody tr').length === 7 && document.getElementById('cfg-note').hidden"),
+              "after Update the list equals the Bus tab")
     errors = js("return window.__errors || []")
     check(not errors, f"no script errors {errors}")
 finally:

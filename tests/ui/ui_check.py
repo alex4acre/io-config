@@ -81,7 +81,7 @@ try:
     check(until("document.querySelectorAll('#devices tbody tr').length === 4"), "scan shows 4 devices")
     names = js("return [...document.querySelectorAll('#devices tbody tr')].map(r => r.cells[1].textContent)")
     check(names == ["XB_EC_12", "XI190202", "XI422202", "XI522001"], f"device names {names}")
-    check("op" in text("m-state") and "4 connected, 4 configured" in text("m-devices"), "master overview")
+    check(text("m-live") == "op" and "4 connected, 4 configured" in text("m-devices"), "master overview")
     esi = js("return [...document.querySelectorAll('#devices tbody tr')].map(r => r.cells[6].textContent)")
     check(esi == ["exact", "exact", "exact", "missing"], f"ESI column {esi} (XI522001 has no ESI yet)")
     check(js("return document.querySelectorAll('#devices tbody tr')[3].cells[9].textContent") == "Check (1)", "XI522001 flagged")
@@ -103,7 +103,14 @@ try:
     check(until("document.getElementById('d-findings').textContent.includes('No ESI file')"), "XI522001 finding shown")
     shot("missing-esi")
 
+    check(js("return document.querySelectorAll('#devices tbody tr button').length") == 0, "the Bus tab has no list tools")
+    check(js("return [...document.querySelectorAll('#devices tbody tr')].map(r => r.cells[7].textContent).every((t) => t === 'same')"),
+          "all four devices are in the active configuration")
+
     # configuration: build (identical), change the cycle time, write, backup
+    js("document.getElementById('tab-config').click();")
+    check(until("document.querySelectorAll('#cfg-devices tbody tr').length === 4"), "the Configuration tab lists the same 4 devices")
+    check(js("return document.getElementById('cfg-note').hidden"), "no note while the list equals the bus")
     js("document.getElementById('build').click();")
     check(until("!document.getElementById('plan').hidden && "
                 "document.getElementById('plan-summary').textContent.startsWith('Identical')"), "built configuration is identical")
@@ -125,10 +132,11 @@ try:
     # saved configurations: save the running one, activate it again
     js("document.getElementById('saved-box').open = true;")
     check(until("document.querySelector('#saved tbody').textContent.includes('none yet')"), "no saved configurations yet")
-    js("document.getElementById('save-name').value = 'Line A'; document.getElementById('save-current').click();")
+    js("document.getElementById('save-name').value = 'Line A'; document.getElementById('save-active').click();")
     check(until("document.querySelector('#saved tbody tr') && document.querySelector('#saved tbody tr').cells[0].textContent === 'Line A'"),
           "Line A saved and listed")
-    check(js("return document.querySelector('#saved tbody tr').cells[3].textContent") == "running", "Line A is the running one")
+    check(js("return document.querySelector('#saved tbody tr').cells[4].textContent") == "running", "Line A is the running one")
+    check(js("return document.querySelector('#saved tbody tr').cells[1].textContent") == "Active", "its kind is Active")
     js("""window.confirm = () => true;
           [...document.querySelectorAll('#saved tbody tr button')].find(b => b.textContent === 'Activate').click();""")
     check(until("document.getElementById('dl-title').textContent === 'Written - activation of \"Line A\"'", 30),
@@ -137,9 +145,9 @@ try:
     shot("saved")
 
     # editor: XI422202 -> compact state PDO, rename, a startup parameter from the objects view
-    js("document.querySelectorAll('#devices tbody tr')[2].click();")
-    check(until("document.getElementById('d-title').textContent === '2: XI422202'"), "detail of XI422202 again")
-    js("document.getElementById('d-edit').click();")
+    js("document.querySelectorAll('#cfg-devices tbody tr')[2].cells[2].click();")
+    check(until("!document.getElementById('cdetail').hidden && document.getElementById('c-title').textContent === '2: XI422202'"),
+          "Configuration card of XI422202 opens")
     check(until("!document.getElementById('p-settings').hidden && document.querySelectorAll('#e-pdos tbody tr').length === 6"),
           "Settings tab lists 6 PDOs")
     js("""const boxes = [...document.querySelectorAll('#e-pdos input[type=checkbox]')];
@@ -149,6 +157,9 @@ try:
     check("2 B inputs, 4 B outputs" in text("e-sizes"), f"editor sizes: {text('e-sizes')}")
     js("document.getElementById('e-save').click();")
     check(until("document.getElementById('e-msg').textContent.startsWith('Saved')"), "edit saved")
+    js("document.getElementById('tab-bus').click(); document.querySelectorAll('#devices tbody tr')[2].click();")
+    check(until("document.getElementById('d-title').textContent === '2: XI422202'"), "Bus card of XI422202 again")
+    check(js("return document.getElementById('d-edit').closest('#cdetail') !== null"), "Settings and Startup are not on the Bus card")
     js("document.getElementById('d-objects').click();")
     check(until("document.querySelectorAll('#o-list tbody tr').length === 30", 15), "30 objects listed")
     js("document.getElementById('o-filter').value = 'x8000'; document.getElementById('o-filter').oninput();")
@@ -158,20 +169,21 @@ try:
     check(until("document.getElementById('o-obj-title').textContent.includes('Channel 1 settings')", 15), "object 0x8000 opens")
     js("""const r = [...document.querySelectorAll('#o-entries tbody tr')].find(r => r.cells[1].textContent === 'User gain');
           r.querySelector('input').value = '1000'; [...r.querySelectorAll('button')].find(b => b.textContent === 'Startup').click();""")
-    check(until("document.getElementById('banner').textContent.includes('Startup parameter #x8000:1 = 1000 saved')"),
-          "startup parameter added")
+    check(until("document.getElementById('banner').textContent.includes('Startup parameter #x8000:1 = 1000 saved for Configuration position 2')"),
+          "startup parameter added to Configuration row 2")
     shot("objects")
-    js("document.getElementById('d-startup').click();")
+    js("document.getElementById('tab-config').click(); document.getElementById('d-startup').click();")
     check(until("!document.getElementById('p-startup').hidden && "
                 "[...document.querySelectorAll('#e-startup tbody tr')].some(r => r.cells[0].textContent === '#x8000:1')"),
           "Startup tab shows the startup parameter")
     check(js("return [...document.querySelectorAll('#e-startup tbody tr')].find(r => r.cells[0].textContent === '#x8000:1')"
              ".cells[1].textContent") == "1000 (0x000003E8)", "startup value shown decoded, hex most significant byte first")
-    js("document.getElementById('plan-devices').tBodies[0].replaceChildren(); document.getElementById('build').click();")
+    js("document.getElementById('c-close').click(); document.getElementById('plan-devices').tBodies[0].replaceChildren(); "
+       "document.getElementById('build').click();")
     check(until("document.querySelector('#plan-devices tbody').textContent.includes('AO1')"), "plan uses the new name")
     check(js("return document.getElementById('plan-summary').textContent").startswith("Differs"), "edited configuration differs")
     shot("editor")
-    js("document.getElementById('d-writable').click();")
+    js("document.getElementById('tab-bus').click(); document.getElementById('d-writable').click();")
     until("""[...document.querySelectorAll('#o-entries tbody tr')].some(r => r.cells[1].textContent === 'User gain' &&
              [...r.querySelectorAll('button')].some(b => b.textContent === 'Write now' && !b.disabled))""")
     js("""const r = [...document.querySelectorAll('#o-entries tbody tr')].find(r => r.cells[1].textContent === 'User gain');
@@ -197,8 +209,10 @@ try:
     js("document.querySelectorAll('#devices tbody tr')[1].click();")
     check(until("document.getElementById('d-title').textContent.startsWith('1:') && "
                 "!document.getElementById('d-writable').checked"), "Writable is off for another device")
-    check(js("return document.getElementById('d-objects').hidden && document.getElementById('d-startup').hidden && "
-             "!document.getElementById('d-edit').hidden"), "XI190202 (FoE only): no Objects or Startup tab")
+    check(js("return document.getElementById('d-objects').hidden"), "XI190202 (FoE only): no Objects tab")
+    js("document.getElementById('tab-config').click(); document.querySelectorAll('#cfg-devices tbody tr')[1].cells[2].click();")
+    check(until("!document.getElementById('cdetail').hidden && document.getElementById('d-startup').hidden && "
+                "!document.getElementById('d-edit').hidden"), "XI190202 (FoE only): Settings but no Startup tab")
     js("document.getElementById('tab-bus').click();")
 
     js("document.getElementById('tab-esi').click();")

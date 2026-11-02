@@ -33,6 +33,8 @@ ROUTES = [
     ("PATCH", r"/config", "patch_config"),
     ("GET", r"/instances", "get_instances"),
     ("POST", r"/scan", "post_scan"),
+    ("GET", r"/master/state", "get_master_state"),
+    ("POST", r"/master/state", "post_master_state"),
     ("GET", r"/devices/(\d+)", "get_device"),
     ("GET", r"/devices/(\d+)/edit", "get_edit"),
     ("PUT", r"/devices/(\d+)/edit", "put_edit"),
@@ -47,7 +49,7 @@ ROUTES = [
     ("POST", r"/project/devices", "post_project_device"),
     ("DELETE", r"/project/devices/(\d+)", "delete_project_device"),
     ("POST", r"/project/devices/(\d+)/move", "post_project_move"),
-    ("DELETE", r"/project", "delete_project"),
+    ("POST", r"/project/update", "post_project_update"),
     ("GET", r"/process-data", "get_process_data"),
     ("PUT", r"/process-data", "put_process_data"),
     ("POST", r"/plan", "post_plan"),
@@ -62,6 +64,7 @@ ROUTES = [
     ("DELETE", r"/saved/([^/]+)", "delete_saved"),
     ("GET", r"/saved/([^/]+)/(eni|ini)", "get_saved_file"),
     ("POST", r"/saved/([^/]+)/activate", "post_activate"),
+    ("POST", r"/saved/([^/]+)/open", "post_open_saved"),
     ("GET", r"/esi", "get_esi"),
     ("POST", r"/esi", "post_esi"),
     ("DELETE", r"/esi/([^/]+)", "delete_esi"),
@@ -203,6 +206,15 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         d = self.read_json() if int(self.headers.get("Content-Length") or 0) else {}
         self.send_json(202, core.start_scan(reread_eeprom=bool(d.get("reread_eeprom"))))
 
+    def get_master_state(self):
+        self.send_json(200, core.master_status())
+
+    def post_master_state(self):
+        state = self.read_json().get("state")
+        if state not in ("op", "init"):
+            raise HttpError(400, '{"state": "op" or "init"} is needed')
+        self.send_json(202, core.request_master_state(state))
+
     def get_device(self, position):
         self.send_json(200, core.device(int(position)))
 
@@ -222,8 +234,11 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     def post_project_move(self, position):
         self.send_json(200, {"position": core.project_move(int(position), self.read_json().get("by"))})
 
-    def delete_project(self):
-        core.project_reset()
+    def post_project_update(self):
+        d = self.read_json() if int(self.headers.get("Content-Length") or 0) else {}
+        if d.get("confirm") is not True:
+            raise HttpError(400, '{"confirm": true} is needed: the list and all unwritten changes are replaced')
+        core.project_update()
         self.send_json(200, {"ok": True})
 
     # --- edits: name, PDO selection, startup parameters ---------------------------------------------
@@ -238,9 +253,12 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_json(200, core.reset_edit(int(position)))
 
     def post_startup(self, position):
-        """Adds a startup parameter from a value typed for an object entry (encoded with the entry's data type)."""
+        """Adds a startup parameter from a value typed for an object entry (encoded with the entry's data type). The
+        position is the device's place on the Bus tab (it is read online); the parameter is saved for the
+        Configuration row of the same device."""
         d = self.read_json()
-        current = core.edit_options(int(position))["startup"]
+        row = core.cfg_position(int(position))
+        current = core.edit_options(row)["startup"]
         if "idn" in d:                   # SoE drive parameter
             entry = core.soe_startup_entry(int(position), d["idn"], d.get("value"))
             current = [x for x in current if x.get("idn") != entry["idn"]] + [entry]
@@ -251,7 +269,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 raise HttpError(400, '{"index", "subindex", "value"} or {"idn", "value"} are needed') from e
             entry = core.startup_entry(int(position), index, sub, d.get("value"), d.get("comment", ""))
             current = [x for x in current if "idn" in x or (x["index"], x["subindex"]) != (index, sub)] + [entry]
-        self.send_json(200, core.save_edit(int(position), {"startup": current}))
+        self.send_json(200, dict(core.save_edit(row, {"startup": current}), configuration_position=row))
 
     # --- CoE objects ---------------------------------------------------------------------------------
 
@@ -270,7 +288,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
     # --- SoE parameters ------------------------------------------------------------------------------
 
     def get_soe_list(self, position):
-        self.send_json(200, core.soe_parameters(int(position), self.q("q"), self.q("mapping"), int(self.q("limit", "400"))))
+        self.send_json(200, core.soe_parameters(int(position), self.q("q"), self.q("mapping"), int(self.q("limit", "400")),
+                                                  cfg=self.q("cfg") == "1"))
 
     def get_soe(self, position, idn):
         self.send_json(200, core.soe_read(int(position), int(idn)))
@@ -347,7 +366,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         d = self.read_json()
         if not isinstance(d.get("name"), str):
             raise HttpError(400, '{"name": ..., "overwrite": false} is needed')
-        self.send_json(201, core.save_current(d["name"].strip(), overwrite=d.get("overwrite") is True))
+        self.send_json(201, core.save_saved(d["name"].strip(), d.get("kind", "active"), overwrite=d.get("overwrite") is True,
+                                            cycle_us=d.get("cycle_us")))
 
     def delete_saved(self, name):
         core.delete_saved(name)
@@ -359,6 +379,12 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
     def post_activate(self, name):
         self.send_json(202, core.start_activate(name))
+
+    def post_open_saved(self, name):
+        if self.read_json().get("confirm") is not True:
+            raise HttpError(400, '{"confirm": true} is needed: the list and all unwritten changes are replaced')
+        core.open_saved(name)
+        self.send_json(200, {"opened": name})
 
     # --- ESI library -------------------------------------------------------------------------------
 

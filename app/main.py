@@ -62,6 +62,7 @@ def start_datalayer():
         log("Using a simulated ctrlX (development mode)")
         bus = FakeBus(drive=bool(os.environ.get("IO_CONFIG_FAKE_DRIVE")), elmo=bool(os.environ.get("IO_CONFIG_FAKE_ELMO")))
         bus.gone = bool(os.environ.get("IO_CONFIG_FAKE_GONE"))
+        bus.fail_op = bool(os.environ.get("IO_CONFIG_FAKE_FAIL_OP"))
         return None, None, bus
     # outside the snap, e.g. "tcp://boschrexroth:boschrexroth@192.168.1.1?sslport=443" (needs Ubuntu 24.04)
     connection = "ipc://" if IN_SNAP else os.environ.get("DATALAYER_CONNECTION")

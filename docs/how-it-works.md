@@ -1,19 +1,21 @@
 # io-config: how devices are identified, cross-checked and applied
 
-State: version 1.6.1, ctrlx-baseline 1.0.0 (2026-11-02). File paths are relative to the app folder `io-config/`.
+State: version 1.7.0, ctrlx-baseline 1.0.0 (2026-11-02). File paths are relative to the app folder `io-config/`.
 The code snippets are io-config's own code, shortened (marked `...`); the line numbers point to the full code. The
 shared parts every ctrlX app has (section 2) are described, not shown: their code and rules are in
 `ctrlx-baseline/` (`STANDARD.md`, `framework/`).
 
 ## 1. The four columns in the device list
 
-Each row is one bus position. Three columns compare a **source** with what the device itself reports on the
+The page has three tabs: **Bus** (what the bus and the master show, always live, with these columns and the device
+card), **Configuration** (the device list you edit, build and write, section 4.7) and **ESI library**. The columns
+below are on the Bus tab. Each row is one bus position. Three columns compare a **source** with what the device itself reports on the
 wire (its vendor ID, product code and revision from the master's online info). The fourth sums up all findings.
 
 | Column | Source | What the badge means |
 |---|---|---|
 | **ESI** | The ESI library (the XML device descriptions you uploaded, *EtherCAT Slave Information*) | `exact` = an ESI with the same vendor, product and revision. `other rev.` = same product, a different revision (the nearest one is used). `missing` = no ESI for this product. |
-| **ENI** | The configuration the master runs now (*EtherCAT Network Information*, the `ethercat.xml` written by I/O Engineering or by this app) | `same` = configured with the same identity. `other rev.` = same product, other revision. `different` = another device is configured there. `not configured` = the device is not in the running configuration (e.g. newly plugged in). `not on bus` = configured but missing (it stays in the configuration, see section 4.7). |
+| **ENI** | The configuration the master runs now (*EtherCAT Network Information*, the `ethercat.xml` written by I/O Engineering or by this app) | `same` = configured with the same identity. `other rev.` = same product, other revision. `different` = another device is configured there. `not in active configuration` (a warn badge) = the device is on the bus but not in the running configuration (e.g. newly plugged in). `not on bus` = configured but missing (it stays in the configuration, see section 4.7). |
 | **EEPROM** | The device's own EEPROM (*SII*, slave information interface), read through the master | `read` = read and decoded. `error` = couldn't be read. |
 | **Check** | All findings for this position | `OK`, `Check (n)` = n warnings or notes, `Error (n)`. The Info tab of the device card lists them. |
 
@@ -385,47 +387,58 @@ Since 1.6.0 each step of the sequence above is best effort: a step that fails be
 snippet shows the order of the steps, not the error handling.
 
 Saved configurations (1.4.0) use the same sequence. "Activate", by button, REST or Data Layer, backs up the
-running configuration, writes the saved ENI and ini, then restores the edits saved with them
-([app/core.py:468](../app/core.py#L468) `start_activate`). The Data Layer way is the `io-config/activate` node
+running configuration and writes the saved ENI and ini; since 1.7.0 it no longer touches the device list or its
+edits (`start_activate` in [app/core.py](../app/core.py)). The Data Layer way is the `io-config/activate` node
 (section 2.3).
 
-### 4.7 Without the devices or a working master (1.6.0)
+### 4.7 The Configuration tab: the device list, without the devices or a working master (1.7.0)
 
-You can build and write a configuration for devices that are not on the bus yet, or while the master is not
-working. The app then only warns (see the warnings below); it does not stop you.
+The **Bus** tab shows what is there: the master with its state (read every 2 s, also without a scan), the devices
+with their statuses, process data, objects and parameters. It is always live and has no editing tools. Online writes
+(outputs, CoE, SoE) stay there behind the per-device "Writable" box. The **Configuration** tab is where you change
+things; you can prepare a configuration for devices that are not on the bus yet, or while the master is not working.
+The app then only warns; it does not stop you.
 
-- **Configuration state.** As long as you only look, the device list is the running configuration's devices merged
-  with the bus. Once you add, move or remove a device, the list is a **configuration**: the Devices card shows a
-  "Configuration" flag, and the app keeps exactly your list in `io-config/project.json`. A scan does not change the
-  list any more; it only tells which listed device is on the bus. Renaming a device alone does not start it.
-- **No live data in this state.** The State column shows "-", there is no "not present" badge, no process data, and
-  objects, drive parameters and process-data writes are refused ("the list is a configuration now"). A device
-  opens on its Settings tab (Settings, Startup, Info), and the Writable box is hidden. The state ends with a
-  successful write (the master holds the configuration) or with **Back to the running configuration**.
-- **The order of the list is the wiring order.** A new device (**Add device from ESI**: type in the box, pick from
-  the suggestions with the arrow keys and Enter or a click, give it a name if you like) goes to the bottom of the
-  list. The arrows (▲ ▼) and **Remove** work on every row, on the bus or not, while no scan or download is running.
+- **The list.** The first time there is data (the running configuration, the bus, or both), the app creates the
+  device list in `io-config/project.json` from what the Bus tab shows, with the saved settings of earlier versions.
+  After that **only you change it**: a scan refreshes which listed device is on the bus, but never the list. If the
+  list differs from the Bus tab, a note says so, and **Update from the active bus** replaces the list and all
+  unwritten changes with what the Bus tab shows (it asks first).
+- **The order of the list is the wiring order.** A new device (**Add device from ESI**: type in the box, pick from the
+  suggestions with the arrow keys and Enter or a click, give it a name if you like) goes to the bottom. The arrows
+  (▲ ▼) and the trash button work on every row, on the bus or not, except while a configuration is being written.
   A device that is not on the bus is assumed to be connected to port B of the device above it until it has been
-  scanned; a device that is on the bus keeps the port it really sits on. There is no port choice.
-- The list is compared with the last scan in order. Build warns once per listed device that is not on the bus at the
-  last scan and once per bus device that is not in the list ("... is on the bus but not in this configuration"); a
-  moved device therefore warns on both sides. No warning if the list equals the bus. **Build configuration**
-  builds exactly what the list shows; an empty list is an error.
-- A device that is not on the bus has no online data either: objects, drive parameters and process-data writes
-  answer "not present on the bus". Startup parameters can be added from the object list only if the device is
-  online (CoE); drives (SoE) work from the dictionary.
-- Settings stay with their device when you move it: a listed device is linked to the running configuration by its
-  station address, and its saved edits (name, PDOs, startup parameters) move with it.
-- **Rename**: click a name in the table (Enter or leaving the field saves, Esc cancels). The table and the device
-  card show the saved name.
-- If the master cannot be read, the scan shows state "unavailable" and the list comes from the files of the active
-  configuration.
-- Writing is best effort: Init, write, check the checksums, Op, then the files. A step that fails is a warning, and
+  scanned; a device that is on the bus keeps the port it really sits on. There is no port choice. The line above the
+  Add button says what is wrong with the text or the name (or what the server refused).
+- **Rename**: click a name in the list (Enter or leaving the field saves, Esc cancels). Settings, PDOs and startup
+  parameters are in the device card of the list (Settings, Startup). The Bus tab shows the device's own name.
+- **Settings stay with their device** when you move it: a listed device is linked to the ENI the list started from
+  (`io-config/project-base.xml/.ini`) by its station address, and its saved edits move with it. Because the list
+  owns that base, a running configuration that someone else changes does not change the list's settings; Build
+  warns ("The master's configuration changed since this list was started") and still compares with the running one.
+- **Build** builds exactly the list. It warns once per listed device that is not on the bus at the last scan and once
+  per bus device that is not in the list ("... is on the bus but not in this configuration"); a moved device
+  therefore warns on both sides. No warning if the list equals the bus. An empty list is an error. The cycle time
+  field starts from the base's ini.
+- **Write** is best effort: Init, write, check the checksums, Op, then the files. A step that fails is a warning, and
   the result says "Written, with warnings". If the master did not take the configuration, it takes effect at the
-  next master start. It is an error only if neither the master nor the files took it.
-- A configuration the master changed since your last scan no longer blocks the write. The backup taken first holds
-  what the master was really running.
-- When the master holds the written configuration, the project is deleted; if only the files took it, it stays.
+  next master start. It is an error only if neither the master nor the files took it. **The list stays after a
+  write**: what was written becomes the new base, the entries are linked to it by position, the edits stay. The next
+  Build is "identical". Restoring a backup or activating a saved configuration does not touch the list.
+- **Saved configurations** (Configuration tab, one list, a Kind column). "Save active configuration" keeps the ENI/ini
+  the master runs (read from it, else from the active configuration's files). "Save proposed configuration" keeps
+  the list with its base and settings, and the ENI/ini built from it with the cycle field's value; if it doesn't
+  build it is saved anyway, without ENI/ini and with the reason, and can be opened but not activated. **Activate**
+  writes an ENI to the master (backup first). **Open** (asks first) makes a saved configuration the list; the bus is
+  not touched.
+- **Startup parameters from the Bus tab** ("Startup" on an object or SoE parameter) are saved for the Configuration
+  row of the same device; if the device is not in the list the app says so.
+- **Master state.** The Bus tab's master card shows the state as a badge (op green, anything else yellow,
+  unavailable red, "(requested X)" when it differs) and has **Phase up (Op)** and **Phase down (Init)**. Both ask
+  first, are refused while a scan or download runs or when the master can't be read, and are followed by a scan.
+  If the master does not reach the state within about 15 s, the card keeps a message naming both states.
+- If the master cannot be read, the scan shows state "unavailable" and the Bus tab's list comes from the files of the
+  active configuration.
 
 ## 5. Where to look for more
 

@@ -11,6 +11,7 @@
     <h1>I/O Config</h1>
     <nav class="tabs">
       <button id="tab-bus" class="tab active" data-view="bus">Bus</button>
+      <button id="tab-config" class="tab" data-view="config">Configuration</button>
       <button id="tab-esi" class="tab" data-view="esi">ESI library</button>
     </nav>
     <span id="busy" class="busy" hidden></span>
@@ -21,15 +22,19 @@
   <main id="view-bus">
     <section class="card">
       <div class="row head">
-        <h2>EtherCAT master <span id="instance" class="muted"></span></h2>
+        <h2 class="fit">EtherCAT master <span id="instance" class="muted"></span></h2>
+        <span id="m-live" title="The master's state, read every 2 s without a scan"></span><span id="m-reason" class="muted"></span>
+        <span class="spacer"></span>
         <span id="progress" class="muted"></span>
+        <button id="phase-up" title="Requests Op on the real bus">Phase up (Op)</button>
+        <button id="phase-down" title="Requests Init">Phase down (Init)</button>
         <label class="check"><input id="reread" type="checkbox"> Reread EEPROMs</label>
         <button id="scan" class="primary">Scan bus</button>
       </div>
+      <p id="m-request" class="warn-note" hidden></p>
       <p id="noscan" class="hint">Not scanned yet. The scan only reads: master status, the configuration it runs with
-        (ENI), and each device's online info and EEPROM. A project can be prepared without it.</p>
+        (ENI), and each device's online info and EEPROM. The Configuration tab works without it.</p>
       <dl id="master" class="grid cols" hidden>
-        <dt>State</dt><dd id="m-state"></dd>
         <dt>Devices</dt><dd id="m-devices"></dd>
         <dt>Topology</dt><dd id="m-topology"></dd>
         <dt>Cycle time</dt><dd id="m-cycle"></dd>
@@ -40,32 +45,17 @@
 
     <section class="card" id="bus-card">
       <div class="row head">
-        <h2>Devices <span id="config-flag" class="chip warn" hidden title="The list is a configuration now: no live data until it is written or you go back">Configuration</span></h2>
-        <button id="project-reset" hidden>Back to the running configuration</button>
+        <h2>Devices on the bus</h2>
       </div>
       <div class="scroll">
         <table id="devices">
           <thead><tr><th>Pos</th><th>Name</th><th>Device</th><th>Address</th><th>Revision</th><th>State</th>
-            <th>ESI</th><th>ENI</th><th>EEPROM</th><th>Check</th><th></th></tr></thead>
+            <th>ESI</th><th>ENI</th><th>EEPROM</th><th>Check</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
-      <p id="devices-hint" class="hint">Click a device for its <span id="hint-pd">process data, </span>settings, startup parameters and details; click a name to rename it.</p>
-      <details id="add-box">
-        <summary>Add device from ESI</summary>
-        <p class="hint">New devices go to the bottom of the list; place them with the arrows. The order of the list is the wiring
-          order: a device that is not on the bus is assumed to be connected to port B of the device above it until it is
-          scanned. Once the list is changed it is a configuration: no live data until it is written or you go back to
-          the running configuration.</p>
-        <div class="row">
-          <div class="suggest-box">
-            <input id="add-device" type="text" placeholder="Search the ESI library" autocomplete="off" spellcheck="false">
-            <ul id="add-suggest" class="suggest" hidden></ul>
-          </div>
-          <input id="add-name" type="text" placeholder="Name (optional)" maxlength="64" autocomplete="off">
-          <button id="add" class="primary" disabled>Add device</button>
-        </div>
-      </details>
+      <p class="hint">What the bus and the active configuration show now. Click a device for its process data, objects,
+        parameters and details. Settings, startup parameters and changes to the device list are in the Configuration tab.</p>
     </section>
 
     <section class="card" id="detail" hidden>
@@ -76,8 +66,6 @@
       </div>
       <nav class="tabs subtabs">
         <button id="d-pd" class="tab" data-panel="pd">Process data</button>
-        <button id="d-edit" class="tab" data-panel="settings">Settings</button>
-        <button id="d-startup" class="tab" data-panel="startup">Startup</button>
         <button id="d-objects" class="tab" data-panel="objects">Objects (CoE)</button>
         <button id="d-soe" class="tab" data-panel="soe">Parameters (SoE)</button>
         <button id="d-info" class="tab" data-panel="info">Info</button>
@@ -94,59 +82,6 @@
         </div>
         <p class="hint">Read through the Data Layer (<code>realtime_data</code>) about 5 times a second. Outputs can be set
           with "Writable" on; the PLC or another app may overwrite them in its next cycle.</p>
-      </div>
-
-      <div id="p-settings" class="panel" hidden>
-        <h3 id="e-title"></h3>
-        <p class="hint">Saved choices are used the next time you build the configuration; nothing is written to the master here.</p>
-        <div class="row">
-          <label class="check">Name <input id="e-name" type="text" maxlength="64"></label>
-        </div>
-        <div id="e-modules-box" hidden>
-          <h3>Modules</h3>
-          <p class="hint">A modular device: its process data comes from the module in each slot (from its ESI). The
-            master writes the module list, the PDO contents and the modules' startup commands.</p>
-          <div class="scroll"><table id="e-modules"><thead><tr><th>Slot</th><th>Module</th><th></th></tr></thead>
-            <tbody></tbody></table></div>
-        </div>
-        <div id="e-dc-box" hidden>
-          <h3>Distributed clocks</h3>
-          <div class="row"><select id="e-dc"></select><span id="e-dc-desc" class="muted"></span></div>
-        </div>
-        <h3>PDOs</h3>
-        <p id="e-reason" class="hint"></p>
-        <div class="scroll"><table id="e-pdos"><thead><tr><th>Use</th><th>Dir</th><th>Index</th><th>Name</th><th>Size</th>
-          <th>Rules</th></tr></thead><tbody></tbody></table></div>
-        <p id="e-sizes" class="muted"></p>
-        <div id="e-soe" hidden>
-          <h3>Drive telegrams (SoE)</h3>
-          <p class="hint">The cyclic data of the drive: MDT = commands to the drive, AT = actual values from it. Add
-            IDNs the drive allows in that telegram (from its dictionary); the control / status word always comes first.</p>
-          <div class="cols2 even">
-            <div><h3>MDT</h3><table id="e-mdt"><tbody></tbody></table>
-              <div class="row"><input id="e-mdt-add" type="text" list="e-mdt-list" placeholder="S-0-0036 or a name"><button id="e-mdt-btn">Add</button></div>
-              <datalist id="e-mdt-list"></datalist></div>
-            <div><h3>AT</h3><table id="e-at"><tbody></tbody></table>
-              <div class="row"><input id="e-at-add" type="text" list="e-at-list" placeholder="S-0-0051 or a name"><button id="e-at-btn">Add</button></div>
-              <datalist id="e-at-list"></datalist></div>
-          </div>
-          <details><summary>SoE commands the configuration sends (generated)</summary>
-            <div class="scroll"><table id="e-soe-cmds"><thead><tr><th>IDN</th><th>Value</th><th>Comment</th></tr></thead><tbody></tbody></table></div>
-          </details>
-        </div>
-        <div class="row">
-          <button id="e-save" class="primary">Save</button>
-          <button id="e-reset">Back to defaults</button>
-          <span id="e-msg" class="muted"></span>
-        </div>
-      </div>
-
-      <div id="p-startup" class="panel" hidden>
-        <p class="hint">Parameters the master writes at every start-up (PreOp → SafeOp). Add them with "Startup" in the
-          "Objects (CoE)" or "Parameters (SoE)" tab; removing one here saves at once. The PDO assignment
-          (0x1C12/0x1C13) is added automatically.</p>
-        <div class="scroll"><table id="e-startup"><thead><tr><th>Object</th><th>Value</th><th>Transition</th><th>Comment</th>
-          <th></th></tr></thead><tbody></tbody></table></div>
       </div>
 
       <div id="p-objects" class="panel" hidden>
@@ -219,15 +154,115 @@
       </div>
     </section>
 
+  </main>
+
+  <main id="view-config" hidden>
+    <section class="card" id="cfg-card">
+      <div class="row head">
+        <h2>Device list</h2>
+        <button id="project-update" title="Replaces the list and all unwritten changes with what the Bus tab shows">Update from the active bus</button>
+      </div>
+      <p id="cfg-note" class="warn-note" hidden></p>
+      <div class="scroll">
+        <table id="cfg-devices">
+          <thead><tr><th>Pos</th><th>Name</th><th>Device</th><th>Revision</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="hint">The order of the list is the wiring order. Click a device for its settings and startup parameters; click a
+        name to rename it.</p>
+      <details id="add-box">
+        <summary>Add device from ESI</summary>
+        <p class="hint">New devices go to the bottom of the list; place them with the arrows. A device that is not on the bus is
+          assumed to be connected to port B of the device above it until it is scanned.</p>
+        <div class="row">
+          <div class="suggest-box">
+            <input id="add-device" type="text" placeholder="Search the ESI library" autocomplete="off" spellcheck="false">
+            <ul id="add-suggest" class="suggest" hidden></ul>
+          </div>
+          <input id="add-name" type="text" placeholder="Name (optional)" maxlength="64" autocomplete="off">
+        </div>
+        <p id="add-msg" class="form-msg" hidden></p>
+        <div class="row">
+          <button id="add" class="primary" disabled>Add device</button>
+        </div>
+      </details>
+    </section>
+
+    <section class="card" id="cdetail" hidden>
+      <div class="row head">
+        <h2 id="c-title"></h2>
+        <button id="c-close">Close</button>
+      </div>
+      <nav class="tabs subtabs">
+        <button id="d-edit" class="tab" data-panel="settings">Settings</button>
+        <button id="d-startup" class="tab" data-panel="startup">Startup</button>
+      </nav>
+
+      <div id="p-settings" class="panel" hidden>
+        <h3 id="e-title"></h3>
+        <p class="hint">Saved choices are used the next time you build the configuration; nothing is written to the master here.</p>
+        <div class="row">
+          <label class="check">Name <input id="e-name" type="text" maxlength="64"></label>
+        </div>
+        <div id="e-modules-box" hidden>
+          <h3>Modules</h3>
+          <p class="hint">A modular device: its process data comes from the module in each slot (from its ESI). The
+            master writes the module list, the PDO contents and the modules' startup commands.</p>
+          <div class="scroll"><table id="e-modules"><thead><tr><th>Slot</th><th>Module</th><th></th></tr></thead>
+            <tbody></tbody></table></div>
+        </div>
+        <div id="e-dc-box" hidden>
+          <h3>Distributed clocks</h3>
+          <div class="row"><select id="e-dc"></select><span id="e-dc-desc" class="muted"></span></div>
+        </div>
+        <h3>PDOs</h3>
+        <p id="e-reason" class="hint"></p>
+        <div class="scroll"><table id="e-pdos"><thead><tr><th>Use</th><th>Dir</th><th>Index</th><th>Name</th><th>Size</th>
+          <th>Rules</th></tr></thead><tbody></tbody></table></div>
+        <p id="e-sizes" class="muted"></p>
+        <div id="e-soe" hidden>
+          <h3>Drive telegrams (SoE)</h3>
+          <p class="hint">The cyclic data of the drive: MDT = commands to the drive, AT = actual values from it. Add
+            IDNs the drive allows in that telegram (from its dictionary); the control / status word always comes first.</p>
+          <div class="cols2 even">
+            <div><h3>MDT</h3><table id="e-mdt"><tbody></tbody></table>
+              <div class="row"><input id="e-mdt-add" type="text" list="e-mdt-list" placeholder="S-0-0036 or a name"><button id="e-mdt-btn">Add</button></div>
+              <datalist id="e-mdt-list"></datalist></div>
+            <div><h3>AT</h3><table id="e-at"><tbody></tbody></table>
+              <div class="row"><input id="e-at-add" type="text" list="e-at-list" placeholder="S-0-0051 or a name"><button id="e-at-btn">Add</button></div>
+              <datalist id="e-at-list"></datalist></div>
+          </div>
+          <details><summary>SoE commands the configuration sends (generated)</summary>
+            <div class="scroll"><table id="e-soe-cmds"><thead><tr><th>IDN</th><th>Value</th><th>Comment</th></tr></thead><tbody></tbody></table></div>
+          </details>
+        </div>
+        <div class="row">
+          <button id="e-save" class="primary">Save</button>
+          <button id="e-reset">Back to defaults</button>
+          <span id="e-msg" class="muted"></span>
+        </div>
+      </div>
+
+      <div id="p-startup" class="panel" hidden>
+        <p class="hint">Parameters the master writes at every start-up (PreOp → SafeOp). Add them with "Startup" in the
+          "Objects (CoE)" or "Parameters (SoE)" tab; removing one here saves at once. The PDO assignment
+          (0x1C12/0x1C13) is added automatically.</p>
+        <div class="scroll"><table id="e-startup"><thead><tr><th>Object</th><th>Value</th><th>Transition</th><th>Comment</th>
+          <th></th></tr></thead><tbody></tbody></table></div>
+      </div>
+    </section>
+
     <section class="card" id="config-card">
       <div class="row head">
-        <h2>Configuration</h2>
+        <h2>Build configuration</h2>
         <label class="check">Cycle time <input id="cycle" type="number" min="125" max="100000" step="125"> µs</label>
         <button id="build" class="primary">Build configuration</button>
       </div>
-      <p class="hint">Builds the bus configuration (ENI + ini) for the devices in the list above, present or not: each device from
-        its ESI (without one: from the current configuration, else from its EEPROM), keeping the current configuration's choices for each device
-        (paired by device type in bus order, so inserting a device doesn't lose the others' settings). Nothing is written until you press "Write to the EtherCAT master". If the master can't take it, it goes to its files and takes effect at the next master start.</p>
+      <p class="hint">Builds the bus configuration (ENI + ini) for exactly the devices in the list above, present or not: each
+        device from its ESI (without one: from the configuration the list started from, else from its EEPROM), with the
+        settings the list kept for it. Nothing is written until you press "Write to the EtherCAT master". If the master
+        can't take it, it goes to its files and takes effect at the next master start. The list stays after a write.</p>
       <div id="plan" hidden>
         <p id="plan-summary"></p>
         <ul id="plan-messages" class="findings"></ul>
@@ -247,15 +282,17 @@
       </div>
       <details id="saved-box">
         <summary>Saved configurations</summary>
-        <p class="hint">Saves the configuration the master runs now, with this app's settings (names, PDOs, telegrams,
-          startup parameters). "Activate" writes it back (the current one is backed up first; the bus stops briefly).
-          Also by REST (<code>POST api/v1/saved/&lt;name&gt;/activate</code>) or the Data Layer (write the name to
+        <p class="hint"><b>Active</b> saves the ENI/ini the master runs now (no settings). <b>Proposed</b> saves this list with its
+          settings and the ENI/ini built from it. "Activate" writes a saved configuration to the master (the current one is backed
+          up first; the bus stops briefly; the list is not changed). "Open" makes it the device list. Also by REST
+          (<code>POST api/v1/saved/&lt;name&gt;/activate</code>) or the Data Layer (write the name to
           <code>io-config/activate</code>, state in <code>io-config/activation/state</code>).</p>
         <div class="row">
           <input id="save-name" type="text" maxlength="64" placeholder="Name, e.g. Line A">
-          <button id="save-current">Save current configuration</button>
+          <button id="save-active">Save active configuration</button>
+          <button id="save-proposed">Save proposed configuration</button>
         </div>
-        <div class="scroll"><table id="saved"><thead><tr><th>Name</th><th>Saved</th><th>Devices</th><th></th><th></th></tr></thead>
+        <div class="scroll"><table id="saved"><thead><tr><th>Name</th><th>Kind</th><th>Saved</th><th>Devices</th><th></th><th></th></tr></thead>
           <tbody></tbody></table></div>
       </details>
       <details id="backups-box">

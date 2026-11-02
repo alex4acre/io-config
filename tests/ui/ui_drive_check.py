@@ -82,11 +82,16 @@ try:
     check(until("document.querySelectorAll('#devices tbody tr').length === 5", 20), "scan shows 5 devices")
     row4 = js("return [...document.querySelectorAll('#devices tbody tr')[4].cells].map(c => c.textContent)")
     check(row4[1] == "ctrlX DRIVE XCS2-F/H (SoE)" and row4[5] == "Init" and row4[6] == "other rev.", f"drive row {row4}")
+    check(row4[7] == "not in active configuration", f"the drive is flagged on the Bus tab: {row4[7]}")
+    check(js("return document.querySelectorAll('#devices tbody tr')[4].cells[7].firstChild.classList.contains('warn')"), "as a warn badge")
     js("document.querySelectorAll('#devices tbody tr')[4].click();")
     check(until("document.getElementById('d-title').textContent.startsWith('4:')"), "drive detail opens")
     check(js("return document.getElementById('d-objects').hidden && !document.getElementById('d-soe').hidden"),
           "SoE button shown, CoE button hidden")
-    check(js("return !document.getElementById('d-startup').hidden"), "drive keeps the Startup tab (SoE)")
+    js("document.getElementById('tab-config').click(); document.querySelectorAll('#cfg-devices tbody tr')[4].cells[2].click();")
+    check(until("!document.getElementById('cdetail').hidden && !document.getElementById('d-startup').hidden"),
+          "drive keeps the Startup tab (SoE) on the Configuration card")
+    js("document.getElementById('tab-bus').click();")
 
     js("document.getElementById('d-soe').click();")
     check(until("document.querySelectorAll('#s-list tbody tr').length > 100", 15), "SoE parameter list loads")
@@ -98,7 +103,7 @@ try:
           "online read explains the unconfigured drive")
     shot("soe-unconfigured")
 
-    js("document.getElementById('d-edit').click();")
+    js("document.getElementById('tab-config').click(); document.getElementById('d-edit').click();")
     check(until("!document.getElementById('e-soe').hidden && document.querySelectorAll('#e-at tbody tr').length === 7"),
           "editor shows the AT with 7 IDNs")
     js("document.getElementById('e-at-add').value = 'S-0-0051 Encoder'; document.getElementById('e-at-btn').click();")
@@ -111,7 +116,7 @@ try:
     check(until("document.querySelector('#plan-devices tbody').textContent.includes('Drive1')"), "plan lists Drive1")
     js("window.confirm = () => true; document.getElementById('write').click();")
     check(until("document.getElementById('dl-title').textContent === 'Written'", 30), "edited drive configuration written")
-    js("document.getElementById('d-soe').click();")
+    js("document.getElementById('tab-bus').click(); document.getElementById('d-soe').click();")
     check(until("!document.getElementById('p-soe').hidden"), "Parameters tab")
     js("document.querySelector('#s-list tbody tr').click();")
     check(until("document.getElementById('s-param').textContent.includes('Value')", 15), "S-0-0047 read online once configured")

@@ -110,7 +110,7 @@ function row(tbody, cells, attrs) {
 
 const SOURCE_TEXT = {
   esi: { exact: ["exact", "ok"], nearest: ["other rev.", "warn"], none: ["missing", "bad"], error: ["error", "bad"] },
-  eni: { same: ["same", "ok"], revision: ["other rev.", "warn"], different: ["different", "bad"], none: ["not configured", "warn"], "not found": ["not on bus", "bad"] },
+  eni: { same: ["same", "ok"], revision: ["other rev.", "warn"], different: ["different", "bad"], none: ["not in active configuration", "warn"], "not found": ["not on bus", "bad"] },
   eeprom: { read: ["read", "ok"], error: ["error", "warn"], "not read": ["not read", "muted"] },
 };
 
@@ -128,13 +128,18 @@ function levelBadge(level, count) {
 
 // --- views --------------------------------------------------------------------------------------
 
+let currentView = "bus";
+
 function show(view) {
   banner("");
   for (const t of document.querySelectorAll("header .tab")) t.classList.toggle("active", t.dataset.view === view);
   $("view-bus").hidden = view !== "bus";
+  $("view-config").hidden = view !== "config";
   $("view-esi").hidden = view !== "esi";
+  currentView = view;
   try { sessionStorage.setItem("view", view); } catch (e) { /* not needed */ }
   if (view === "esi") loadEsi();
+  if (view === "bus") refreshLive();
 }
 
 for (const t of document.querySelectorAll("header .tab")) t.onclick = () => show(t.dataset.view);
@@ -142,26 +147,41 @@ for (const t of document.querySelectorAll("header .tab")) t.onclick = () => show
 // --- bus ----------------------------------------------------------------------------------------
 
 let lastFinished = null;
-let selected = null;
-let configuring = false;                         // the list is a project: a configuration, no live data
+let selected = null;                             // the open device of the Bus tab (its position on the Bus tab)
+let cselected = null;                            // the open device of the Configuration tab (its row)
+let cfgDevices = [];
+
+function stateBadge(state, requested, reason) {
+  const cls = state === "op" ? "ok" : (!state || state === "unavailable" || state === "unknown") ? "bad" : "warn";
+  const text = (state || "unknown") + (requested && requested !== state ? ` (requested ${requested})` : "");
+  return el("span", { class: "badge big " + cls, title: reason || "" }, text);
+}
 
 function renderState(s) {
   $("conn").textContent = s.connected ? "Data Layer connected" : "Data Layer offline";
   $("conn").className = "chip " + (s.connected ? "ok" : "bad");
   $("instance").textContent = s.instance;
-  $("scan").disabled = s.scan.running || s.download.running;
+  const downloading = s.download.running;
+  const requesting = s.master_request.running;
+  const busyNow = s.scan.running || downloading || requesting;
+  $("scan").disabled = busyNow;
   $("progress").textContent = s.scan.running ? "Scanning: " + s.scan.progress : "";
   setBusy("scan", s.scan.running ? "Scanning the bus" : null);
-  setBusy("download", s.download.running ? (s.activation.state === "running" ? `Activating "${s.activation.name}"`
+  setBusy("download", downloading ? (s.activation.state === "running" ? `Activating "${s.activation.name}"`
     : "Writing to the EtherCAT master") : null);
+  setBusy("master", requesting ? `Requesting ${s.master_request.requested === "op" ? "Op" : "Init"}` : null);
   if (s.scan.error && !s.scan.running && s.scan.finished !== lastFinished) banner("Scan: " + s.scan.error);
+  scanState = { busy: busyNow };
+  $("m-request").hidden = !s.master_request.message;
+  $("m-request").textContent = s.master_request.message;
+  renderPhase();
 
   const m = s.master;
   $("noscan").hidden = !!m;
   $("master").hidden = !m;
   if (m) {
-    $("m-state").textContent = (m.state === m.requested || !m.requested ? m.state : `${m.state} (requested ${m.requested})`) +
-      (m.error ? " - " + m.error : "");   // stays visible: the banner goes when a device card opens
+    scanReason = m.error || "";
+    if (!liveStamp) setMasterState(m.state, m.requested, m.error);
     $("m-devices").textContent = `${m.connected} connected, ${m.configured} configured`;
     $("m-topology").textContent = m.topology;
     $("m-cycle").textContent = m.cycle_us ? m.cycle_us + " µs" : "-";
@@ -172,39 +192,105 @@ function renderState(s) {
     $("m-time").textContent = s.scan.finished ? new Date(s.scan.finished * 1000).toLocaleString() : "-";
   }
 
-  configuring = s.project;
-  $("config-flag").hidden = !s.project;
-  $("hint-pd").hidden = s.project;                // no process data in the configuration state
-  $("project-reset").hidden = !s.project;
   const tbody = $("devices").tBodies[0];
-  if (!renaming) {                               // the poll must not take the name field away while it is typed in
-    tbody.replaceChildren();
-    for (const d of s.devices) {
-      const name = el("td", { class: "name", title: "Click to rename" }, d.name);
-      name.onclick = (ev) => {
-        ev.stopPropagation();
-        startRename(d, name);
-      };
-      const tr = row(tbody, [
-        d.position, name, d.description, d.address ?? "-", hex(d.revision, 8),
-        d.present || configuring ? d.state : el("span", { class: "badge warn" }, "not present"),
-        badge("esi", d.sources.esi), badge("eni", d.sources.eni), badge("eeprom", d.sources.eeprom),
-        levelBadge(d.level, d.findings), rowTools(d, s.devices.length, s.scan.running || s.download.running),
-      ], { class: "click" + (d.position === selected ? " selected" : "") });
-      tr.onclick = () => openDevice(d.position);
-    }
+  tbody.replaceChildren();
+  for (const d of s.devices) {
+    const tr = row(tbody, [
+      d.position, d.name, d.description, d.address ?? "-", hex(d.revision, 8),
+      d.present ? d.state : el("span", { class: "badge warn" }, "not present"),
+      badge("esi", d.sources.esi), badge("eni", d.sources.eni), badge("eeprom", d.sources.eeprom),
+      levelBadge(d.level, d.findings),
+    ], { class: "click" + (d.position === selected ? " selected" : "") });
+    tr.onclick = () => openDevice(d.position);
   }
+  renderConfiguration(s, downloading);
   if (s.scan.finished !== lastFinished) {
     lastFinished = s.scan.finished;
     if (selected !== null) openDevice(selected);
+    if (cselected !== null) openCfgDevice(cselected);
     dropPlan();                     // a new scan makes a built configuration stale
   }
   renderConfig(s);
 }
 
+// --- the master's state, live without a scan, and phasing up or down --------------------------------
+
+let liveStamp = 0;                               // when the live state was read last (0: not yet)
+let liveState = null;                            // {state, requested, error}
+let scanReason = "";
+let scanState = { busy: false };
+
+function setMasterState(state, requested, error) {
+  $("m-live").replaceChildren(stateBadge(state, requested, error));
+  $("m-reason").textContent = error ? " - " + error : "";
+}
+
+function renderPhase() {
+  const unreadable = !liveState || liveState.error || liveState.state === "unavailable";
+  for (const [id, text] of [["phase-up", "Requests Op on the real bus: devices start exchanging process data"],
+    ["phase-down", "Requests Init: all devices leave Op and outputs stop"]]) {
+    $(id).disabled = scanState.busy || !!unreadable;
+    $(id).title = unreadable ? "The master can't be read" + (liveState && liveState.error ? ": " + liveState.error : "")
+      : scanState.busy ? "Not while a scan or download runs" : text;
+  }
+}
+
+async function refreshLive() {
+  if (currentView !== "bus") return;
+  try {
+    liveState = await api("GET", "/master/state");
+    liveStamp = Date.now();
+    setMasterState(liveState.state, liveState.requested, liveState.error);
+  } catch (e) {
+    liveState = { state: "unavailable", requested: "", error: e.message };
+    setMasterState("unavailable", "", e.message);
+  }
+  renderPhase();
+}
+
+async function phase(state, text) {
+  if (!confirm(text)) return;
+  try {
+    banner("");
+    await api("POST", "/master/state", { state });
+    $("phase-up").disabled = $("phase-down").disabled = true;
+    poll();
+  } catch (e) {
+    banner(e.message);
+  }
+}
+
+$("phase-up").onclick = () => phase("op", "Requests Op on the real bus: devices start exchanging process data.\n\nPhase up?");
+$("phase-down").onclick = () => phase("init", "Requests Init: all devices leave Op and outputs stop.\n\nPhase down?");
+
 function dropPlan() {
   plan = null;
   $("plan").hidden = true;
+}
+
+// --- the Configuration list ---------------------------------------------------------------------------
+
+function renderConfiguration(s, downloading) {
+  const c = s.configuration;
+  cfgDevices = c.devices;
+  const note = $("cfg-note");
+  note.hidden = !(c.differs || !c.exists);
+  note.textContent = !c.exists ? "There is no list yet: scan the bus, or add devices." :
+    "The list differs from the Bus tab. \"Update from the active bus\" takes over what the Bus tab shows.";
+  $("project-update").disabled = s.scan.running || downloading || s.master_request.running || !s.devices.length;
+  if (renaming) return;                          // the poll must not take the name field away while it is typed in
+  const tbody = $("cfg-devices").tBodies[0];
+  tbody.replaceChildren();
+  for (const d of c.devices) {
+    const name = el("td", { class: "name", title: "Click to rename" }, d.name);
+    name.onclick = (ev) => {
+      ev.stopPropagation();
+      startRename(d, name);
+    };
+    const tr = row(tbody, [d.position, name, d.description, hex(d.revision, 8), rowTools(d, c.devices.length, downloading)],
+      { class: "click" + (d.position === cselected ? " selected" : "") });
+    tr.onclick = () => openCfgDevice(d.position);
+  }
 }
 
 // --- project: devices added from the ESI library ---------------------------------------------------
@@ -214,9 +300,10 @@ async function projectChange(fn) {
     banner("");
     await fn();
     dropPlan();
-    if (selected !== null) {
-      selected = null;
-      $("detail").hidden = true;
+    if (cselected !== null) {
+      cselected = null;
+      editPos = null;
+      $("cdetail").hidden = true;
     }
     poll();
   } catch (e) {
@@ -224,9 +311,14 @@ async function projectChange(fn) {
   }
 }
 
+const TRASH = '<svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" ' +
+  'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 5.5h13M8 5.5V3.5h4v2M5.5 5.5l.8 11h7.4l.8-11M8.5 8.5v5.5M11.5 8.5v5.5"/></svg>';
+
 function rowTools(d, total, busy) {
-  const tool = (text, title, disabled, fn) => {
-    const b = el("button", { class: "small", title }, text);
+  const tool = (content, title, disabled, fn, cls) => {
+    const b = el("button", { class: "small " + (cls || ""), title, "aria-label": title });
+    if (content.startsWith("<")) b.innerHTML = content;
+    else b.textContent = content;
     b.disabled = disabled || busy;
     b.onclick = (ev) => {
       ev.stopPropagation();
@@ -238,7 +330,7 @@ function rowTools(d, total, busy) {
   return el("span", { class: "row-tools" },
     tool("▲", "Move up in the list", d.position === 0, move(-1)),
     tool("▼", "Move down in the list", d.position === total - 1, move(1)),
-    tool("Remove", "Remove from the list", false, () => api("DELETE", "/project/devices/" + d.position)));
+    tool(TRASH, "Remove", false, () => api("DELETE", "/project/devices/" + d.position), "icon"));
 }
 
 // --- rename in the table: click the name, Enter or leaving saves, Esc cancels ------------------------
@@ -261,7 +353,7 @@ function startRename(d, cell) {
         banner("");
         await api("PUT", `/devices/${d.position}/edit`, { name });
         dropPlan();
-        if (selected === d.position) openDevice(d.position);
+        if (cselected === d.position) openCfgDevice(d.position);
       } catch (e) {
         banner(e.message);
       }
@@ -282,6 +374,7 @@ function startRename(d, cell) {
 // --- add a device: one input with a suggestion list of the ESI library ---------------------------------
 
 const sugText = (d) => `${d.type} - ${d.name} (revision ${hex(d.revision, 8)})`;
+const NAME_RULE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 let addPick = null;          // the device picked from the list; null until one is
 let sugItems = [];
 let sugActive = -1;          // the highlighted item, -1 = none
@@ -289,9 +382,21 @@ let sugTyped = null;         // what was typed before the arrow keys started fil
 let sugId = 0;
 let sugTimer = null;
 
+// The message line above the Add button: what is wrong now, else what the server refused; the button follows it.
+function checkAdd(serverMessage) {
+  const typed = $("add-device").value.trim();
+  const name = $("add-name").value.trim();
+  let msg = serverMessage || "";
+  if (!msg && typed && !addPick) msg = "Pick a device from the list";
+  if (!msg && name && !NAME_RULE.test(name)) msg = "The name must start with a letter and contain only letters, digits and _ (max 64)";
+  $("add-msg").textContent = msg;
+  $("add-msg").hidden = !msg;
+  $("add").disabled = !addPick || !!msg;
+}
+
 function setPick(d) {
   addPick = d;
-  $("add").disabled = !d;
+  checkAdd();
 }
 
 function hideSuggest() {
@@ -367,31 +472,38 @@ $("add-device").onkeydown = (ev) => {
   } else if (ev.key === "Enter") {
     ev.preventDefault();
     if (open && sugActive >= 0) pickSuggest(sugActive);
-    else if (addPick) $("add").click();
+    else if (!$("add").disabled) $("add").click();
   } else if (ev.key === "Escape" && open) {
     if (sugTyped !== null) $("add-device").value = sugTyped;
     hideSuggest();
+    checkAdd();
   }
 };
-$("add-name").onkeydown = (ev) => { if (ev.key === "Enter" && addPick) $("add").click(); };
+$("add-name").oninput = () => checkAdd();
+$("add-name").onkeydown = (ev) => { if (ev.key === "Enter" && !$("add").disabled) $("add").click(); };
 $("add-box").ontoggle = () => { if ($("add-box").open) $("add-device").focus(); };
 
-$("add").onclick = () => {
+$("add").onclick = async () => {
   const d = addPick;
   if (!d) return;
   const body = { vendor: d.vendor, product: d.product, revision: d.revision };
   const name = $("add-name").value.trim();
   if (name) body.name = name;
-  projectChange(async () => {
+  try {
+    banner("");
     await api("POST", "/project/devices", body);
-    $("add-device").value = "";                // only after it worked: a refused name stays to be corrected
-    $("add-name").value = "";
-    setPick(null);
-  });
+  } catch (e) {
+    checkAdd(e.message);                       // what the server refused, above the button; the form stays
+    return;
+  }
+  $("add-device").value = "";
+  $("add-name").value = "";
+  setPick(null);
+  projectChange(async () => {});
 };
-$("project-reset").onclick = () => {
-  if (confirm("Forget the added, moved and removed devices and go back to the devices of the running configuration?")) {
-    projectChange(() => api("DELETE", "/project"));
+$("project-update").onclick = () => {
+  if (confirm("Replaces the list and all unwritten changes with what the Bus tab shows.\n\nUpdate the list from the active bus?")) {
+    projectChange(() => api("POST", "/project/update", { confirm: true }));
   }
 };
 
@@ -424,18 +536,57 @@ function sourceCell(s, fmt) {
 let panel = "pd";
 
 function showPanel(name) {
-  if ($("d-" + (name === "settings" ? "edit" : name)).hidden) name = $("d-pd").hidden ? "settings" : "pd";
+  if ($("d-" + name).hidden) name = $("d-pd").hidden ? "info" : "pd";
   panel = name;
-  for (const t of document.querySelectorAll(".subtabs .tab")) t.classList.toggle("active", t.dataset.panel === name);
+  for (const t of document.querySelectorAll("#detail .subtabs .tab")) t.classList.toggle("active", t.dataset.panel === name);
   for (const p of document.querySelectorAll("#detail .panel")) p.hidden = p.id !== "p-" + name;
   banner("");
   if (name === "pd") loadPd(true);
-  if ((name === "settings" || name === "startup") && editPos !== selected) openEditor(selected);
   if (name === "objects" && objPos !== selected) openObjects(selected);
   if (name === "soe" && soePos !== selected) openSoeList(selected);
 }
 
-for (const t of document.querySelectorAll(".subtabs .tab")) t.onclick = () => { if (selected !== null) showPanel(t.dataset.panel); };
+for (const t of document.querySelectorAll("#detail .subtabs .tab")) t.onclick = () => { if (selected !== null) showPanel(t.dataset.panel); };
+
+// The Configuration tab's device card: Settings and Startup of one row of the list
+let cpanel = "settings";
+
+function showCfgPanel(name) {
+  if ($("d-" + (name === "settings" ? "edit" : name)).hidden) name = "settings";
+  cpanel = name;
+  for (const t of document.querySelectorAll("#cdetail .subtabs .tab")) t.classList.toggle("active", t.dataset.panel === name);
+  for (const p of document.querySelectorAll("#cdetail .panel")) p.hidden = p.id !== "p-" + name;
+  banner("");
+  if (editPos !== cselected) openEditor(cselected);
+}
+
+for (const t of document.querySelectorAll("#cdetail .subtabs .tab")) t.onclick = () => { if (cselected !== null) showCfgPanel(t.dataset.panel); };
+
+function openCfgDevice(pos) {
+  const d = cfgDevices.find((x) => x.position === pos);
+  if (!d) {
+    cselected = null;
+    $("cdetail").hidden = true;
+    return;
+  }
+  const other = pos !== cselected;
+  cselected = pos;
+  editPos = null;                             // settings depend on the scan: reloaded when their tab is shown
+  const mailbox = d.mailbox || [];
+  $("d-startup").hidden = !mailbox.includes("CoE") && !mailbox.includes("SoE");
+  for (const tr of $("cfg-devices").tBodies[0].rows) tr.classList.toggle("selected", Number(tr.cells[0].textContent) === pos);
+  $("cdetail").hidden = false;
+  $("c-title").textContent = `${d.position}: ${d.name}`;
+  showCfgPanel(other ? "settings" : cpanel);
+  if (other) $("cdetail").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+$("c-close").onclick = () => {
+  cselected = null;
+  editPos = null;
+  $("cdetail").hidden = true;
+  for (const tr of $("cfg-devices").tBodies[0].rows) tr.classList.remove("selected");
+};
 
 async function openDevice(pos) {
   let d;
@@ -448,7 +599,6 @@ async function openDevice(pos) {
   }
   const other = pos !== selected;
   selected = pos;
-  editPos = null;                             // settings depend on the scan: reloaded when their tab is shown
   if (other) {
     objPos = soePos = null;
     $("d-writable").checked = false;            // writing is allowed per device, never carried over
@@ -456,14 +606,9 @@ async function openDevice(pos) {
   const protocols = d.sources.eeprom.mailbox || [];
   const known = d.sources.eeprom.match === "read" || protocols.length > 0;   // EEPROM read: its mailbox protocols count
   $("d-writable").disabled = !d.present;
-  $("d-writable").closest("label").hidden = configuring;
   $("d-pd").hidden = !d.present;
   $("d-objects").hidden = !d.present || (known && !protocols.includes("CoE"));
   $("d-soe").hidden = !d.present || !protocols.includes("SoE");
-  // startup parameters go through the CoE or SoE mailbox: none for devices without one (XI190202, XI112108, ...);
-  // an absent device has no EEPROM, its ESI tells
-  const mailbox = d.present ? (known ? protocols : ["CoE", "SoE"]) : (d.mailbox || []);
-  $("d-startup").hidden = !mailbox.includes("CoE") && !mailbox.includes("SoE");
   for (const tr of $("devices").tBodies[0].rows) tr.classList.toggle("selected", Number(tr.cells[0].textContent) === pos);
   $("detail").hidden = false;
   $("d-title").textContent = `${d.position}: ${d.name}`;
@@ -525,7 +670,7 @@ async function openDevice(pos) {
     (modes.length > 6 ? `; ... ${modes.length} in all` : "") : "-");
 
   if (other) {
-    showPanel(d.present ? "pd" : "settings");
+    showPanel(d.present ? "pd" : "info");
     $("detail").scrollIntoView({ behavior: "smooth", block: "nearest" });
   } else {
     showPanel(panel);
@@ -538,7 +683,7 @@ let plan = null;
 let downloadFinished = null;
 
 function renderConfig(s) {
-  const busy = s.scan.running || s.download.running;
+  const busy = s.scan.running || s.download.running || s.master_request.running;
   $("build").disabled = busy;
   $("write").disabled = busy || !plan || plan.errors.length > 0;
   if (s.master && !$("cycle").value && s.master.cycle_us) $("cycle").value = s.master.cycle_us;
@@ -674,9 +819,13 @@ async function loadSaved() {
     const r = await api("GET", "/saved");
     const tb = $("saved").tBodies[0];
     tb.replaceChildren();
-    if (!r.configurations.length) row(tb, [el("span", { class: "muted" }, "none yet"), "", "", "", ""]);
+    if (!r.configurations.length) row(tb, [el("span", { class: "muted" }, "none yet"), "", "", "", "", ""]);
     for (const c of r.configurations) {
       const activate = el("button", { class: "small" }, "Activate");
+      if (c.error) {
+        activate.disabled = true;
+        activate.title = "Can't be activated: " + c.error;
+      }
       activate.onclick = async () => {
         if (!confirm(`Activate the saved configuration "${c.name}"?\n\n` + WRITE_WARNING)) return;
         try {
@@ -687,8 +836,17 @@ async function loadSaved() {
           banner(e.message);
         }
       };
+      const open = el("button", { class: "small", title: "Make it the device list of the Configuration tab" }, "Open");
+      open.onclick = () => {
+        if (!confirm(`Replaces the list and all unwritten changes with the saved configuration "${c.name}".\n\nOpen it?`)) return;
+        projectChange(() => api("POST", `/saved/${encodeURIComponent(c.name)}/open`, { confirm: true }));
+      };
       const get = el("button", { class: "small" }, "ENI");
       get.onclick = () => getFile(`/saved/${encodeURIComponent(c.name)}/eni`, `${c.name}-ethercat.xml`);
+      if (c.error) {
+        get.disabled = true;
+        get.title = "Could not be built: " + c.error;
+      }
       const del = el("button", { class: "small" }, "Delete");
       del.onclick = async () => {
         if (!confirm(`Delete the saved configuration "${c.name}"?`)) return;
@@ -699,32 +857,36 @@ async function loadSaved() {
           banner(e.message);
         }
       };
-      row(tb, [c.name, new Date(c.time * 1000).toLocaleString(), c.devices.join(", "),
-        c.active ? el("span", { class: "badge ok" }, "running") : "", el("span", {}, activate, " ", get, " ", del)]);
+      const kind = el("span", { class: "badge " + (c.kind === "proposed" ? "warn" : "ok") }, c.kind === "proposed" ? "Proposed" : "Active");
+      row(tb, [c.name, kind, new Date(c.time * 1000).toLocaleString(), c.error ? el("span", { class: "error" }, "not built: " + c.error) : c.devices.join(", "),
+        c.active ? el("span", { class: "badge ok" }, "running") : "", el("span", {}, activate, " ", open, " ", get, " ", del)]);
     }
   } catch (e) {
     banner(e.message);
   }
 }
 
-async function saveCurrent(overwrite) {
+async function saveSaved(kind, overwrite) {
   const name = $("save-name").value.trim();
   if (!name) { banner("Enter a name first"); return; }
   try {
     banner("");
-    await api("POST", "/saved", { name, overwrite });
+    const cycle = Number($("cycle").value);
+    await api("POST", "/saved", { name, kind, overwrite, ...(kind === "proposed" && cycle ? { cycle_us: cycle } : {}) });
     $("save-name").value = "";
-    banner(`Saved the running configuration as "${name}".`, true);
+    banner(kind === "proposed" ? `Saved the device list as the proposed configuration "${name}".`
+      : `Saved the running configuration as "${name}".`, true);
     loadSaved();
   } catch (e) {
-    if (!overwrite && e.message.includes("saved already") && confirm(`"${name}" exists. Replace it?`)) saveCurrent(true);
+    if (!overwrite && e.message.includes("saved already") && confirm(`"${name}" exists. Replace it?`)) saveSaved(kind, true);
     else banner(e.message);
   }
 }
 
 $("saved-box").ontoggle = () => { if ($("saved-box").open) loadSaved(); };
-$("save-current").onclick = () => saveCurrent(false);
-$("save-name").onkeydown = (ev) => { if (ev.key === "Enter") saveCurrent(false); };
+$("save-active").onclick = () => saveSaved("active", false);
+$("save-proposed").onclick = () => saveSaved("proposed", false);
+$("save-name").onkeydown = (ev) => { if (ev.key === "Enter") saveSaved("active", false); };
 
 // --- writable switch of the open device (not saved) ----------------------------------------------------
 
@@ -866,7 +1028,7 @@ function renderSoeEditor() {
 async function fillSoeSuggestions(key) {
   const mark = key === "mdt" ? "r" : "t";
   try {
-    const r = await api("GET", `/devices/${editPos}/soe?mapping=${mark}&limit=1000`);
+    const r = await api("GET", `/devices/${editPos}/soe?cfg=1&mapping=${mark}&limit=1000`);
     $(`e-${key}-list`).replaceChildren(...r.parameters.map((p) => el("option", { value: `${p.text} ${p.name}` })));
     for (const p of r.parameters) soeLists.names[p.idn] = `${p.name} (${p.bits} bit)`;
   } catch (e) { /* no dictionary */ }
@@ -1030,10 +1192,10 @@ async function openObject(index) {
       keep.title = "Keep this value as a startup parameter in the configuration";
       keep.onclick = async () => {
         try {
-          await api("POST", `/devices/${objPos}/edit/startup`, { index: o.index, subindex: e.subindex, value: input.value });
-          banner(`Startup parameter ${hex(o.index)}:${e.subindex} = ${input.value} saved for position ${objPos}. ` +
-            "Build the configuration to apply it.", true);
-          if (editPos === objPos) openEditor(objPos);
+          const r = await api("POST", `/devices/${objPos}/edit/startup`, { index: o.index, subindex: e.subindex, value: input.value });
+          banner(`Startup parameter ${hex(o.index)}:${e.subindex} = ${input.value} saved for Configuration position ` +
+            `${r.configuration_position}. Build the configuration to apply it.`, true);
+          if (editPos === r.configuration_position) openEditor(editPos);
         } catch (err) {
           banner(err.message);
         }
@@ -1118,10 +1280,10 @@ $("s-write").onclick = async () => {
 };
 $("s-startup").onclick = async () => {
   try {
-    await api("POST", `/devices/${soePos}/edit/startup`, { idn: soeIdn, value: $("s-value").value });
-    banner(`Startup parameter ${idnText(soeIdn)} = ${$("s-value").value} saved for position ${soePos}. ` +
-      "Build the configuration to apply it.", true);
-    if (editPos === soePos) openEditor(soePos);
+    const r = await api("POST", `/devices/${soePos}/edit/startup`, { idn: soeIdn, value: $("s-value").value });
+    banner(`Startup parameter ${idnText(soeIdn)} = ${$("s-value").value} saved for Configuration position ` +
+      `${r.configuration_position}. Build the configuration to apply it.`, true);
+    if (editPos === r.configuration_position) openEditor(editPos);
   } catch (e) {
     banner(e.message);
   }
@@ -1300,3 +1462,5 @@ try { startView = sessionStorage.getItem("view") || "bus"; } catch (e) { /* defa
 show(startView);
 poll();
 setInterval(poll, 1000);
+setInterval(() => { if (!document.hidden) refreshLive(); }, 2000);
+checkAdd();

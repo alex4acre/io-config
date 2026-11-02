@@ -80,8 +80,8 @@ try:
     check(until("document.getElementById('conn').classList.contains('ok')"), "connection chip is green")
     js("document.getElementById('scan').click();")
     check(until("document.querySelectorAll('#devices tbody tr').length === 5", 20), "scan shows 5 devices")
-    js("document.querySelectorAll('#devices tbody tr')[4].click();")
-    check(until("document.getElementById('d-title').textContent.startsWith('4:')"), "Elmo detail opens")
+    js("document.getElementById('tab-config').click(); document.querySelectorAll('#cfg-devices tbody tr')[4].cells[2].click();")
+    check(until("document.getElementById('c-title').textContent.startsWith('4:')"), "Elmo card of the Configuration tab opens")
     js("document.getElementById('d-edit').click();")
     check(until("!document.getElementById('e-modules-box').hidden && document.querySelectorAll('#e-modules tbody tr').length === 5"),
           "Settings shows 5 slots")
@@ -109,7 +109,7 @@ try:
     check(until("document.querySelector('#plan-devices tbody').textContent.includes('Elmo1')"), "plan lists Elmo1")
     js("window.confirm = () => true; document.getElementById('write').click();")
     check(until("document.getElementById('dl-title').textContent === 'Written'", 30), "configuration written")
-    js("document.querySelectorAll('#devices tbody tr')[4].click();")
+    js("document.getElementById('tab-bus').click(); document.querySelectorAll('#devices tbody tr')[4].click();")
     check(until("document.body.textContent.includes('Axis1_Slot2 = Cyclic Position Mode')", 15), "Info lists the modules")
     shot("elmo-written")
 finally:

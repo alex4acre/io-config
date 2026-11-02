@@ -50,6 +50,7 @@ main { display: grid; gap: 16px; padding: 24px 32px 60px; }
 .row.head { margin: 0 0 8px; }
 .row.head h2, .row.head h3 { margin: 0; flex: 1; }
 .row.head h3 { border: 0; padding: 0; }
+.row.head h2.fit { flex: none; margin-right: 8px; }
 .spacer { flex: 1; }
 .cols2 { display: grid; grid-template-columns: minmax(260px, 1fr) 2fr; gap: 16px; }
 .cols2.even { grid-template-columns: 1fr 1fr; }
@@ -166,6 +167,11 @@ tr.default td:first-child::after { content: " (default)"; color: var(--muted); f
 .badge.bad { background: var(--err-bg); }
 .badge.muted { color: var(--muted); }
 .badge.small { font-size: 11px; }
+.badge.big { font-size: 15px; padding: 3px 14px; }
+.warn-note { background: var(--warn-bg); color: var(--text); padding: 8px 12px; margin: 0 0 12px; }
+.form-msg { color: var(--err); font-size: 14px; margin: 0 0 6px; }
+button.icon { display: inline-flex; align-items: center; justify-content: center; padding: 0 8px; }
+button.icon svg { display: block; }
 
 .findings { margin: 8px 0; padding-left: 20px; }
 .findings li { margin: 2px 0; }
