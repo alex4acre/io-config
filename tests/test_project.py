@@ -110,6 +110,8 @@ class DriveProjectTest(unittest.TestCase):
                 self.core.esi.add(name, read(os.path.join(folder, name)))
         self.core.start_scan()
         self.core.wait_scan()
+        for d in self.core.state()["configuration"]["unconfigured"]:
+            self.core.project_add_from_bus(d["bus_pos"])
 
     def tearDown(self):
         self.core.stop()
@@ -242,7 +244,7 @@ class ProjectTest(unittest.TestCase):
         self.core.save_edit(2, {"name": "Analog"})
         self.assertEqual(self.add("XI522001"), 4)
         s = self.core.state()["configuration"]
-        self.assertEqual([d["present"] for d in s["devices"]], [False] * 5)       # the list has no live data
+        self.assertEqual([d["present"] for d in s["devices"]], [True] * 4 + [False])       # the added one isn't on the bus
         self.assertEqual([d["state"] for d in s["devices"]], ["-"] * 5)
         self.assertEqual(self.names(), ["XB_EC_12", "XI190202", "Analog", "XI522001", "XI522001_2"])
         self.assertEqual(self.core.edit_options(2)["name"], "Analog")
@@ -431,18 +433,61 @@ class ProjectTest(unittest.TestCase):
         self.assertEqual(len(p["warnings"]), 1)
         self.assertRegex(p["warnings"][0], "is on the bus but not in this configuration")
 
-    def test_update_from_the_bus_brings_the_new_device_and_clears_the_edits(self):
+    def test_update_takes_the_running_configuration_and_clears_the_edits(self):
         self.scan()
         self.core.save_edit(2, {"name": "Analog"})
         self.new_device_on_the_bus()
         self.scan()
         self.core.project_update()
-        s = self.core.state()
-        self.assertEqual(len(s["configuration"]["devices"]), 5)
-        self.assertFalse(s["configuration"]["differs"])
+        c = self.core.state()["configuration"]
+        self.assertEqual(len(c["devices"]), 4)                      # the new device stays out ...
+        self.assertEqual([(d["configured"], d["present"], d["position"]) for d in c["unconfigured"]], [(False, True, None)])
+        self.assertTrue(c["differs"])
         self.assertEqual(self.core.load_edits(), {})
         self.assertEqual(self.names()[2], "XI422202")
+        self.core.project_add_from_bus(c["unconfigured"][0]["bus_pos"])         # ... until it is added
+        c = self.core.state()["configuration"]
+        self.assertEqual((len(c["devices"]), c["unconfigured"], c["differs"]), (5, [], False))
         self.assertEqual(self.core.plan()["warnings"], [])
+
+    def test_update_keeps_a_missing_configured_device(self):
+        self.scan()
+        unplug(self.bus, XI190202)
+        self.scan()
+        self.core.project_update()
+        c = self.core.state()["configuration"]
+        self.assertEqual([(d["name"], d["configured"], d["present"]) for d in c["devices"]],
+                         [("XB_EC_12", True, True), ("XI190202", True, False), ("XI422202", True, True), ("XI522001", True, True)])
+        self.assertTrue(c["scanned"])
+        self.assertEqual(c["unconfigured"], [])
+
+    def test_first_list_leaves_a_new_device_out_and_its_edit_follows(self):
+        self.scan()
+        self.core.save_edit(3, {"name": "Serial"})
+        self.new_device_on_the_bus()
+        os.remove(self.core.project_path)
+        c = self.scan()["configuration"]
+        self.assertEqual(len(c["devices"]), 4)
+        self.assertEqual(c["devices"][3]["name"], "Serial")
+        self.assertEqual(len(c["unconfigured"]), 1)
+
+    def test_removing_a_present_device_makes_it_not_configured(self):
+        self.scan()
+        self.core.project_remove(1)
+        c = self.core.state()["configuration"]
+        self.assertEqual([(d["name"], d["bus_pos"], d["before"]) for d in c["unconfigured"]], [("XI190202", 1, 1)])
+        self.assertEqual(self.core.project_add_from_bus(1), 1)
+        self.assertEqual(self.names(), ["XB_EC_12", "XI190202", "XI422202", "XI522001"])
+        self.assertTrue(self.core.plan()["identical"])
+        with self.assertRaisesRegex(ConfigError, "not in the list"):
+            self.core.project_add_from_bus(1)
+
+    def test_a_device_with_settings_keeps_them_when_another_is_added_before_it(self):
+        self.scan()
+        self.core.project_remove(1)
+        self.core.save_edit(1, {"name": "Analog"})                  # XI422202, now at list position 1
+        self.core.project_add_from_bus(1)
+        self.assertEqual(self.names(), ["XB_EC_12", "XI190202", "Analog", "XI522001"])
 
     def test_update_on_a_matching_bus_is_identical(self):
         self.scan()

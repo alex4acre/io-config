@@ -400,10 +400,14 @@ things; you can prepare a configuration for devices that are not on the bus yet,
 The app then only warns; it does not stop you.
 
 - **The list.** The first time there is data (the running configuration, the bus, or both), the app creates the
-  device list in `io-config/project.json` from what the Bus tab shows, with the saved settings of earlier versions.
-  After that **only you change it**: a scan refreshes which listed device is on the bus, but never the list. If the
-  list differs from the Bus tab, a note says so, and **Update from the active bus** replaces the list and all
-  unwritten changes with what the Bus tab shows (it asks first).
+  device list in `io-config/project.json` from the master's running configuration, with the saved settings of earlier
+  versions. After that **only you change it**: **Scan bus** (also on this tab) refreshes which device is on the bus, but
+  never the list. **Update from the active bus** replaces the list and all unwritten changes with the running
+  configuration (it asks first).
+- **Configured and Present.** Every row has both tags. Configured = in this list, so it gets written. Present = found on
+  the bus at the last scan. A configured device that is missing shows Present: No. A bus device that isn't in the list
+  appears at its wiring place, without a position, as Configured: No; **Add to list** puts it in, and the trash button
+  on a device that is still on the bus takes it back to that state. A note above the table counts both cases.
 - **The order of the list is the wiring order.** A new device (**Add device from ESI**: type in the box, pick from the
   suggestions with the arrow keys and Enter or a click, give it a name if you like) goes to the bottom. The arrows
   (▲ ▼) and the trash button work on every row, on the bus or not, except while a configuration is being written.

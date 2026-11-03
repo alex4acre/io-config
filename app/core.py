@@ -135,6 +135,7 @@ class Core:
         self.cfg_devices = []        # the Configuration list: compare.device_report() per entry
         self.cfg_sources = []        # per entry: online info and EEPROM of its bus device (if any), ENI slave, ESI device
         self.unlisted = []           # bus devices that are not in the list (descriptions)
+        self.unconfigured = []       # bus devices that are not in the list (summaries, with their wiring place)
         self.differs = False         # the list has other devices than the Bus view
         self.base_paths = (os.path.join(os.path.dirname(os.path.abspath(config_path)), "project-base.xml"),
                            os.path.join(os.path.dirname(os.path.abspath(config_path)), "project-base.ini"))
@@ -209,7 +210,10 @@ class Core:
                 "master": self.master,
                 "devices": [self._summary(d) for d in self.devices],
                 "configuration": {"exists": self._load_project() is not None, "differs": self.differs,
-                                  "devices": [self._summary(d) for d in self.cfg_devices]},
+                                  "scanned": self._bus_known(),
+                                  "devices": [dict(self._summary(d), configured=True, present=src["bus_pos"] is not None)
+                                              for d, src in zip(self.cfg_devices, self.cfg_sources)],
+                                  "unconfigured": self.unconfigured},
                 "esi": self.esi.summary(),
             }
 
@@ -496,6 +500,7 @@ class Core:
         project = self._load_project()
         if project is None:
             self.cfg_devices, self.cfg_sources, self.unlisted, self.differs = [], [], [], False
+            self.unconfigured = []
             return
         base = self._load_base()
         configured = base["slaves"] if base else raw["configured"]
@@ -537,11 +542,14 @@ class Core:
                 src["previous"] = self._previous_port(pos, entry, slave, uid_pos, {})
             sources.append(src)
             self._add_dictionary(src, device)
-        self.unlisted = []
+        self.unlisted, self.unconfigured = [], []
         for b in sorted(set(range(len(bus_ids))) - set(on_bus.values())):
             eeprom, eeprom_error = raw["eeproms"][b]
             d = self._report(0, raw["onlines"][b], eeprom, eeprom_error, None, master_op)[0]
             self.unlisted.append(d["description"] or d["name"])
+            # its wiring place: before the first listed device that comes after it on the bus
+            before = min((pos for pos, other in on_bus.items() if other > b), default=len(entries))
+            self.unconfigured.append(dict(self._summary(d), position=None, configured=False, bus_pos=b, before=before))
         self.differs = [_identity(s["online"]) for s in self.sources] != ids
         self.cfg_devices, self.cfg_sources = devices, sources
         self._edit_names()
@@ -650,8 +658,14 @@ class Core:
             self.log(f"{self.base_paths[0]}: {e!r}; using the running configuration")
             return None
 
+    def _bus_known(self) -> bool:
+        """Whether the last scan says which devices are on the bus."""
+        master = (self.raw or {}).get("master")
+        return bool(master) and not master["error"]
+
     def _bus_entries(self) -> list:
-        """The Bus view as project entries (fresh uids, the master's topology, the running configuration's address)."""
+        """The running configuration's devices of the Bus view as project entries (fresh uids, the master's topology,
+        the running configuration's address), absent ones included; a bus device that isn't in it stays out."""
         ports = configure.topology(self.sources)
         out = []
         for i, s in enumerate(self.sources):
@@ -660,6 +674,9 @@ class Core:
             slave = s.get("eni_slave")
             out.append({"uid": i, "vendor": idn["vendorId"], "product": idn["productCode"], "revision": idn["revisionNumber"],
                         "port": port, "upstream": upstream, "address": slave["address"] if slave else None})
+        for i in reversed(range(len(out))):
+            if not self.sources[i].get("eni_slave"):
+                configure.remove_entry(out, i)
         return out
 
     def _ensure_project(self):
@@ -673,6 +690,8 @@ class Core:
         if running.get("eni"):
             self._write_base(running["eni"], running.get("ini"))
         self._write_project(self._bus_entries(), generate.checksum(running["eni"]) if running.get("eni") else None)
+        # the edits followed the Bus view: they move with the devices that are in the list
+        self._remap_edits([s["pos"] for s in self.sources if s.get("eni_slave")], self._load_project()["devices"])
 
     def _project_changed(self):
         self._assemble_cfg()
@@ -709,6 +728,26 @@ class Core:
                 self.save_edit(len(entries) - 1, {"name": name})
             return len(entries) - 1
 
+    def project_add_from_bus(self, bus_pos: int) -> int:
+        """Puts a bus device that isn't in the list into it, at its wiring place. Returns its position."""
+        with self.lock:
+            entries = self._project_edit()
+            row = next((d for d in self.unconfigured if d["bus_pos"] == bus_pos), None)
+            if row is None:
+                raise ConfigError(f"no device at bus position {bus_pos} that is not in the list: scan again")
+            uid = max((e["uid"] for e in entries), default=-1) + 1
+            entries.append({"uid": uid, "vendor": row["vendor"], "product": row["product"], "revision": row["revision"],
+                            "port": "B" if entries else None, "upstream": entries[-1]["uid"] if entries else None,
+                            "address": None})
+            target = row["before"]
+            configure.move_entry(entries, len(entries) - 1, target)
+            self._write_project(entries)
+            order = list(range(len(entries) - 1))
+            order.insert(target, None)
+            self._remap_edits(order, entries)
+            self._project_changed()
+            return target
+
     def project_remove(self, position: int):
         """Takes any device out of the list; the devices behind it close up."""
         with self.lock:
@@ -740,7 +779,8 @@ class Core:
             return target
 
     def project_update(self):
-        """Replaces the list, the base ENI and all unwritten changes with what the Bus view shows."""
+        """Replaces the list, the base ENI and all unwritten changes with the master's running configuration. A
+        configured device that is missing stays in the list; a new bus device stays out, until it is added."""
         with self.lock:
             if self._busy():
                 raise ConfigError("a scan or download is running")
@@ -1152,7 +1192,7 @@ class Core:
                 if bus is not None and s["bus_pos"] == bus:
                     return s["pos"]
         raise ConfigError(f"the device at Bus position {bus_position} is not in the Configuration list: "
-                          "add it there or use Update from the active bus")
+                          "use Add to list on the Configuration tab")
 
     def edit_options(self, position: int) -> dict:
         """What the editor shows: the PDOs the device offers, the selection the configuration would get, the

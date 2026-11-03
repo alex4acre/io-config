@@ -165,6 +165,7 @@ function renderState(s) {
   const requesting = s.master_request.running;
   const busyNow = s.scan.running || downloading || requesting;
   $("scan").disabled = busyNow;
+  $("cfg-scan").disabled = busyNow;
   $("progress").textContent = s.scan.running ? "Scanning: " + s.scan.progress : "";
   setBusy("scan", s.scan.running ? "Scanning the bus" : null);
   setBusy("download", downloading ? (s.activation.state === "running" ? `Activating "${s.activation.name}"`
@@ -296,23 +297,45 @@ function renderConfiguration(s, downloading) {
   const c = s.configuration;
   cfgDevices = c.devices;
   const note = $("cfg-note");
-  note.hidden = !(c.differs || !c.exists);
+  const missing = c.scanned ? c.devices.filter((d) => !d.present).length : 0;
+  note.hidden = c.exists && !missing && !c.unconfigured.length;
   note.textContent = !c.exists ? "There is no list yet: scan the bus, or add devices." :
-    "The list differs from the Bus tab. \"Update from the active bus\" takes over what the Bus tab shows.";
+    [missing ? `Configured but not on the bus: ${missing}.` : "",
+      c.unconfigured.length ? `On the bus but not configured: ${c.unconfigured.length}.` : ""].filter(Boolean).join(" ");
   $("project-update").disabled = s.scan.running || downloading || s.master_request.running || !s.devices.length;
   if (renaming) return;                          // the poll must not take the name field away while it is typed in
   const tbody = $("cfg-devices").tBodies[0];
   tbody.replaceChildren();
+  const unconfiguredRows = (place) => {
+    for (const d of c.unconfigured.filter((u) => u.before === place)) {
+      row(tbody, ["-", d.name, d.description, hex(d.revision, 8), yesNo(false), yesNo(true), addFromBus(d, downloading)]);
+    }
+  };
   for (const d of c.devices) {
+    unconfiguredRows(d.position);
     const name = el("td", { class: "name", title: "Click to rename" }, d.name);
     name.onclick = (ev) => {
       ev.stopPropagation();
       startRename(d, name);
     };
-    const tr = row(tbody, [d.position, name, d.description, hex(d.revision, 8), rowTools(d, c.devices.length, downloading)],
-      { class: "click" + (d.position === cselected ? " selected" : "") });
+    const present = c.scanned ? yesNo(d.present) : el("span", { class: "muted", title: "Not scanned yet" }, "-");
+    const tr = row(tbody, [d.position, name, d.description, hex(d.revision, 8), yesNo(true), present,
+      rowTools(d, c.devices.length, downloading)],
+      { class: "listed click" + (d.position === cselected ? " selected" : "") });
     tr.onclick = () => openCfgDevice(d.position);
   }
+  unconfiguredRows(c.devices.length);
+}
+
+function yesNo(yes) {
+  return el("span", { class: "badge " + (yes ? "ok" : "warn") }, yes ? "Yes" : "No");
+}
+
+function addFromBus(d, busy) {
+  const b = el("button", { class: "small", title: "Puts this device into the list at its wiring place" }, "Add to list");
+  b.disabled = busy;
+  b.onclick = () => projectChange(() => api("POST", "/project/devices/add-from-bus", { bus_pos: d.bus_pos }));
+  return b;
 }
 
 // --- project: devices added from the ESI library ---------------------------------------------------
@@ -533,7 +556,8 @@ $("add").onclick = async () => {
   projectChange(async () => {});
 };
 $("project-update").onclick = () => {
-  if (confirm("Replaces the list and all unwritten changes with what the Bus tab shows.\n\nUpdate the list from the active bus?")) {
+  if (confirm("Replaces the list and all unwritten changes with the master's running configuration.\n" +
+    "Devices on the bus that are not in it are shown as not configured.\n\nUpdate the list from the active bus?")) {
     projectChange(() => api("POST", "/project/update", { confirm: true }));
   }
 };
@@ -547,11 +571,11 @@ async function poll() {
   }
 }
 
-$("scan").onclick = async () => {
+$("scan").onclick = $("cfg-scan").onclick = async () => {
   try {
     banner("");
     await api("POST", "/scan", { reread_eeprom: $("reread").checked });
-    $("scan").disabled = true;
+    $("scan").disabled = $("cfg-scan").disabled = true;
     poll();
   } catch (e) {
     banner(e.message);

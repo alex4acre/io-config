@@ -165,6 +165,8 @@ class ModularBusTest(unittest.TestCase):
         self.core.esi.add(os.path.basename(ESI_FILE), read(ESI_FILE))
         self.core.start_scan()
         self.core.wait_scan()
+        for d in self.core.state()["configuration"]["unconfigured"]:
+            self.core.project_add_from_bus(d["bus_pos"])
 
     def tearDown(self):
         self.core.stop()

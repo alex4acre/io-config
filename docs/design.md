@@ -256,7 +256,13 @@ visible.
      use them (`write_config` step texts are unchanged). (c) A drop-down + "Set state" for all five requestable states
      (`REQUESTABLE`, from `ethercat_state.fbs`; `unknown` is not requestable); a refused write shows the master's answer
      and the scan still runs.
-13. **Next:** more than one frame, free PDO mapping (editing PDO contents),
+13. **Configured and Present tags (1.8.0, 2026-11-03, user's decision):** Scan bus also on the Configuration tab (same
+   `POST /scan`; never changes the list). Each row has Configured (in the list) and Present (on the bus at the last
+   scan, `-` until a scan says). Bus devices outside the list are rows without a position at their wiring place
+   (`configuration.unconfigured`: `bus_pos`, `before`), with Add to list (`POST /project/devices/add-from-bus`, no ESI
+   needed). **Changes 1.7:** the first list and Update from the active bus take the running configuration (missing
+   devices included), no longer new bus devices; a master without a configuration therefore starts with an empty list.
+14. **Next:** more than one frame, free PDO mapping (editing PDO contents),
    modules from separate module files (EtherCATModule, e.g. ctrlX DRIVE FSoE).
 
 ## Open questions

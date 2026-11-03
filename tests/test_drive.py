@@ -97,6 +97,8 @@ class DriveBusTest(unittest.TestCase):
             self.core.esi.add(name, read(os.path.join(DRIVE_DIR, name)))
         self.core.start_scan()
         self.core.wait_scan()
+        for d in self.core.state()["configuration"]["unconfigured"]:
+            self.core.project_add_from_bus(d["bus_pos"])
 
     def tearDown(self):
         self.core.stop()

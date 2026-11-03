@@ -88,6 +88,8 @@ try:
     check(until("document.getElementById('d-title').textContent.startsWith('4:')"), "drive detail opens")
     check(js("return document.getElementById('d-objects').hidden && !document.getElementById('d-soe').hidden"),
           "SoE button shown, CoE button hidden")
+    js("document.getElementById('tab-config').click(); document.querySelector('#cfg-devices tbody tr:not(.listed) button').click();")
+    until("!document.querySelector('#cfg-devices tbody tr:not(.listed)')")
     js("document.getElementById('tab-config').click(); document.querySelectorAll('#cfg-devices tbody tr')[4].cells[2].click();")
     check(until("!document.getElementById('cdetail').hidden && !document.getElementById('d-startup').hidden"),
           "drive keeps the Startup tab (SoE) on the Configuration card")

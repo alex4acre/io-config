@@ -80,6 +80,8 @@ try:
     check(until("document.getElementById('conn').classList.contains('ok')"), "connection chip is green")
     js("document.getElementById('scan').click();")
     check(until("document.querySelectorAll('#devices tbody tr').length === 5", 20), "scan shows 5 devices")
+    js("document.getElementById('tab-config').click(); document.querySelector('#cfg-devices tbody tr:not(.listed) button').click();")
+    until("!document.querySelector('#cfg-devices tbody tr:not(.listed)')")
     js("document.getElementById('tab-config').click(); document.querySelectorAll('#cfg-devices tbody tr')[4].cells[2].click();")
     check(until("document.getElementById('c-title').textContent.startsWith('4:')"), "Elmo card of the Configuration tab opens")
     js("document.getElementById('d-edit').click();")

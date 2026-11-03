@@ -102,6 +102,8 @@ class RealBusTest(unittest.TestCase):
                 self.core.esi.add(name, read(os.path.join(folder, name)))
         self.core.start_scan()
         self.core.wait_scan()
+        for d in self.core.state()["configuration"]["unconfigured"]:
+            self.core.project_add_from_bus(d["bus_pos"])
 
     def tearDown(self):
         self.core.stop()
@@ -142,6 +144,8 @@ class RealBusTest(unittest.TestCase):
         os.remove(self.core.project_path)               # an edits.json of 1.5.x without a list: it follows the bus once
         self.core.start_scan()
         self.core.wait_scan()
+        for d in self.core.state()["configuration"]["unconfigured"]:
+            self.core.project_add_from_bus(d["bus_pos"])
         edits = self.core.load_edits()
         self.assertEqual(list(edits), [5])
         self.assertEqual(edits[5]["bus"][4], [36, 0x242A2A])

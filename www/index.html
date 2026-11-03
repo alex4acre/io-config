@@ -161,16 +161,18 @@
     <section class="card" id="cfg-card">
       <div class="row head">
         <h2>Device list</h2>
-        <button id="project-update" title="Replaces the list and all unwritten changes with what the Bus tab shows">Update from the active bus</button>
+        <button id="cfg-scan" class="primary" title="Reads the bus and refreshes the Present tags. The list does not change.">Scan bus</button>
+        <button id="project-update" title="Replaces the list and all unwritten changes with the master's running configuration">Update from the active bus</button>
       </div>
       <p id="cfg-note" class="warn-note" hidden></p>
       <div class="scroll">
         <table id="cfg-devices">
-          <thead><tr><th>Pos</th><th>Name</th><th>Device</th><th>Revision</th><th></th></tr></thead>
+          <thead><tr><th>Pos</th><th>Name</th><th>Device</th><th>Revision</th><th title="In this list: it gets written">Configured</th><th title="Found on the bus at the last scan">Present</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
-      <p class="hint">The order of the list is the wiring order. Click a device for its settings and startup parameters; click a
+      <p class="hint">The order of the list is the wiring order. Only configured devices are written.
+        A device without a position is on the bus but not in the list. Click a device for its settings and startup parameters; click a
         name to rename it.</p>
       <details id="add-box">
         <summary>Add device from ESI</summary>
