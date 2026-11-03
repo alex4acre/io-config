@@ -119,7 +119,8 @@ const SOURCE_TIPS = {
     none: "The library has no ESI for this device.", error: "The device's ESI could not be read." },
   eni: { same: "In the master's running configuration, with this device and revision.", revision: "In the running configuration, with another revision.",
     different: "The running configuration has another device at this place.", none: "This device is not in the master's running configuration." },
-  eeprom: { read: "The device's EEPROM was read.", error: "The device's EEPROM could not be read.", "not read": "The device's EEPROM has not been read." },
+  eeprom: { read: "The device's EEPROM was read and is compared.", error: "The device's EEPROM could not be read.",
+    "not read": "Not read yet, so it isn't compared. Open the device and press Read EEPROM." },
 };
 
 function badge(source, match) {
@@ -594,16 +595,39 @@ async function poll() {
   }
 }
 
-$("scan").onclick = $("cfg-scan").onclick = async () => {
+async function startScan(readAll) {
   try {
     banner("");
-    await api("POST", "/scan", { reread_eeprom: $("reread").checked });
+    await api("POST", "/scan", { reread_eeprom: readAll });
     $("scan").disabled = $("cfg-scan").disabled = true;
     poll();
   } catch (e) {
     banner(e.message);
   }
+}
+$("scan").onclick = () => {
+  startScan($("reread").checked);
+  $("reread").checked = false;            // about 5 s per device: only when asked for, one scan at a time
 };
+$("cfg-scan").onclick = () => startScan(false);
+
+async function readEeprom(button, path, reopen) {
+  button.disabled = true;
+  try {
+    banner("");
+    const r = await busy("eeprom", "Reading the EEPROM", () => api("POST", path, {}));
+    if (!r.ok) banner("EEPROM could not be read: " + r.error);
+    dropPlan();
+    await poll();
+    reopen();
+  } catch (e) {
+    banner(e.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+$("d-read-eeprom").onclick = () => readEeprom($("d-read-eeprom"), `/devices/${selected}/read-eeprom`, () => openDevice(selected));
+$("c-read-eeprom").onclick = () => readEeprom($("c-read-eeprom"), `/project/devices/${cselected}/read-eeprom`, () => openCfgDevice(cselected));
 
 function sourceCell(s, fmt) {
   return s ? fmt(s) : el("span", { class: "muted" }, "-");
@@ -651,6 +675,7 @@ function openCfgDevice(pos) {
   cselected = pos;
   editPos = null;                             // settings depend on the scan: reloaded when their tab is shown
   const mailbox = d.mailbox || [];
+  $("c-read-eeprom").hidden = !d.present;
   $("d-startup").hidden = !mailbox.includes("CoE") && !mailbox.includes("SoE");
   for (const tr of $("cfg-devices").tBodies[0].rows) tr.classList.toggle("selected", Number(tr.cells[0].textContent) === pos);
   $("cdetail").hidden = false;
@@ -681,8 +706,9 @@ async function openDevice(pos) {
     objPos = soePos = null;
     $("d-writable").checked = false;            // writing is allowed per device, never carried over
   }
-  const protocols = d.sources.eeprom.mailbox || [];
-  const known = d.sources.eeprom.match === "read" || protocols.length > 0;   // EEPROM read: its mailbox protocols count
+  const protocols = d.mailbox || [];                                         // from the ESI, else the EEPROM
+  const known = d.sources.esi.match === "exact" || d.sources.esi.match === "nearest" || d.sources.eeprom.match === "read" || protocols.length > 0;
+  $("d-read-eeprom").hidden = !d.present;
   $("d-writable").disabled = !d.present;
   if (other) $("d-op-msg").hidden = true;
   $("d-request-op").hidden = !d.present || d.state === "OP";

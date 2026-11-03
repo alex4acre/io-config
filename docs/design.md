@@ -275,7 +275,12 @@ visible.
    with them). A device below the master's state: finding with the AL code in words or "no fault". **Request OP**
    (`POST /devices/<pos>/request-op`, confirm, behind Writable): writes `device_access/slave_state` (node: "Get and set slave
    state"), waits up to `master_wait`, reports the state and code, then scans. The write hasn't run on a real device yet.
-17. **Next:** more than one frame, free PDO mapping (editing PDO contents),
+17. **EEPROMs only when asked for (1.8.4, 2026-11-03, user's decision):** measured on the X7, 12 devices: 71.7 s with EEPROMs, 0.3 s
+   without. A scan reads none, except with Read all EEPROMs (Bus tab, unticks itself). Read EEPROM on both device cards
+   (`POST /devices/<pos>/read-eeprom`, `/project/devices/<pos>/read-eeprom`). Reads saved in `$SNAP_COMMON/esi-eeprom.json`,
+   keyed by identity + serial, or + place when the device reports serial 0; they are shown and compared in later scans without a read.
+   A changed EEPROM on the same serial isn't noticed until read again. Device card tabs follow the ESI's protocols, else the EEPROM's.
+18. **Next:** more than one frame, free PDO mapping (editing PDO contents),
    modules from separate module files (EtherCATModule, e.g. ctrlX DRIVE FSoE).
 
 ## Open questions

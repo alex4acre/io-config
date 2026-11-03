@@ -119,7 +119,10 @@ class Core:
         self.devices = []            # compare.device_report() per position
         self.sources = []            # per device on the bus: online info, EEPROM, ENI slave, ESI device
         self.current = None          # {"eni", "ini", "parsed"}: the configuration the master ran at the last scan
-        self.eeprom_cache = {}       # (position, vendor, product, revision, serial) -> words
+        self.eeprom_path = os.path.abspath(esi_folder).rstrip(os.sep) + "-eeprom.json"   # saved reads, not in the active configuration
+        self.eeprom_cache = self._load_eeproms()     # _eeprom_key -> words
+        self.read_all_eeproms = False                # the running scan reads every EEPROM
+        self.eeprom_reading = False                  # one Read EEPROM at a time
         self.plan_data = None        # the last configuration built from a scan (what a download writes)
         self.plan_id = 0
         self.download_state = {"running": False, "steps": [], "warnings": [], "finished": None, "error": None}
@@ -337,8 +340,7 @@ class Core:
             if self._busy():
                 raise ConfigError("a scan or download is already running")
             self.scan_state = {"running": True, "progress": "starting", "finished": None, "error": None}
-            if reread_eeprom:
-                self.eeprom_cache.clear()
+            self.read_all_eeproms = bool(reread_eeprom)
             self._thread = threading.Thread(target=self._scan_thread, name="scan", daemon=True)
             self._thread.start()
             return dict(self.scan_state)
@@ -453,14 +455,14 @@ class Core:
             except Exception as e:      # the devices behind it can't be asked either
                 master["error"] = f"device {pos} not readable: {e}"
                 break
-            identity = online.get("response", {}).get("slaveIdentity", {})
-            key = (pos, identity.get("vendorId"), identity.get("productCode"), identity.get("revisionNumber"),
-                   identity.get("serialNumber"))
+            key = self._eeprom_key(pos, online)
             eeprom, eeprom_error = None, None
             try:
-                if key not in self.eeprom_cache:
+                if self.read_all_eeproms:
                     self.eeprom_cache[key] = self._read_eeprom(base, address)
-                eeprom = sii.decode(self.eeprom_cache[key])
+                    self._save_eeproms()
+                if key in self.eeprom_cache:
+                    eeprom = sii.decode(self.eeprom_cache[key])
             except Exception as e:
                 eeprom_error = str(e)
             onlines.append(online)
@@ -611,6 +613,61 @@ class Core:
         else:
             return None
         return (port, upstream) if port and port in configure.PORTS and upstream is not None and upstream < pos else None
+
+    @staticmethod
+    def _eeprom_key(bus_pos: int, online: dict) -> str:
+        """A saved EEPROM belongs to its device: by serial number, or by place if the device reports none."""
+        identity = online.get("response", {}).get("slaveIdentity", {})
+        serial = identity.get("serialNumber")
+        return json.dumps([identity.get("vendorId"), identity.get("productCode"), identity.get("revisionNumber"),
+                           serial if serial else f"position {bus_pos}"])
+
+    def _load_eeproms(self) -> dict:
+        try:
+            with open(self.eeprom_path, encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {}
+        except Exception as e:
+            self.log(f"{self.eeprom_path}: {e!r}; EEPROMs are read again when asked for")
+            return {}
+
+    def _save_eeproms(self):
+        _write_atomic(self.eeprom_path, json.dumps(self.eeprom_cache).encode())
+
+    def bus_place(self, position: int, cfg=False):
+        """The place on the bus of a row of the Bus view or the Configuration list; None if it isn't on the bus."""
+        with self.lock:
+            return (self._cfg_source(position) if cfg else self._source(position))["bus_pos"]
+
+    def read_device_eeprom(self, bus_pos) -> dict:
+        """Reads one device's EEPROM (seconds), saves it and updates both device lists. bus_pos is its place on the bus."""
+        with self.lock:
+            if self._busy() or self.eeprom_reading:
+                raise ConfigError("a scan, download or EEPROM read is running")
+            if bus_pos is None:
+                raise ConfigError("the device is not on the bus")
+            online = self.raw["onlines"][bus_pos]
+            self.eeprom_reading = True
+        address = {"addressType": "autoincrement", "address": (-bus_pos) & 0xFFFF}
+        eeprom, error = None, None
+        try:
+            words = self._read_eeprom(f'{INSTANCES}/{self.config["instance"]}/', address)
+            eeprom = sii.decode(words)
+        except Exception as e:
+            error = str(e)
+            self.log(f"EEPROM at bus position {bus_pos}: {e}")
+        with self.lock:
+            self.eeprom_reading = False
+            if self._busy() or bus_pos >= len(self.raw["onlines"]) or self.raw["onlines"][bus_pos] != online:
+                raise ConfigError("the bus changed during the read: scan again")
+            if not error:
+                self.eeprom_cache[self._eeprom_key(bus_pos, online)] = words
+                self._save_eeproms()
+            self.raw["eeproms"][bus_pos] = (eeprom, error)
+            self._assemble()
+            self.plan_data = None
+        return {"ok": not error, "error": error}
 
     def _read_eeprom(self, base: str, address: dict) -> list:
         words = []

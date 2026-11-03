@@ -148,6 +148,10 @@ class ObjectTest(unittest.TestCase):
 
     def test_no_coe(self):
         with self.assertRaises(Exception) as cm:
+            self.core.objects(1)                          # no ESI, EEPROM not read: the master's answer
+        self.assertIn("Protocol not supported", str(cm.exception))
+        self.core.read_device_eeprom(1)
+        with self.assertRaises(Exception) as cm:
             self.core.objects(1)
         self.assertIn("has no CoE mailbox (FoE)", str(cm.exception))
 

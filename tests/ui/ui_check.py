@@ -110,6 +110,15 @@ try:
     esi = js("return [...document.querySelectorAll('#devices tbody tr')].map(r => r.cells[6].textContent)")
     check(esi == ["exact", "exact", "exact", "missing"], f"ESI column {esi} (XI522001 has no ESI yet)")
     check(js("return document.querySelectorAll('#devices tbody tr')[3].cells[9].textContent") == "Warning (1)", "XI522001 flagged")
+    # EEPROMs: not read by a scan; Read EEPROM on the device card reads that device only
+    eeprom_cell = "document.querySelectorAll('#devices tbody tr')[1].cells[8].textContent"
+    check(js(f"return {eeprom_cell}") == "not read", "a scan reads no EEPROM")
+    js("document.querySelectorAll('#devices tbody tr')[1].cells[2].click()")
+    check(until("!document.getElementById('detail').hidden && !document.getElementById('d-read-eeprom').hidden"), "Read EEPROM on the device card")
+    js("document.getElementById('d-read-eeprom').click()")
+    check(until(f"{eeprom_cell} === 'read'", 20), "Read EEPROM updates that device")
+    check(js("return document.querySelectorAll('#devices tbody tr')[2].cells[8].textContent") == "not read", "and no other device")
+    js("document.getElementById('d-close').click()")
     check(js("return window.tipsMissing") == [], "every tooltip finds its element: " + str(js("return window.tipsMissing")))
     untipped = js("return [...document.querySelectorAll('th')].filter((h) => h.textContent.trim() && !h.title).map((h) => h.closest('table').id + ':' + h.textContent)")
     check(untipped == [], f"every column has a tooltip: {untipped}")

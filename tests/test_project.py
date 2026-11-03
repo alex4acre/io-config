@@ -98,6 +98,12 @@ class WiringTest(unittest.TestCase):
         self.assertEqual(wiring(e), [(2, None, None), (3, 2, "B")])
 
 
+def add_drive_for_test(bus):
+    """A device nobody knows joins the bus: no ESI in the library, not in the running configuration."""
+    from app.fake import add_drive
+    add_drive(bus.nodes, bus.slaves)
+
+
 class DriveProjectTest(unittest.TestCase):
     """The ctrlX DRIVE sits on port C of the coupler (FakeBus(drive=True))."""
 

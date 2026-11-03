@@ -19,6 +19,7 @@ import zipfile
 
 import app.web
 from app import compare, eni, sii
+from app.bus import BusError
 from app.core import ConfigError, Core
 from app.esi import EsiLibrary
 from app.fake import DATA, MASTER, FakeBus, recorded_nodes
@@ -278,17 +279,86 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(ops, {"read", "read_args"})
         positions = {c[2]["request"]["address"] for c in self.bus.calls if c[0] == "read_args"}
         self.assertEqual(positions, {0, 65535, 65534, 65533})
+        self.assertFalse([c for c in self.bus.calls if c[1].endswith("slave_eeprom")])       # none unless asked for
+        self.scan(reread=True)
         sizes = {c[2]["request"]["maxLength"] for c in self.bus.calls if c[1].endswith("slave_eeprom")}
         self.assertEqual(sizes, {64})
 
-    def test_eeprom_cache(self):
-        self.scan()
-        count = lambda: sum(1 for c in self.bus.calls if c[1].endswith("slave_eeprom"))   # noqa: E731
-        first = count()
-        self.scan()
-        self.assertEqual(count(), first)
+    def eeprom_reads(self):
+        return sum(1 for c in self.bus.calls if c[1].endswith("slave_eeprom"))
+
+    def test_a_scan_reads_eeproms_only_when_asked(self):
+        s = self.scan()
+        self.assertEqual(self.eeprom_reads(), 0)
+        self.assertEqual({d["sources"]["eeprom"] for d in s["devices"]}, {"not read"})
+        s = self.scan(reread=True)
+        first = self.eeprom_reads()
+        self.assertGreater(first, 0)
+        self.assertEqual({d["sources"]["eeprom"] for d in s["devices"]}, {"read"})
+        s = self.scan()                           # saved reads are used, without reading
+        self.assertEqual(self.eeprom_reads(), first)
+        self.assertEqual({d["sources"]["eeprom"] for d in s["devices"]}, {"read"})
         self.scan(reread=True)
-        self.assertEqual(count(), 2 * first)
+        self.assertEqual(self.eeprom_reads(), 2 * first)
+
+    def test_read_one_device_eeprom(self):
+        s = self.scan()
+        self.assertEqual(self.core.read_device_eeprom(self.core.bus_place(1)), {"ok": True, "error": None})
+        self.assertEqual({c[2]["request"]["address"] for c in self.bus.calls if c[1].endswith("slave_eeprom")}, {65535})
+        s = self.core.state()
+        self.assertEqual([d["sources"]["eeprom"] for d in s["devices"]], ["not read", "read", "not read", "not read"])
+        self.assertEqual(self.core.read_device_eeprom(self.core.bus_place(1, cfg=True))["ok"], True)
+
+    def test_read_eeprom_failure_is_reported_and_not_saved(self):
+        self.scan()
+        real = self.bus.read_args
+        self.bus.read_args = lambda a, r: (_ for _ in ()).throw(BusError("read: DL_TIMEOUT")) if a.endswith("slave_eeprom") else real(a, r)
+        r = self.core.read_device_eeprom(1)
+        self.assertFalse(r["ok"])
+        self.assertIn("DL_TIMEOUT", r["error"])
+        self.assertEqual(self.core.state()["devices"][1]["sources"]["eeprom"], "error")
+        self.assertEqual(self.core.eeprom_cache, {})
+
+    def test_read_eeprom_refused_while_busy_or_off_the_bus(self):
+        self.scan()
+        with self.assertRaisesRegex(ConfigError, "not on the bus"):
+            self.core.read_device_eeprom(None)
+        self.core.scan_state = dict(self.core.scan_state, running=True)
+        with self.assertRaisesRegex(ConfigError, "is running"):
+            self.core.read_device_eeprom(1)
+        self.core.scan_state = dict(self.core.scan_state, running=False)
+
+    def test_saved_eeproms_survive_a_restart(self):
+        self.scan(reread=True)
+        first = self.eeprom_reads()
+        self.core.stop()
+        self.core = Core(self.path, self.bus, os.path.join(self.dir.name, "esi"), log=lambda m: None)
+        s = self.scan()
+        self.assertEqual(self.eeprom_reads(), first)
+        self.assertEqual({d["sources"]["eeprom"] for d in s["devices"]}, {"read"})
+
+    def test_saved_eeprom_follows_the_serial_number(self):
+        online = lambda pos, serial: {"response": {"slaveIdentity": {"vendorId": 36, "productCode": 5, "revisionNumber": 1, "serialNumber": serial}}}   # noqa: E731
+        self.assertEqual(Core._eeprom_key(1, online(1, 77)), Core._eeprom_key(9, online(9, 77)))      # moved: same device
+        self.assertNotEqual(Core._eeprom_key(1, online(1, 77)), Core._eeprom_key(1, online(1, 78)))   # swapped
+        self.assertNotEqual(Core._eeprom_key(1, online(1, 0)), Core._eeprom_key(2, online(2, 0)))     # no serial: by place
+
+    def test_broken_saved_eeproms_are_ignored(self):
+        with open(self.core.eeprom_path, "w", encoding="utf-8") as f:
+            f.write("{broken")
+        self.core.stop()
+        self.core = Core(self.path, self.bus, os.path.join(self.dir.name, "esi"), log=lambda m: None)
+        self.assertEqual(self.core.eeprom_cache, {})
+
+    def test_unknown_device_prompts_for_the_eeprom(self):
+        from tests.test_project import add_drive_for_test
+        add_drive_for_test(self.bus)
+        d = self.scan()["devices"][4]
+        self.assertEqual(d["sources"]["esi"], "none")
+        self.assertRegex(" ".join(d["finding_texts"]), "press Read EEPROM on its device card")
+        self.core.read_device_eeprom(4)
+        d = self.core.state()["devices"][4]
+        self.assertNotRegex(" ".join(d["finding_texts"]), "press Read EEPROM")
 
     def test_missing_and_extra_devices(self):
         self.bus.slaves.pop()                     # XI522001 unplugged

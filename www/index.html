@@ -29,12 +29,12 @@
         <label class="check" title="The state the master is asked for; nothing happens until you press Set state">Request
           <select id="state-select"></select></label>
         <button id="state-set">Set state</button>
-        <label class="check"><input id="reread" type="checkbox"> Reread EEPROMs</label>
+        <label class="check"><input id="reread" type="checkbox"> Read all EEPROMs</label>
         <button id="scan" class="primary">Scan bus</button>
       </div>
       <p id="m-request" class="warn-note" hidden></p>
       <p id="noscan" class="hint">Not scanned yet. The scan only reads: master status, the configuration it runs with
-        (ENI), and each device's online info and EEPROM. The Configuration tab works without it.</p>
+        (ENI) and each device's online info. The Configuration tab works without it.</p>
       <dl id="master" class="grid cols" hidden>
         <dt>Devices</dt><dd id="m-devices"></dd>
         <dt>Topology</dt><dd id="m-topology"></dd>
@@ -63,6 +63,7 @@
       <div class="row head">
         <h2 id="d-title"></h2>
         <label class="check warnlabel" title="Allows writing this device's outputs, CoE objects and SoE parameters (real hardware). Off again when another device is opened or the page reloads."><input id="d-writable" type="checkbox"> Writable</label>
+        <button id="d-read-eeprom">Read EEPROM</button>
         <button id="d-request-op" hidden>Request OP</button>
         <button id="d-close">Close</button>
       </div>
@@ -197,6 +198,7 @@
     <section class="card" id="cdetail" hidden>
       <div class="row head">
         <h2 id="c-title"></h2>
+        <button id="c-read-eeprom">Read EEPROM</button>
         <button id="c-close">Close</button>
       </div>
       <nav class="tabs subtabs">

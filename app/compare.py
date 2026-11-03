@@ -116,7 +116,8 @@ def device_report(position, online, eeprom, eeprom_error, eni_slave, esi_match, 
     if esi_error:
         add("error", f"ESI could not be read: {esi_error}")
     elif esi_match == "none":
-        add("warning", "No ESI file for this device in the library")
+        add("warning", "No ESI file for this device in the library" +
+            ("" if eni_slave or eeprom or eeprom_error or absent else ": press Read EEPROM on its device card, or upload its ESI, so that it can be configured"))
     elif esi_match == "nearest":
         add("warning", f'ESI only for revision {hx(esi_entry["revision"], 8)} (device has {hx(revision, 8)})')
     if esi_device and esi_device.get("modular"):

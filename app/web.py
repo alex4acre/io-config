@@ -36,6 +36,8 @@ ROUTES = [
     ("GET", r"/master/state", "get_master_state"),
     ("POST", r"/master/state", "post_master_state"),
     ("POST", r"/devices/(\d+)/request-op", "post_device_request_op"),
+    ("POST", r"/devices/(\d+)/read-eeprom", "post_device_read_eeprom"),
+    ("POST", r"/project/devices/(\d+)/read-eeprom", "post_project_read_eeprom"),
     ("GET", r"/devices/(\d+)", "get_device"),
     ("GET", r"/devices/(\d+)/edit", "get_edit"),
     ("PUT", r"/devices/(\d+)/edit", "put_edit"),
@@ -221,6 +223,12 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         if self.read_json().get("confirm") is not True:
             raise HttpError(400, '{"confirm": true} is needed: this changes a device\'s state')
         self.send_json(200, core.request_device_op(int(position)))
+
+    def post_device_read_eeprom(self, position):
+        self.send_json(200, core.read_device_eeprom(core.bus_place(int(position))))
+
+    def post_project_read_eeprom(self, position):
+        self.send_json(200, core.read_device_eeprom(core.bus_place(int(position), cfg=True)))
 
     def get_device(self, position):
         self.send_json(200, core.device(int(position)))

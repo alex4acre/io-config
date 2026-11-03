@@ -180,7 +180,7 @@ def describe(src: dict, used: set = None):
         note.append("learned from the EEPROM (no ESI)")
         warning = f'Position {src["pos"]}: no ESI, described from its EEPROM only (default PDOs, no DC)'
     else:
-        return None, [], None, f'Position {src["pos"]}: no ESI and no EEPROM data, the device can\'t be described'
+        return None, [], None, f'Position {src["pos"]}: no ESI and no EEPROM data, the device can\'t be described: upload its ESI or press Read EEPROM on its device card'
     if slave is not None and (slave["vendor"], slave["product"]) == (vendor, product):
         dev = generate.apply_eni(dev, slave)
         dev["revision"] = slave["revision"]
