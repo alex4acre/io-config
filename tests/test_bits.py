@@ -64,5 +64,18 @@ class BitsTest(unittest.TestCase):
         self.assertEqual(data[0][8:16], "01000007")           # 1 byte, start bit 0, end bit 7
 
 
+class NoProcessDataTest(unittest.TestCase):
+    """XC-EC-02: no process data and no FMMU in its ESI. With FMMU commands it stayed in Pre-OP on the X7 (2026-11-03)."""
+
+    def test_same_as_io_engineering(self):
+        path = os.path.join(DATA, "esi-bits", "BoschRexroth_ctrlX_IO_XC-EC-02.xml")
+        dev = device(path, "EthercatExtension")
+        with open(os.path.join(DATA, "x7-ioe.xml"), "rb") as f:
+            reference = re.search(r"<Slave>.*?</Slave>", f.read().decode("latin-1"), re.S).group(0)
+        mine = re.search(r"<Slave>.*?</Slave>", generate.generate_eni([dev], "ethercatmaster", 4000).decode("latin-1"), re.S).group(0)
+        self.assertEqual(re.search(r"<Name>(.*?)</Name>", reference).group(1), "EthercatExtension")
+        self.assertEqual(mine, reference)
+
+
 if __name__ == "__main__":
     unittest.main()

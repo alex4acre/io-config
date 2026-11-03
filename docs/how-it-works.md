@@ -17,7 +17,7 @@ wire (its vendor ID, product code and revision from the master's online info). T
 | **ESI** | The ESI library (the XML device descriptions you uploaded, *EtherCAT Slave Information*) | `exact` = an ESI with the same vendor, product and revision. `other rev.` = same product, a different revision (the nearest one is used). `missing` = no ESI for this product. |
 | **ENI** | The configuration the master runs now (*EtherCAT Network Information*, the `ethercat.xml` written by I/O Engineering or by this app) | `same` = configured with the same identity. `other rev.` = same product, other revision. `different` = another device is configured there. `not in active configuration` (a warn badge) = the device is on the bus but not in the running configuration (e.g. newly plugged in). `not on bus` = configured but missing (it stays in the configuration, see section 4.7). |
 | **EEPROM** | The device's own EEPROM (*SII*, slave information interface), read through the master | `read` = read and decoded. `error` = couldn't be read. |
-| **Check** | All findings for this position | `OK`, `Check (n)` = n warnings or notes, `Error (n)`. The Info tab of the device card lists them. |
+| **Findings** | All findings for this position (hover to read them) | `OK`, `Warning (n)` = n warnings, `Error (n)`. The Info tab of the device card lists them. |
 
 Typical findings:
 - the device isn't in Op while the master is;
@@ -289,7 +289,7 @@ if eeprom and (eeprom["vendor"], eeprom["product"], eeprom["revision"]) != (vend
 After these checks it puts each PDO next to its counterparts from the ESI, the ENI and the EEPROM. PDOs are
 compared by object index, subindex and bit length only: names and type spellings differ between sources without
 meaning anything (the EEPROM says BOOL where the ENI says BIT). It does the same for the process-data sync
-managers (start address, size) and the mailbox protocols. The worst finding gives the **Check** badge.
+managers (start address, size) and the mailbox protocols. The worst finding gives the **Findings** badge.
 
 ### 4.4 Describe each device (what the new configuration is built from)
 

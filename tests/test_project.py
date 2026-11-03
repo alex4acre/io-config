@@ -16,6 +16,7 @@ import app.configure
 from app import eni
 from app.configure import merge, move_entry, normalise, remove_entry
 from app.core import ConfigError, Core
+from app.bus import BusError
 from app.fake import DATA, MASTER, FakeBus
 from tests.test_app import ESI_DIR, ESI_FILES, read
 
@@ -488,6 +489,61 @@ class ProjectTest(unittest.TestCase):
         self.core.save_edit(1, {"name": "Analog"})                  # XI422202, now at list position 1
         self.core.project_add_from_bus(1)
         self.assertEqual(self.names(), ["XB_EC_12", "XI190202", "Analog", "XI522001"])
+
+    # --- a device below the master's state --------------------------------------------------------------
+
+    def stop_device_in_preop(self, position, code=0, stuck=True):
+        info = self.bus.slaves[position]["online_info"]["response"]
+        info["alStatus"], info["alStatusCode"] = 2, code
+        self.bus.slaves[position]["stuck"] = stuck
+
+    def test_finding_says_the_device_reports_no_fault(self):
+        self.scan()
+        self.stop_device_in_preop(1)
+        d = self.scan()["devices"][1]
+        self.assertEqual((d["level"], d["findings"]), ("warning", 1))
+        self.assertRegex(d["finding_texts"][0], "Pre-OP while the master is in OP: the device reports no fault")
+
+    def test_finding_puts_the_code_into_words(self):
+        self.scan()
+        self.stop_device_in_preop(1, 0x1B)
+        self.assertRegex(self.scan()["devices"][1]["finding_texts"][0], r"last code #x001B \(sync manager watchdog\)")
+
+    def test_request_op_reaches_op(self):
+        self.scan()
+        self.stop_device_in_preop(1, stuck=False)
+        self.scan()
+        r = self.core.request_device_op(1)
+        self.assertEqual((r["reached"], r["current"]), (True, "op"))
+        self.core.wait_scan()
+        self.assertEqual(self.core.state()["devices"][1]["state"], "OP")
+        self.assertIn(("write_json", MASTER + "device_access/slave_state",
+                       {"request": {"addressType": "autoincrement", "address": 0xFFFF, "newState": "op"}}), self.bus.calls)
+
+    def test_request_op_says_why_it_stayed(self):
+        self.scan()
+        self.stop_device_in_preop(1, 0x1B)
+        self.scan()
+        self.core.master_wait = 0.1
+        r = self.core.request_device_op(1)
+        self.assertFalse(r["reached"])
+        self.assertRegex(r["message"], r"did not reach OP: it is in Pre-OP\. Its last code is #x001B \(sync manager watchdog\)")
+        self.core.wait_scan()
+
+    def test_request_op_reports_a_refusal(self):
+        self.scan()
+        self.bus.write_json = lambda address, value: (_ for _ in ()).throw(BusError("write: DL_FAILED (Ecat: Timeout)"))
+        r = self.core.request_device_op(1)
+        self.assertFalse(r["reached"])
+        self.assertRegex(r["message"], "master refused the request: .*Ecat: Timeout")
+        self.core.wait_scan()
+
+    def test_request_op_needs_the_device_on_the_bus(self):
+        self.scan()
+        unplug(self.bus, XI190202)
+        self.scan()
+        with self.assertRaisesRegex(ConfigError, "not present on the bus"):
+            self.core.request_device_op(1)
 
     def test_build_warns_when_the_cycle_differs_from_the_scheduler_task(self):
         self.scan()

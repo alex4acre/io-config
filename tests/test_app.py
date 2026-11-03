@@ -215,7 +215,7 @@ class CompareTest(unittest.TestCase):
         online["response"]["alStatus"] = 0x12
         online["response"]["alStatusCode"] = 0x1D
         r = self.report(1, online=online)
-        self.assertEqual(r["findings"][0], {"level": "error", "text": "Device reports an error: AL status Pre-OP (error), code #x001D"})
+        self.assertEqual(r["findings"][0], {"level": "error", "text": "Device reports an error: AL status Pre-OP (error), code #x001D (invalid output configuration)"})
         online["response"]["alStatus"] = 0x04
         self.assertIn("Safe-OP while the master is in OP", self.report(1, online=online)["findings"][0]["text"])
 

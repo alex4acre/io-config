@@ -114,16 +114,32 @@ const SOURCE_TEXT = {
   eeprom: { read: ["read", "ok"], error: ["error", "warn"], "not read": ["not read", "muted"] },
 };
 
+const SOURCE_TIPS = {
+  esi: { exact: "The library has an ESI for this device and revision.", nearest: "The library has an ESI for this device, but for another revision.",
+    none: "The library has no ESI for this device.", error: "The device's ESI could not be read." },
+  eni: { same: "In the master's running configuration, with this device and revision.", revision: "In the running configuration, with another revision.",
+    different: "The running configuration has another device at this place.", none: "This device is not in the master's running configuration." },
+  eeprom: { read: "The device's EEPROM was read.", error: "The device's EEPROM could not be read.", "not read": "The device's EEPROM has not been read." },
+};
+
 function badge(source, match) {
   const [text, cls] = (SOURCE_TEXT[source] || {})[match] || [match || "-", "muted"];
-  return el("span", { class: "badge " + cls }, text);
+  return el("span", { class: "badge " + cls, title: (SOURCE_TIPS[source] || {})[match] || "" }, text);
 }
 
-const LEVEL_TEXT = { ok: "OK", info: "OK", warning: "Check", error: "Error" };
+const LEVEL_TEXT = { ok: "OK", info: "OK", warning: "Warning", error: "Error" };
+const STATE_TIPS = {
+  Init: "Init: the device is starting; no mailbox and no process data.",
+  "Pre-OP": "Pre-OP: mailbox works (CoE, SoE); no process data.",
+  Bootstrap: "Bootstrap: firmware update state.",
+  "Safe-OP": "Safe-OP: inputs are updated; outputs stay in their safe state.",
+  OP: "OP: inputs and outputs are exchanged.",
+};
 
-function levelBadge(level, count) {
+function levelBadge(level, count, texts) {
   const cls = { ok: "ok", info: "ok", warning: "warn", error: "bad" }[level] || "muted";
-  return el("span", { class: "badge " + cls }, LEVEL_TEXT[level] + (count ? ` (${count})` : ""));
+  const title = (texts || []).length ? texts.map((t) => "- " + t).join("\n") : "Nothing to look at. Click the row for details.";
+  return el("span", { class: "badge " + cls, title }, LEVEL_TEXT[level] + (count ? ` (${count})` : ""));
 }
 
 // --- views --------------------------------------------------------------------------------------
@@ -200,9 +216,10 @@ function renderState(s) {
   for (const d of s.devices) {
     const tr = row(tbody, [
       d.position, d.name, d.description, d.address ?? "-", hex(d.revision, 8),
-      d.present ? d.state : el("span", { class: "badge warn" }, "not present"),
+      d.present ? el("span", { title: STATE_TIPS[d.state] || "" }, d.state) :
+        el("span", { class: "badge warn", title: "In the running configuration, but not found on the bus at the last scan." }, "not present"),
       badge("esi", d.sources.esi), badge("eni", d.sources.eni), badge("eeprom", d.sources.eeprom),
-      levelBadge(d.level, d.findings),
+      levelBadge(d.level, d.findings, d.finding_texts),
     ], { class: "click" + (d.position === selected ? " selected" : "") });
     tr.onclick = () => openDevice(d.position);
   }
@@ -309,7 +326,8 @@ function renderConfiguration(s, downloading) {
   tbody.replaceChildren();
   const unconfiguredRows = (place) => {
     for (const d of c.unconfigured.filter((u) => u.before === place)) {
-      row(tbody, ["-", d.name, d.description, hex(d.revision, 8), yesNo(false), yesNo(true), addFromBus(d, downloading)]);
+      row(tbody, ["-", d.name, d.description, hex(d.revision, 8), yesNo(false, "Not in this list: it is not written."),
+        yesNo(true, "Found on the bus at the last scan."), addFromBus(d, downloading)]);
     }
   };
   for (const d of c.devices) {
@@ -319,8 +337,9 @@ function renderConfiguration(s, downloading) {
       ev.stopPropagation();
       startRename(d, name);
     };
-    const present = c.scanned ? yesNo(d.present) : el("span", { class: "muted", title: "Not scanned yet" }, "-");
-    const tr = row(tbody, [d.position, name, d.description, hex(d.revision, 8), yesNo(true), present,
+    const present = c.scanned ? yesNo(d.present, d.present ? "Found on the bus at the last scan." : "Not found on the bus at the last scan.") :
+      el("span", { class: "muted", title: "Not scanned yet" }, "-");
+    const tr = row(tbody, [d.position, name, d.description, hex(d.revision, 8), yesNo(true, "In this list: it gets written."), present,
       rowTools(d, c.devices.length, downloading)],
       { class: "listed click" + (d.position === cselected ? " selected" : "") });
     tr.onclick = () => openCfgDevice(d.position);
@@ -328,8 +347,8 @@ function renderConfiguration(s, downloading) {
   unconfiguredRows(c.devices.length);
 }
 
-function yesNo(yes) {
-  return el("span", { class: "badge " + (yes ? "ok" : "warn") }, yes ? "Yes" : "No");
+function yesNo(yes, title) {
+  return el("span", { class: "badge " + (yes ? "ok" : "warn"), title }, yes ? "Yes" : "No");
 }
 
 function addFromBus(d, busy) {
@@ -665,6 +684,9 @@ async function openDevice(pos) {
   const protocols = d.sources.eeprom.mailbox || [];
   const known = d.sources.eeprom.match === "read" || protocols.length > 0;   // EEPROM read: its mailbox protocols count
   $("d-writable").disabled = !d.present;
+  if (other) $("d-op-msg").hidden = true;
+  $("d-request-op").hidden = !d.present || d.state === "OP";
+  $("d-request-op").disabled = !$("d-writable").checked;
   $("d-pd").hidden = !d.present;
   $("d-objects").hidden = !d.present || (known && !protocols.includes("CoE"));
   $("d-soe").hidden = !d.present || !protocols.includes("SoE");
@@ -950,7 +972,21 @@ $("save-name").onkeydown = (ev) => { if (ev.key === "Enter") saveSaved("active",
 // --- writable switch of the open device (not saved) ----------------------------------------------------
 
 const writesAllowed = () => $("d-writable").checked;
+$("d-request-op").onclick = async () => {
+  if (!confirm("Asks the master to bring this device to OP. Its outputs can start to act.\n\nRequest OP?")) return;
+  const msg = $("d-op-msg");
+  try {
+    banner("");
+    const r = await busy("request-op", "Requesting OP", () => api("POST", `/devices/${selected}/request-op`, { confirm: true }));
+    msg.textContent = r.message;
+    msg.hidden = false;
+    poll();
+  } catch (e) {
+    banner(e.message);
+  }
+};
 $("d-writable").onchange = () => {
+  $("d-request-op").disabled = !$("d-writable").checked;
   if (!$("detail").hidden && panel === "pd") loadPd(true);
   if (soeIdn !== null && soePos === selected) openSoe(soeIdn);
   if (currentObject) openObject(currentObject);

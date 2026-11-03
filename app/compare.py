@@ -19,11 +19,32 @@ STATE_NAMES = {"init": "Init", "preop": "Pre-OP", "bootstrap": "Bootstrap", "saf
 AL_CODES = {1: "init", 2: "preop", 3: "bootstrap", 4: "safeop", 8: "op"}      # the AL status of a device
 AL_STATES = {code: STATE_NAMES[name] for code, name in AL_CODES.items()}
 LEVELS = ("ok", "info", "warning", "error")
+AL_STATUS_CODES = {  # ETG.1000.6: the device's reason for refusing or leaving a state
+    0x0001: "unspecified error", 0x0002: "no memory", 0x0011: "invalid requested state change",
+    0x0012: "unknown requested state", 0x0013: "bootstrap not supported", 0x0014: "no valid firmware",
+    0x0015: "invalid mailbox configuration (bootstrap)", 0x0016: "invalid mailbox configuration (Pre-OP)",
+    0x0017: "invalid sync manager configuration", 0x0018: "no valid inputs available",
+    0x0019: "no valid outputs", 0x001A: "synchronization error", 0x001B: "sync manager watchdog",
+    0x001C: "invalid sync manager types", 0x001D: "invalid output configuration", 0x001E: "invalid input configuration",
+    0x001F: "invalid watchdog configuration", 0x0020: "device needs a cold start", 0x0021: "device needs Init",
+    0x0022: "device needs Pre-OP", 0x0023: "device needs Safe-OP", 0x0024: "invalid input mapping",
+    0x0025: "invalid output mapping", 0x0026: "inconsistent settings", 0x0027: "free run not supported",
+    0x0028: "sync mode not supported", 0x0029: "free run needs 3-buffer mode", 0x002A: "background watchdog",
+    0x002B: "no valid inputs and outputs", 0x002C: "fatal sync error", 0x002D: "no sync error",
+    0x0030: "invalid DC sync configuration", 0x0031: "invalid DC latch configuration", 0x0032: "PLL error",
+    0x0033: "DC sync I/O error", 0x0034: "DC sync timeout", 0x0035: "invalid DC sync cycle time",
+    0x0036: "invalid SYNC0 cycle time", 0x0037: "invalid SYNC1 cycle time", 0x0050: "EEPROM no access",
+    0x0051: "EEPROM error", 0x0060: "device restarted locally"}
 
 
 def state_name(value) -> str:
     """A state value of the Data Layer (init, preop, bootstrap, safeop, op) for people; unknown values as read."""
     return STATE_NAMES.get(value, value)
+
+
+def al_code_text(code) -> str:
+    """An AL status code for people, e.g. 0x001B (sync manager watchdog)."""
+    return f"{hx(code)} ({AL_STATUS_CODES.get(code, 'code not in ETG.1000.6 or vendor specific')})"
 
 
 def al_state(status) -> str:
@@ -73,9 +94,13 @@ def device_report(position, online, eeprom, eeprom_error, eni_slave, esi_match, 
         add("warning", "Not on the bus at the last scan" if configuration else "Not present on the bus")
     else:
         if al is not None and al & 0x10:
-            add("error", f"Device reports an error: AL status {al_state(al)}, code {hx(info.get('alStatusCode', 0))}")
+            add("error", f"Device reports an error: AL status {al_state(al)}, code {al_code_text(info.get('alStatusCode', 0))}")
         elif al is not None and master_op and al & 0x0F != 8:
-            add("warning", f"Device is in {al_state(al)} while the master is in {state_name('op')}")
+            code = info.get("alStatusCode") or 0
+            add("warning", f"Device is in {al_state(al)} while the master is in {state_name('op')}: " +
+                (f"last code {al_code_text(code)}" if code else
+                 "the device reports no fault, so a start-up step of the master failed or nothing asked for the next state. "
+                 "Request OP shows the master's answer"))
 
     # --- current configuration (ENI)
     if eni_slave is None and info:

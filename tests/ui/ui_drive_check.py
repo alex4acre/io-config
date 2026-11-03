@@ -114,6 +114,17 @@ try:
     check(until("document.getElementById('e-msg').textContent.startsWith('Saved')"), "drive edit saved")
     shot("drive-editor")
 
+    # Request OP: only below OP, behind Writable, and the master's answer is shown
+    js("document.getElementById('tab-bus').click(); document.querySelectorAll('#devices tbody tr')[4].cells[2].click();")
+    check(until("!document.getElementById('detail').hidden && !document.getElementById('d-request-op').hidden"), "Request OP is offered for a device below OP")
+    check(js("return document.getElementById('d-request-op').disabled"), "Request OP needs Writable")
+    js("document.getElementById('d-writable').click()")
+    check(not js("return document.getElementById('d-request-op').disabled"), "Writable enables Request OP")
+    js("window.confirm = () => true; document.getElementById('d-request-op').click();")
+    check(until("!document.getElementById('d-op-msg').hidden", 20), "the answer is shown: " + js("return document.getElementById('d-op-msg').textContent"))
+    check("refused" in js("return document.getElementById('d-op-msg').textContent"), "an unconfigured drive: the master's refusal is shown")
+    until("!document.getElementById('scan').disabled", 30)
+    js("document.getElementById('tab-config').click();")
     js("document.getElementById('plan-devices').tBodies[0].replaceChildren(); document.getElementById('build').click();")
     check(until("document.querySelector('#plan-devices tbody').textContent.includes('Drive1')"), "plan lists Drive1")
     js("window.confirm = () => true; document.getElementById('write').click();")

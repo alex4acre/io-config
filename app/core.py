@@ -224,7 +224,8 @@ class Core:
                 "state", "level", "mailbox")
         out = {k: d[k] for k in keys}
         out["sources"] = {k: v["match"] for k, v in d["sources"].items()}
-        out["findings"] = len([f for f in d["findings"] if f["level"] != "info"])
+        out["finding_texts"] = [f["text"] for f in d["findings"] if f["level"] != "info"]
+        out["findings"] = len(out["finding_texts"])
         return out
 
     def device(self, position: int) -> dict:
@@ -276,6 +277,37 @@ class Core:
             self._thread = threading.Thread(target=self._master_request_thread, args=(state,), name="master-state", daemon=True)
             self._thread.start()
             return dict(self.master_request)
+
+    def request_device_op(self, position: int) -> dict:
+        """Asks the master to bring one device to Op and waits for it; says what the master and the device answered.
+        Afterwards a scan refreshes the lists."""
+        with self.lock:
+            if self._busy():
+                raise ConfigError("a scan or download is running")
+            address = self._autoinc(position)
+        base = f'{INSTANCES}/{self.config["instance"]}/device_access/'
+        reached, current, message, code = False, "", "", 0
+        try:
+            self.bus.write_json(base + "slave_state", {"request": dict(address, newState="op")})
+            end = time.monotonic() + self.master_wait
+            while True:
+                current = self.bus.read_args(base + "slave_state", {"request": address}).get("response", {}).get("currentState", "")
+                reached = current == "op"
+                if reached or time.monotonic() >= end:
+                    break
+                time.sleep(0.3)
+            code = self.bus.read_args(base + "slave_online_info", {"request": address}).get("response", {}).get("alStatusCode") or 0
+            message = "The device reached OP." if reached else (
+                f"The device did not reach OP: it is in {compare.state_name(current) or '?'}. " +
+                (f"Its last code is {compare.al_code_text(code)}." if code else "It reports no fault code."))
+        except Exception as e:
+            message = f"The master refused the request: {e}"
+            self.log(f"Request OP at position {position}: {e}")
+        try:
+            self.start_scan()
+        except ConfigError:
+            pass
+        return {"reached": reached, "current": current, "code": code, "message": message}
 
     def _master_request_thread(self, state):
         base = f'{INSTANCES}/{self.config["instance"]}/admin/fieldbus_status/master_state'

@@ -269,7 +269,13 @@ visible.
 15. **Cycle time from the active configuration (1.8.2, 2026-11-03, user's decision):** every scan and Update from the
    active bus set the Cycle time field to the active value, also over a typed one. Build warns (never refuses) when the
    cycle differs from scheduler task `ctrlXAutomation`, or when the task can't be read.
-16. **Next:** more than one frame, free PDO mapping (editing PDO contents),
+16. **Tooltips, Findings and Request OP (1.8.3, 2026-11-03, user's decisions):** `www/tips.js` holds a tooltip per column and
+   setting; badges say what they mean; the Findings badge (was "Check") lists its findings. A device with no process data and
+   no ESI FMMUs gets no FMMU commands and no ProcessData element, byte for byte as I/O Engineering (XC-EC-02 stayed in Pre-OP
+   with them). A device below the master's state: finding with the AL code in words or "no fault". **Request OP**
+   (`POST /devices/<pos>/request-op`, confirm, behind Writable): writes `device_access/slave_state` (node: "Get and set slave
+   state"), waits up to `master_wait`, reports the state and code, then scans. The write hasn't run on a real device yet.
+17. **Next:** more than one frame, free PDO mapping (editing PDO contents),
    modules from separate module files (EtherCATModule, e.g. ctrlX DRIVE FSoE).
 
 ## Open questions

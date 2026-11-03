@@ -51,7 +51,7 @@
       <div class="scroll">
         <table id="devices">
           <thead><tr><th>Pos</th><th>Name</th><th>Device</th><th>Address</th><th>Revision</th><th>State</th>
-            <th>ESI</th><th>ENI</th><th>EEPROM</th><th>Check</th></tr></thead>
+            <th>ESI</th><th>ENI</th><th>EEPROM</th><th>Findings</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -63,8 +63,10 @@
       <div class="row head">
         <h2 id="d-title"></h2>
         <label class="check warnlabel" title="Allows writing this device's outputs, CoE objects and SoE parameters (real hardware). Off again when another device is opened or the page reloads."><input id="d-writable" type="checkbox"> Writable</label>
+        <button id="d-request-op" hidden>Request OP</button>
         <button id="d-close">Close</button>
       </div>
+      <p id="d-op-msg" class="warn-note" hidden></p>
       <nav class="tabs subtabs">
         <button id="d-pd" class="tab" data-panel="pd">Process data</button>
         <button id="d-objects" class="tab" data-panel="objects">Objects (CoE)</button>
@@ -340,5 +342,6 @@
     </section>
   </main>
   <script src="app.js"></script>
+  <script src="tips.js"></script>
 </body>
 </html>

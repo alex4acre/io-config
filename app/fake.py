@@ -180,6 +180,10 @@ class FakeBus:
                 return self._coe(address.rsplit("/", 1)[1], request)
             if address == MASTER + "device_access/soe/parameter":
                 return self._soe(request)
+            if address == MASTER + "device_access/slave_state":
+                info = self._slave(request)["online_info"]["response"]
+                names = {1: "init", 2: "preop", 3: "bootstrap", 4: "safeop", 8: "op"}
+                return {"response": {"currentState": names.get(info.get("alStatus", 0) & 0x0F, "unknown"), "requestedState": "op"}}
             raise BusError(f"read {address}: DL_INVALID_ADDRESS")
 
     def _coe(self, node, req):
@@ -242,6 +246,14 @@ class FakeBus:
         """SDO downloads (device_access/coe/sdo): the new bytes become the object's value, if it is writable."""
         with self.lock:
             self.calls.append(("write_json", address, value))
+            if address == MASTER + "device_access/slave_state":
+                req = (value or {}).get("request", {})
+                s = self._slave(req)
+                if not self._configured(s):
+                    raise BusError("write: DL_FAILED (Ecat: Device not found)")
+                if not s.get("stuck"):
+                    s["online_info"].setdefault("response", s["online_info"])["alStatus"] = 8
+                return
             if address == MASTER + "device_access/soe/parameter":
                 req = (value or {}).get("request", {})
                 s = self._slave(req)

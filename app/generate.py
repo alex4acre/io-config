@@ -378,7 +378,10 @@ def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars, eoe=
         _sub(info, tag, value)
 
     # process data
-    pd = _sub(s, "ProcessData")
+    process_sms = [sm for sm in dev["sm"] if sm["type"] in ("Outputs", "Inputs")]
+    # a device without any process data has no ProcessData element, as in I/O Engineering (XC-EC-02)
+    has_process_data = bool(lay["out_size"] or lay["in_size"] or process_sms or dev["pdos"])
+    pd = _sub(s, "ProcessData") if has_process_data else None
     if lay["out_size"]:
         send = _sub(pd, "Send")
         _sub(send, "BitStart", (FRAME_HEADER + lay["out_off"]) * 8)
@@ -387,7 +390,6 @@ def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars, eoe=
         recv = _sub(pd, "Recv")
         _sub(recv, "BitStart", (FRAME_HEADER + lay["in_off"]) * 8)
         _sub(recv, "BitLength", lay["in_size"] * 8)
-    process_sms = [sm for sm in dev["sm"] if sm["type"] in ("Outputs", "Inputs")]
 
     def sm_size(sm):
         """Bytes of one process-data sync manager: the whole direction, or (several sync managers per
@@ -559,7 +561,9 @@ def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars, eoe=
             _cmd(ic, "OS", "clear output sm", FPWR, phys, ado, zero8, requires=False)
         _cmd(ic, "SO" if sm.get("op_only") else "PS", f'set sm {sm["no"]} ({label})', FPWR, phys, ado,
              _sm_data(sm["start"], size, sm["control"], active), cnt=1, requires=False)
-    fmmus = dev["fmmu"] or (["Outputs", "Inputs", "MBoxState"] if mbx else ["Outputs", "Inputs"])
+    # no FMMUs in the ESI and nothing to map: none are written (XC-EC-02 stayed in Pre-OP with them)
+    fmmus = dev["fmmu"] or (["Outputs", "Inputs", "MBoxState"] if mbx else
+                            ["Outputs", "Inputs"] if has_process_data else [])
     process_fmmus, mbx_fmmu = [], None          # FMMUs are written active, OpOnly or not (as I/O Engineering)
     for i, kind in enumerate(fmmus):
         if kind in ("Outputs", "Inputs"):

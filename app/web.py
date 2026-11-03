@@ -35,6 +35,7 @@ ROUTES = [
     ("POST", r"/scan", "post_scan"),
     ("GET", r"/master/state", "get_master_state"),
     ("POST", r"/master/state", "post_master_state"),
+    ("POST", r"/devices/(\d+)/request-op", "post_device_request_op"),
     ("GET", r"/devices/(\d+)", "get_device"),
     ("GET", r"/devices/(\d+)/edit", "get_edit"),
     ("PUT", r"/devices/(\d+)/edit", "put_edit"),
@@ -215,6 +216,11 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         if state not in REQUESTABLE:
             raise HttpError(400, '{"state": ' + " | ".join(f'"{x}"' for x in REQUESTABLE) + "} is needed")
         self.send_json(202, core.request_master_state(state))
+
+    def post_device_request_op(self, position):
+        if self.read_json().get("confirm") is not True:
+            raise HttpError(400, '{"confirm": true} is needed: this changes a device\'s state')
+        self.send_json(200, core.request_device_op(int(position)))
 
     def get_device(self, position):
         self.send_json(200, core.device(int(position)))
