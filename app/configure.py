@@ -282,8 +282,8 @@ def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = N
         devices.append(dev)
         rows.append({"position": pos, "name": dev["name"], "source": dev["source"], "note": "; ".join(note),
                      "present": not absent(src),
-                     "inputs": sum(e["bits"] for p in dev["pdos"] if p["dir"] == "tx" for e in p["entries"]) // 8,
-                     "outputs": sum(e["bits"] for p in dev["pdos"] if p["dir"] == "rx" for e in p["entries"]) // 8})
+                     "inputs": (sum(e["bits"] for p in dev["pdos"] if p["dir"] == "tx" for e in p["entries"]) + 7) // 8,
+                     "outputs": (sum(e["bits"] for p in dev["pdos"] if p["dir"] == "rx" for e in p["entries"]) + 7) // 8})
 
     warnings += [f"{d} is on the bus but not in this configuration" for d in unlisted or []]
 

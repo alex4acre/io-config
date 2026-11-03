@@ -306,10 +306,7 @@ def _layout(devices):
         sizes = {}
         for direction in ("rx", "tx"):
             bits = sum(e["bits"] for p in dev["pdos"] if p["dir"] == direction for e in p["entries"])
-            if bits % 8:
-                raise GenerateError(f'{dev["name"]}: {"outputs" if direction == "rx" else "inputs"} are {bits} bits, '
-                                    "not whole bytes")
-            sizes[direction] = bits // 8
+            sizes[direction] = (bits + 7) // 8     # e.g. XI213204: 4 outputs in one byte; the next device starts on a byte
         has_mbx = dev.get("mailbox") is not None
         lay.append({"pos": pos, "address": FIRST_ADDRESS + pos, "autoinc": (-pos) & 0xFFFF,
                     "out_size": sizes["rx"], "in_size": sizes["tx"], "out_off": out_off, "in_off": in_off,

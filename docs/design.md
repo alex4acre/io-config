@@ -262,7 +262,11 @@ visible.
    (`configuration.unconfigured`: `bus_pos`, `before`), with Add to list (`POST /project/devices/add-from-bus`, no ESI
    needed). **Changes 1.7:** the first list and Update from the active bus take the running configuration (missing
    devices included), no longer new bus devices; a master without a configuration therefore starts with an empty list.
-14. **Next:** more than one frame, free PDO mapping (editing PDO contents),
+14. **Modules with less than a whole byte (1.8.1, 2026-11-03):** e.g. XI213204 (4 BOOL outputs, ESI `DefaultSize="1"`), also
+   XI110204, XI150204, XI211204, XI231302, XI232302, XI233204, XI234204, XI250204. Each direction's size rounds up to
+   bytes; the variables keep their bit offsets, the next device starts on a byte. No I/O Engineering reference for such a
+   module yet (none in the running ENIs seen): compare when one is available.
+15. **Next:** more than one frame, free PDO mapping (editing PDO contents),
    modules from separate module files (EtherCATModule, e.g. ctrlX DRIVE FSoE).
 
 ## Open questions
