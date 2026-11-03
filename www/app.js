@@ -209,6 +209,7 @@ function renderState(s) {
   renderConfiguration(s, downloading);
   if (s.scan.finished !== lastFinished) {
     lastFinished = s.scan.finished;
+    $("cycle").value = "";          // renderConfig fills it again: a scan always brings the active cycle time
     if (selected !== null) openDevice(selected);
     if (cselected !== null) openCfgDevice(cselected);
     dropPlan();                     // a new scan makes a built configuration stale
@@ -558,7 +559,10 @@ $("add").onclick = async () => {
 $("project-update").onclick = () => {
   if (confirm("Replaces the list and all unwritten changes with the master's running configuration.\n" +
     "Devices on the bus that are not in it are shown as not configured.\n\nUpdate the list from the active bus?")) {
-    projectChange(() => api("POST", "/project/update", { confirm: true }));
+    projectChange(async () => {
+      await api("POST", "/project/update", { confirm: true });
+      $("cycle").value = "";
+    });
   }
 };
 

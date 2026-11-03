@@ -225,9 +225,11 @@ try:
         check(js("return document.querySelectorAll('#cfg-devices tbody tr')[1] === " + unconfigured), "shown at its wiring place")
         last_scan = text("m-time")
         time.sleep(1.2)
-        js("document.getElementById('cfg-scan').click()")
+        js("document.getElementById('cycle').value = '1000'; document.getElementById('cfg-scan').click()")
         check(until(f"document.getElementById('m-time').textContent !== {last_scan!r}", 30), "Scan bus on the Configuration tab scans")
         check(until(f"!!{unconfigured}"), "the scan doesn't change the list")
+        check(until("document.getElementById('cycle').value === document.getElementById('m-cycle').textContent.split(' ')[0]"),
+              "the scan sets the cycle time field to the active value, over a typed one: " + js("return document.getElementById('cycle').value"))
         js(f"{unconfigured}.querySelector('button').click()")
         check(until(f"!{unconfigured}"), "Add to list")
         check(names()[1].startswith("XI190202"), f"back at its place: {names()}")
@@ -393,11 +395,13 @@ try:
         check(until("document.querySelectorAll('#devices tbody tr').length === 7", 30), "the Bus tab shows what the master runs now")
         # Update from the active bus: confirm, replaces the list
         confirms()
-        js("document.getElementById('project-update').click()")
+        js("document.getElementById('cycle').value = '1000'; document.getElementById('project-update').click()")
         check(js("return window.__confirms.length") == 1 and "Replaces the list and all unwritten changes with the master's running configuration" in
               js("return window.__confirms[0]"), "Update asks first: " + str(js("return window.__confirms")))
         check(until("document.querySelectorAll('#cfg-devices tbody tr.listed').length === 7 && document.getElementById('cfg-note').textContent === 'Configured but not on the bus: 3.'"),
               "after Update the list is the running configuration, missing devices counted: " + text("cfg-note"))
+        check(until("document.getElementById('cycle').value === document.getElementById('m-cycle').textContent.split(' ')[0]"),
+              "Update sets the cycle time field to the active value")
     errors = js("return window.__errors || []")
     check(not errors, f"no script errors {errors}")
 finally:

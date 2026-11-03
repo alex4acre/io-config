@@ -38,6 +38,7 @@ from app.esi import EsiLibrary
 
 DEFAULTS = {"instance": "ethercatmaster"}
 INSTANCES = "fieldbuses/ethercat/master/instances"
+AUTOMATION_TASK = "scheduler/tasks/ctrlXAutomation/properties"      # it calls the master: same cycle time, or the master stops
 REQUESTABLE = ("init", "preop", "bootstrap", "safeop", "op")       # EthercatState without "unknown" (ethercat_state.fbs)
 EEPROM_CHUNK_WORDS = 64
 EEPROM_MAX_WORDS = 8192
@@ -823,7 +824,19 @@ class Core:
         project = self._load_project()
         if project and current["eni"] and project.get("eni_checksum") != generate.checksum(current["eni"]):
             p["warnings"].append("The master's configuration changed since this list was started")
+        p["warnings"] += self._task_cycle_warnings(p["cycle_us"])
         return p
+
+    def _task_cycle_warnings(self, cycle_us: int) -> list:
+        """The scheduler task that calls the master must have the configuration's cycle time."""
+        try:
+            task = self.bus.read(AUTOMATION_TASK)["cycletime"]
+        except Exception as e:
+            return [f"The cycle time of the scheduler task ctrlXAutomation could not be read ({e}): check that it is {cycle_us} µs"]
+        if task != cycle_us:
+            return [f"The cycle time {cycle_us} µs differs from the scheduler task ctrlXAutomation ({task} µs): the master "
+                    "reports an invalid cycle time until they match (Settings > Scheduler)"]
+        return []
 
     def plan(self, cycle_us=None) -> dict:
         """The configuration the Configuration list gets (not written yet); no scan needed."""

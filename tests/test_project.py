@@ -489,6 +489,20 @@ class ProjectTest(unittest.TestCase):
         self.core.project_add_from_bus(1)
         self.assertEqual(self.names(), ["XB_EC_12", "XI190202", "Analog", "XI522001"])
 
+    def test_build_warns_when_the_cycle_differs_from_the_scheduler_task(self):
+        self.scan()
+        self.assertEqual(self.core.plan()["warnings"], [])
+        warnings = self.core.plan(1000)["warnings"]
+        self.assertEqual(len(warnings), 1)
+        self.assertRegex(warnings[0], r"1000 µs differs from the scheduler task ctrlXAutomation \(2000 µs\)")
+
+    def test_build_warns_when_the_scheduler_task_cant_be_read(self):
+        self.scan()
+        del self.bus.nodes["scheduler/tasks/ctrlXAutomation/properties"]
+        p = self.core.plan()
+        self.assertEqual(p["errors"], [])
+        self.assertRegex(p["warnings"][0], "ctrlXAutomation could not be read .*check that it is 2000 µs")
+
     def test_update_on_a_matching_bus_is_identical(self):
         self.scan()
         self.core.project_move(1, 1)

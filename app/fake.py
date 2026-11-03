@@ -30,6 +30,7 @@ def recorded_nodes(data_dir: str = DATA) -> dict:
     with open(os.path.join(data_dir, "controller-ini.txt"), "rb") as f:
         ini = list(f.read())
     nodes[MASTER + "admin/fieldbus_config"] = {"response": {"ini": ini, "eni": eni}}
+    nodes["scheduler/tasks/ctrlXAutomation/properties"] = {"name": "ctrlXAutomation", "event": "cyclic", "cycletime": 2000}
     nodes[MASTER + "device_access/slave_online_info"] = None      # needs arguments
     nodes[MASTER + "device_access/slave_eeprom"] = None
     for name in ("object_dictionary_list", "object_description", "entry_description", "sdo"):

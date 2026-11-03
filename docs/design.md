@@ -266,7 +266,10 @@ visible.
    XI110204, XI150204, XI211204, XI231302, XI232302, XI233204, XI234204, XI250204. Each direction's size rounds up to
    bytes; the variables keep their bit offsets, the next device starts on a byte. No I/O Engineering reference for such a
    module yet (none in the running ENIs seen): compare when one is available.
-15. **Next:** more than one frame, free PDO mapping (editing PDO contents),
+15. **Cycle time from the active configuration (1.8.2, 2026-11-03, user's decision):** every scan and Update from the
+   active bus set the Cycle time field to the active value, also over a typed one. Build warns (never refuses) when the
+   cycle differs from scheduler task `ctrlXAutomation`, or when the task can't be read.
+16. **Next:** more than one frame, free PDO mapping (editing PDO contents),
    modules from separate module files (EtherCATModule, e.g. ctrlX DRIVE FSoE).
 
 ## Open questions
