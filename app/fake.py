@@ -307,6 +307,14 @@ class FakeBus:
                 self.nodes[MASTER + "admin/fieldbus_config/checksum"] = {"response": {"checksums": [
                     {"id": "eniCrc32", "checksum": checksum(eni)}, {"id": "iniCrc32", "checksum": checksum(ini)}]}}
                 self.written.append((eni, ini))
+                # the master publishes the variables of the ENI it got
+                from app.eni import parse_eni
+                prefix = MASTER + "realtime_data/"
+                for key in [k for k in self.nodes if k.startswith(prefix + "input/data/") or k.startswith(prefix + "output/data/")]:
+                    del self.nodes[key]
+                for s in parse_eni(eni)["slaves"] if eni else []:
+                    for v in s["variables"]:
+                        self.nodes[f'{prefix}{v["dir"]}/data/{v["name"]}'] = _initial(v)
                 return
             if address.startswith(MASTER + "realtime_data/output/data/") and address in self.nodes:
                 old = self.nodes[address]

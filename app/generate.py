@@ -49,6 +49,55 @@ def variable_name(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_")
 
 
+def standard_variables(dev: dict) -> list:
+    """The device's process variables in image order, with the names the master gets when nobody renames them:
+    [{"key": "in:Channel_1.Value", "standard": "Channel_1.Value", "dir": "input", "type", "bits"}]. The key stays
+    the same when the device or the variable is renamed; inputs and outputs may share a standard name."""
+    out = []
+    for direction, word, short in (("tx", "input", "in"), ("rx", "output", "out")):
+        for p in dev["pdos"]:
+            if p["dir"] != direction:
+                continue
+            for x in p["entries"]:
+                if x["index"]:
+                    standard = f'{variable_name(p["name"])}.{variable_name(x["name"])}'
+                    out.append({"key": f"{short}:{standard}", "standard": standard, "dir": word,
+                                "type": DATA_TYPE_NAMES.get(x["type"], x["type"]), "bits": x["bits"]})
+    return out
+
+
+def names_from_eni(dev: dict, slave: dict) -> tuple:
+    """(names the configuration's ENI gives this device's variables where they aren't the standard ones, key -> name;
+    True if it has such names that can't be matched to the device's variables). Matched by place, type size and
+    direction, only when the ENI's variables are exactly the device's; other variables keep their standard names."""
+    names, unmatched = {}, False
+    variables = standard_variables(dev)
+    for word in ("input", "output"):
+        ours = [v for v in variables if v["dir"] == word]
+        theirs = sorted((v for v in slave.get("variables", []) if v["dir"] == word), key=lambda v: v["offset"])
+        parts = [v["name"].split("/", 1)[-1] for v in theirs]
+        standard = {v["standard"] for v in ours}
+        if all(p in standard for p in parts):
+            continue
+        if len(ours) != len(theirs) or any(a["bits"] != b["bits"] for a, b in zip(ours, theirs)) \
+                or any(p in standard and p != a["standard"] for a, p in zip(ours, parts)):
+            unmatched = True
+            continue
+        names.update({a["key"]: p for a, p in zip(ours, parts) if p != a["standard"]})
+    return names, unmatched
+
+
+def name_clashes(dev: dict) -> list:
+    """The custom variable names that another variable of the device also has (case does not matter)."""
+    names = dev.get("variable_names") or {}
+    variables = standard_variables(dev)
+    seen = {}
+    for v in variables:
+        name = names.get(v["key"]) or v["standard"]
+        seen[name.lower()] = seen.get(name.lower(), 0) + 1
+    return sorted({names[v["key"]] for v in variables if names.get(v["key"]) and seen[names[v["key"]].lower()] > 1})
+
+
 def device_name(text: str) -> str:
     """"ctrlX DRIVE XCS2-F/H (SoE)" -> "ctrlX_DRIVE_XCS2_F_H_SoE_" (I/O Engineering keeps the trailing "_")."""
     return re.sub(r"[^A-Za-z0-9]+", "_", text).lstrip("_") or "Device"
@@ -439,9 +488,12 @@ def _slave(config, dev, lay, cycle_ns, previous, inputs_vars, outputs_vars, eoe=
         for p in dev["pdos"]:
             if p["dir"] != direction:
                 continue
+            word = "in" if direction == "tx" else "out"
             for x in p["entries"]:
                 if x["index"]:
-                    target.append((f'{dev["name"]}/{variable_name(p["name"])}.{variable_name(x["name"])}',
+                    standard = f'{variable_name(p["name"])}.{variable_name(x["name"])}'
+                    name = (dev.get("variable_names") or {}).get(f"{word}:{standard}") or standard
+                    target.append((f'{dev["name"]}/{name}',
                                    DATA_TYPE_NAMES.get(x["type"], x["type"]), x["bits"], bit))
                 bit += x["bits"]
 

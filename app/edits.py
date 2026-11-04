@@ -107,6 +107,13 @@ def validate(src: dict, edit: dict) -> dict:
             problems.append("the name must start with a letter and contain only letters, digits and _ (max 64)")
         else:
             out["name"] = edit["name"]
+    if edit.get("variable_names") is not None:
+        names = edit["variable_names"]
+        if not isinstance(names, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in names.items()):
+            problems.append("variable_names must map variables to names")
+        else:
+            # empty = the standard name, also over a name read from the running configuration
+            out["variable_names"] = {k: "" if v == k.split(":", 1)[-1] else v.strip() for k, v in names.items()}
     esi = _esi(src)
     if edit.get("modules") is not None:
         chosen = edit["modules"]
@@ -278,6 +285,9 @@ def apply_edit(dev: dict, src: dict, edit: dict) -> dict:
             pdos.append(p)
         out["pdos"] = pdos
         out["source"] = "edited"
+    if edit.get("variable_names"):
+        names = dict(out.get("variable_names") or {}, **edit["variable_names"])
+        out["variable_names"] = {k: v for k, v in names.items() if v}
     if "startup" in edit:
         # the user's list replaces the startup commands kept from the current configuration (it starts as a
         # copy of them in the editor); the ESI's own commands stay
@@ -298,6 +308,30 @@ def apply_edit(dev: dict, src: dict, edit: dict) -> dict:
             mbx = dict(mbx, soe=dict(mbx["soe"], init=list(mbx["soe"].get("init", [])) + [dict(x, user=True) for x in soe_rows]))
         out["mailbox"] = mbx
     return out
+
+
+def check_variable_names(dev: dict, from_eni: dict, edit: dict):
+    """EditError if a name the user gave breaks the rules. Names read from the running configuration stay as they
+    are: another tool may have written them differently (I/O Engineering's modular devices use a slash)."""
+    problems = []
+    for key, name in (edit.get("variable_names") or {}).items():
+        if name and name != (from_eni or {}).get(key) and not NAME_RE.fullmatch(name):
+            problems.append(f'"{name}": a variable name must start with a letter and contain only letters, digits and _ (max 64)')
+    problems += [f'"{n}" is used by more than one variable of this device' for n in generate.name_clashes(dev)]
+    if problems:
+        raise EditError("; ".join(problems))
+
+
+def unused_names(dev: dict) -> dict:
+    """The custom names whose variable the device no longer has (its PDO was deselected, say): key -> name."""
+    known = {v["key"] for v in generate.standard_variables(dev)}
+    return {k: v for k, v in (dev.get("variable_names") or {}).items() if v and k not in known}
+
+
+def variable_rows(dev: dict) -> list:
+    """The Names tab: every process variable with its standard and custom name ("" = standard)."""
+    names = dev.get("variable_names") or {}
+    return [dict(v, name=names.get(v["key"], "")) for v in generate.standard_variables(dev)]
 
 
 def kept_startup(dev: dict) -> list:

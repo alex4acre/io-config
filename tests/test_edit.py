@@ -68,7 +68,7 @@ class EditTest(unittest.TestCase):
         self.core.save_edit(1, {"name": "Inputs_A"})
         self.assertEqual(self.built(1)["name"], "Inputs_A")
         p = self.core.plan_summary()
-        self.assertIn("Inputs_A/Channel_1_Sample_0.Value_0", p["variables"]["added"])
+        self.assertIn("Inputs_A/Channel_1_Sample_0.Value_0", [r["to"] for r in p["variables"]["renamed"]])
         with self.assertRaises(EditError):
             self.core.save_edit(1, {"name": "1 bad"})
         self.core.reset_edit(1)

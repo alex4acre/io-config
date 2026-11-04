@@ -21,6 +21,7 @@ const COLUMN_TIPS = {
   "e-modules": ["Slot of the modular device", "Module in that slot"],
   "e-pdos": ["Assign this PDO to the configuration", "Output (Rx) or input (Tx)", "PDO index", "PDO name", "Size in bits", "What the ESI requires or excludes"],
   "e-soe-cmds": ["SoE parameter number", "Value sent at start-up", "What the value does"],
+  "e-names": ["Output (to the device) or input (from the device)", "The name the variable has when you don't rename it", "Data type", "Size in bits", "Your name for the variable: letters, digits and _, starting with a letter. Empty = the standard name"],
   "e-startup": ["CoE object or SoE parameter", "Value written when the device starts", "State change that sends it, e.g. PS = Pre-OP to Safe-OP", "Your note"],
   "plan-devices": ["Place in the new configuration", "Device name", "Where the description came from: ESI, running configuration or EEPROM", "Input bytes", "Output bytes"],
   saved: ["Name you gave it", "Active: what the master ran. Proposed: your list, not written", "When it was saved", "Number of devices"],

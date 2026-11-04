@@ -846,7 +846,7 @@ $("build").onclick = async () => {
   $("plan").hidden = false;
   $("dl").hidden = true;
   const v = plan.variables;
-  const nChanges = v.added.length + v.removed.length + v.changed.length;
+  const nChanges = v.added.length + v.removed.length + v.changed.length + v.renamed.length;
   $("plan-summary").textContent = plan.errors.length ? "The configuration can't be built:" :
     plan.identical ? "Identical to the configuration the master runs now." :
     `Differs from the current configuration (${plan.eni_size} bytes ENI, cycle time ${plan.cycle_us} µs).`;
@@ -859,11 +859,12 @@ $("build").onclick = async () => {
   tb.replaceChildren();
   for (const d of plan.devices) row(tb, [d.position, d.name, d.note || d.source || "-", d.inputs + " B", d.outputs + " B"]);
   $("plan-vars").querySelector("summary").textContent = nChanges
-    ? `Process image: ${v.added.length} variables new, ${v.removed.length} removed, ${v.changed.length} changed (type or offset)`
+    ? `Process image: ${v.added.length} variables new, ${v.removed.length} removed, ${v.renamed.length} renamed, ${v.changed.length} changed (type or offset)`
     : "Process image: no variable changes";
   const body = $("plan-vars-body");
   body.replaceChildren();
-  for (const [label, list] of [["New", v.added], ["Removed", v.removed], ["Changed", v.changed]]) {
+  const renamed = v.renamed.map((r) => `${r.from} -> ${r.to}`);
+  for (const [label, list] of [["Renamed (update what uses the old path)", renamed], ["New", v.added], ["Removed", v.removed], ["Changed", v.changed]]) {
     if (list.length) body.append(el("h3", {}, label), el("ul", { class: "files" }, ...list.map((n) => el("li", {}, n))));
   }
   $("write").disabled = plan.errors.length > 0;
@@ -1057,6 +1058,7 @@ function renderEditor() {
       c.transitions.join(" "), c.comment, del]);
   }
   renderSoeEditor();
+  renderNames();
   if (!d.fixed_startup.length && !d.startup.length) row(sb, [el("span", { class: "muted" }, "none"), "", "", "", ""]);
   $("e-msg").textContent = d.edited ? "This position has saved changes." : "Defaults (no saved changes).";
 }
@@ -1179,6 +1181,53 @@ function updateEditorRules() {
   $("e-save").disabled = problems.length > 0;
 }
 
+// Names tab: typed names survive a reload of the editor (a scan, a save on the Settings tab) until they are saved
+let namesFor = null;
+
+function renderNames(forget) {
+  const tb = $("e-names").tBodies[0];
+  const typed = new Map();
+  if (!forget && namesFor === editPos) {
+    for (const i of tb.querySelectorAll("input")) if (i.value !== i.dataset.saved) typed.set(i.dataset.key, i.value);
+  }
+  namesFor = editPos;
+  tb.replaceChildren();
+  const device = cfgDevices.find((x) => x.position === editPos);
+  const prefix = device ? device.name : "Device";
+  for (const v of editData.variables) {
+    const input = el("input", { type: "text", maxlength: "64", "data-key": v.key, "data-saved": v.name, "aria-label": `Name for ${v.standard}` });
+    input.value = typed.has(v.key) ? typed.get(v.key) : v.name;
+    row(tb, [v.dir === "output" ? "out" : "in", v.standard, v.type, v.bits, input]);
+  }
+  const first = editData.variables[0];
+  $("n-example").textContent = first ? `realtime_data/${first.dir}/data/${prefix}/${first.name || "MyInput1"}` : "";
+  $("n-save").disabled = !editData.variables.length;
+  if (!editData.variables.length) row(tb, [el("span", { class: "muted" }, "This device has no process data."), "", "", "", ""]);
+}
+
+$("n-save").onclick = async () => {
+  const change = {};
+  for (const i of $("e-names").tBodies[0].querySelectorAll("input")) {
+    const value = i.value.trim();
+    if (value !== i.dataset.saved) change[i.dataset.key] = value;
+  }
+  const msg = $("n-msg");
+  if (!Object.keys(change).length) {
+    msg.textContent = "No names changed.";
+    msg.className = "muted";
+    return;
+  }
+  try {
+    editData = await api("PUT", `/devices/${editPos}/edit`, { variable_names: change });
+    renderNames(true);
+    msg.textContent = "Saved. Build the configuration to see and write the result.";
+    msg.className = "ok";
+  } catch (e) {
+    msg.textContent = e.message;       // shown where the user acts; the typed names stay to correct them
+    msg.className = "error";
+  }
+};
+
 async function openEditor(pos) {
   try {
     editData = await api("GET", `/devices/${pos}/edit`);
@@ -1219,10 +1268,11 @@ $("e-save").onclick = () => {
   saveEdit(change);
 };
 $("e-reset").onclick = async () => {
-  if (!confirm("Forget the saved name, modules, DC mode, PDO choice and startup parameters of this position?")) return;
+  if (!confirm("Forget the saved name, modules, DC mode, PDO choice, startup parameters and variable names of this position?")) return;
   try {
     editData = await api("DELETE", `/devices/${editPos}/edit`);
     soeLists = null;
+    namesFor = null;
     renderEditor();
   } catch (e) {
     banner(e.message);
@@ -1473,7 +1523,8 @@ async function loadPd(rebuild) {
       for (const v of r.variables) {
         const item = { v, cell: el("td", { class: "num" }) };
         const name = v.name.startsWith(prefix) ? v.name.slice(prefix.length) : v.name;
-        row(tb, [name, v.dir === "output" ? "out" : "in", v.type, item.cell, pdSetter(item)]);
+        const shown = v.standard ? el("span", { title: `Your name. Standard name: ${v.standard}` }, name) : name;
+        row(tb, [shown, v.dir === "output" ? "out" : "in", v.type, item.cell, pdSetter(item)]);
         pdRows.set(v.name, item);
       }
       if (!r.variables.length) {

@@ -158,7 +158,7 @@ nodes the master already offers under `fieldbuses/ethercat/master/instances/ethe
 | Identity, address, AL state, ports per device | `device_access/slave_online_info` | read with an argument (the position) |
 | EEPROM contents | `device_access/slave_eeprom` | read with arguments (position, word offset, length) |
 | CoE objects, SoE parameters | `device_access/coe/...`, `device_access/soe/parameter` | read/write with arguments |
-| Process data | `realtime_data/input|output/data/<variable>` | read/write |
+| Process data | `realtime_data/input|output/data/<variable>` (`<Device>/<Pdo>.<Entry>`, or `<Device>/<your name>` from 1.9.0) | read/write |
 
 So the **master scans the bus** (it does that on its own at start-up and when the topology changes), and the app
 reads the master's results, then each device's EEPROM through the master's EEPROM node. All calls go through the

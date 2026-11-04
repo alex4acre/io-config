@@ -100,7 +100,7 @@ class PlanTest(unittest.TestCase):
 
     def test_unchanged_bus_is_identical(self):
         p = build_plan(self.sources, self.current, "ethercatmaster")
-        self.assertEqual((p["errors"], p["identical"], p["variables"]), ([], True, {"added": [], "removed": [], "changed": []}))
+        self.assertEqual((p["errors"], p["identical"], p["variables"]), ([], True, {"added": [], "removed": [], "changed": [], "renamed": []}))
         self.assertEqual([d["source"] for d in p["devices"]], ["eni"] * 4)
 
     def test_empty_master_gets_the_same_file_from_the_esi(self):

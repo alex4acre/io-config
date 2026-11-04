@@ -190,3 +190,4 @@ ul.files li { margin: 2px 0; }
 @media (max-width: 600px) {
   header { padding: 0 16px; flex-wrap: wrap; } main { padding: 16px 12px 40px; } .banner { margin: 12px 12px 0; }
 }
+#e-names input { width: 100%; min-width: 260px; box-sizing: border-box; }

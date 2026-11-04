@@ -185,6 +185,13 @@ def describe(src: dict, used: set = None):
         dev = generate.apply_eni(dev, slave)
         dev["revision"] = slave["revision"]
         note.insert(0, "kept from the current configuration")
+        names, unmatched = generate.names_from_eni(dev, slave)
+        if names:
+            dev["variable_names"] = names
+        if unmatched:
+            text = (f'Position {src["pos"]}: the configuration has variable names that don\'t fit this device\'s '
+                    "process data: they are not kept, the variables get their standard names")
+            warning = f"{warning}; {text}" if warning else text
     else:
         base = generate.device_name(name)
         dev["name"], i = base, 1
@@ -279,6 +286,10 @@ def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = N
                 errors.append(f"Position {pos}: {e}")
         elif edit:
             warnings.append(f"Position {pos}: the saved edit was made for another device and is not used")
+        errors += [f'Position {pos}: the variable name "{n}" is used by more than one variable of this device'
+                   for n in generate.name_clashes(dev)]
+        warnings += [f'Position {pos}: the name "{n}" is not written, its variable {k.split(":", 1)[-1]} is no longer in the device\'s process data'
+                     for k, n in edits.unused_names(dev).items()]
         devices.append(dev)
         rows.append({"position": pos, "name": dev["name"], "source": dev["source"], "note": "; ".join(note),
                      "present": not absent(src),
@@ -298,13 +309,20 @@ def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = N
         except generate.GenerateError as e:
             errors.append(str(e))
 
-    diff = {"added": [], "removed": [], "changed": []}
+    diff = {"added": [], "removed": [], "changed": [], "renamed": []}
     if eni_bytes:
         old = _variables(current.get("parsed"))
         new = _variables(eni_mod.parse_eni(eni_bytes))
         diff["added"] = sorted(n for n in new if n not in old)
         diff["removed"] = sorted(n for n in old if n not in new)
         diff["changed"] = sorted(n for n in new if n in old and new[n] != old[n])
+        # the same place in the image under another name: users of the old path must follow
+        added = {new[n]: n for n in diff["added"]}
+        diff["renamed"] = [{"from": n, "to": added[old[n]]} for n in diff["removed"] if old[n] in added]
+        gone = {r["from"] for r in diff["renamed"]}
+        came = {r["to"] for r in diff["renamed"]}
+        diff["added"] = [n for n in diff["added"] if n not in came]
+        diff["removed"] = [n for n in diff["removed"] if n not in gone]
     old_names = [s["name"] for s in (current.get("parsed") or {}).get("slaves", [])]
     return {
         "devices": rows,

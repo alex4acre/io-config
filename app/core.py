@@ -1307,6 +1307,7 @@ class Core:
                 edit = None
             dev = configure.device_for(src, {position: edit} if edit else {})
             out = edits.options(src, dev, edit)
+            out["variables"] = edits.variable_rows(dev) if dev else []
             shown = next((d["name"] for d in self.cfg_devices if d["position"] == position), None)
             if shown and out["name"] and not (edit or {}).get("name"):
                 out["name"] = shown                         # the name Build gives it (with _2 ... if another has its name)
@@ -1347,9 +1348,16 @@ class Core:
             old = all_edits.get(position) if all_edits.get(position) and edits.applies(src, all_edits[position]) else {}
             merged = {k: v for k, v in old.items() if k != "identity"}
             merged.update({k: v for k, v in change.items() if k in ("name", "pdos", "startup", "soe_mdt", "soe_at", "modules", "dc_mode")})
+            if isinstance(change.get("variable_names"), dict):      # only the rows sent change
+                merged["variable_names"] = dict(old.get("variable_names") or {}, **change["variable_names"])
+            elif "variable_names" in change:
+                merged["variable_names"] = change["variable_names"]
             checked = edits.validate(src, merged)
             self._check_free_name(checked.get("name"), position)
-            configure.device_for(src, {position: checked})          # raises EditError if it can't be applied
+            dev = configure.device_for(src, {position: checked})    # raises EditError if it can't be applied
+            if dev is not None:
+                described = configure.describe(src)[0] or {}
+                edits.check_variable_names(dev, described.get("variable_names"), checked)
             all_edits[position] = dict(checked, bus=self._cfg_ids())
             self._save_edits(all_edits)
             self._edit_changed()
@@ -1579,12 +1587,15 @@ class Core:
     def process_data(self, position: int = None) -> dict:
         """The running configuration's variables with their values; with a position only that device's (the
         configuration's device paired with it by the last scan; none if the device isn't configured yet)."""
+        standard = {}
         with self.lock:
             parsed = (self.current or {}).get("parsed")
             slaves = parsed["slaves"] if parsed else []
             if position is not None:
-                slave = self._source(position).get("eni_slave")
+                src = self._source(position)
+                slave = src.get("eni_slave")
                 slaves = [slave] if slave else []
+                standard = self._standard_names(src, slave)
         if not parsed:
             raise ConfigError("scan the bus first (no configuration known)")
         base = f'{INSTANCES}/{self.config["instance"]}/realtime_data/'
@@ -1592,12 +1603,29 @@ class Core:
         for s in slaves:
             for v in s["variables"]:
                 item = {"device": s["name"], "name": v["name"], "dir": v["dir"], "type": v["type"], "bits": v["bits"]}
+                if v["name"] in standard:
+                    item["standard"] = standard[v["name"]]
                 try:
                     item["value"] = self.bus.read(f'{base}{v["dir"]}/data/{v["name"]}')
                 except Exception as e:
                     item["error"] = str(e)
                 out.append(item)
         return {"variables": out, "time": time.time()}
+
+    def _standard_names(self, src: dict, slave: dict) -> dict:
+        """Running variable -> standard name, for the variables that have a custom name. Asked for every 200 ms while
+        the Process data tab is open, so kept until the configuration's entry for the device changes."""
+        if not slave:
+            return {}
+        cached = getattr(self, "_standard_cache", None)
+        if cached and cached[0] is slave:
+            return cached[1]
+        dev = configure.describe(src)[0] or {}
+        names = dev.get("variable_names") or {}
+        out = {f'{slave["name"]}/{names[v["key"]]}': v["standard"]
+               for v in generate.standard_variables(dev) if names.get(v["key"])} if names else {}
+        self._standard_cache = (slave, out)
+        return out
 
     def write_output(self, name: str, value):
         with self.lock:
