@@ -90,6 +90,16 @@ class CoreTest(unittest.TestCase):
     def name_first(self, name="MyInput1"):
         return self.core.save_edit(self.pos, {"variable_names": {self.first["key"]: name}})
 
+    def test_pdo_rows_carry_the_variable_keys(self):
+        """The PDO table can name a variable from its entry, also before the PDO is saved as selected."""
+        out = self.core.edit_options(self.pos)
+        keys = {e["key"] for p in out["pdos"] for e in p["entries"] if e["index"]}
+        self.assertTrue({v["key"] for v in out["variables"]} <= keys)
+        self.assertEqual(out["variable_names"], {})
+        self.name_first()
+        self.assertEqual(self.core.edit_options(self.pos)["variable_names"], {self.first["key"]: "MyInput1"})
+        self.assertEqual(self.first["pdo_name"], next(p["name"] for p in out["pdos"] if p["index"] == self.first["pdo"]))
+
     def test_names_listed(self):
         self.assertTrue(self.variables)
         self.assertEqual(self.first["name"], "")

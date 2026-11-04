@@ -1308,6 +1308,7 @@ class Core:
             dev = configure.device_for(src, {position: edit} if edit else {})
             out = edits.options(src, dev, edit)
             out["variables"] = edits.variable_rows(dev) if dev else []
+            out["variable_names"] = (dev or {}).get("variable_names") or {}
             shown = next((d["name"] for d in self.cfg_devices if d["position"] == position), None)
             if shown and out["name"] and not (edit or {}).get("name"):
                 out["name"] = shown                         # the name Build gives it (with _2 ... if another has its name)

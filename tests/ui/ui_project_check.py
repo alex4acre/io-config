@@ -360,7 +360,7 @@ try:
           "a device opens on Settings")
     check(until("document.getElementById('c-title').textContent.includes('Analog_out')"), "card title shows the saved name")
     tabs = js("return [...document.querySelectorAll('#cdetail .subtabs .tab')].filter((t) => !t.hidden).map((t) => t.dataset.panel)")
-    check(tabs == ["settings", "startup", "names"], f"tabs of a CoE device on the Configuration card {tabs}")
+    check(tabs == ["settings", "startup"], f"tabs of a CoE device on the Configuration card {tabs}")
     check(until("document.getElementById('e-name').value === 'Analog_out'"), "its name in Settings")
     shot("device-in-configuration")
     js("document.getElementById('c-close').click()")

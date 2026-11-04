@@ -188,11 +188,11 @@ try:
     js("document.querySelectorAll('#cfg-devices tbody tr')[2].cells[2].click();")
     check(until("!document.getElementById('cdetail').hidden && document.getElementById('c-title').textContent === '2: XI422202'"),
           "Configuration card of XI422202 opens")
-    check(until("!document.getElementById('p-settings').hidden && document.querySelectorAll('#e-pdos tbody tr').length === 6"),
+    check(until("!document.getElementById('p-settings').hidden && document.querySelectorAll('#e-pdos tbody tr.pdo').length === 6"),
           "Settings tab lists 6 PDOs")
-    js("""const boxes = [...document.querySelectorAll('#e-pdos input[type=checkbox]')];
-          for (const b of boxes) { const i = Number(b.dataset.index); if ([0x1a00, 0x1a01, 0x1a02].includes(i)) b.checked = false;
-            if (i === 0x1a03) b.checked = true; b.onchange && b.onchange(); }
+    js("""const box = (i) => document.querySelector(`#e-pdos input[type=checkbox][data-index="${i}"]`);
+          for (const i of [0x1a00, 0x1a01, 0x1a02]) if (box(i).checked) box(i).click();
+          if (!box(0x1a03).checked) box(0x1a03).click();
           document.getElementById('e-name').value = 'AO1';""")
     check("2 B inputs, 4 B outputs" in text("e-sizes"), f"editor sizes: {text('e-sizes')}")
     js("document.getElementById('e-save').click();")

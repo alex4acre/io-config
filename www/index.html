@@ -204,7 +204,6 @@
       <nav class="tabs subtabs">
         <button id="d-edit" class="tab" data-panel="settings">Settings</button>
         <button id="d-startup" class="tab" data-panel="startup">Startup</button>
-        <button id="d-names" class="tab" data-panel="names">Names</button>
       </nav>
 
       <div id="p-settings" class="panel" hidden>
@@ -226,8 +225,11 @@
         </div>
         <h3>PDOs</h3>
         <p id="e-reason" class="hint"></p>
+        <p class="hint">Variable name: replaces the standard name (in grey) in the variable's Data Layer path, for example
+          <code>realtime_data/input/data/&lt;device&gt;/MyInput1</code>. Empty = the standard name. After you build and write, anything
+          that uses the old path (PLC, copy lists, other apps) must be updated.</p>
         <div class="scroll"><table id="e-pdos"><thead><tr><th>Use</th><th>Dir</th><th>Index</th><th>Name</th><th>Size</th>
-          <th>Rules</th></tr></thead><tbody></tbody></table></div>
+          <th>Variable name</th><th>Rules</th></tr></thead><tbody></tbody></table></div>
         <p id="e-sizes" class="muted"></p>
         <div id="e-soe" hidden>
           <h3>Drive telegrams (SoE)</h3>
@@ -249,18 +251,6 @@
           <button id="e-save" class="primary">Save</button>
           <button id="e-reset">Back to defaults</button>
           <span id="e-msg" class="muted"></span>
-        </div>
-      </div>
-
-      <div id="p-names" class="panel" hidden>
-        <p class="hint">A name replaces the standard name in the variable's Data Layer path, for example
-          <code id="n-example"></code>. Leave it empty for the standard name. Saved names are used the next time you build
-          and write the configuration: anything that uses the old path (PLC, copy lists, other apps) must then be updated.</p>
-        <div class="scroll"><table id="e-names"><thead><tr><th>Dir</th><th>Standard name</th><th>Type</th><th>Bits</th><th>Name</th>
-          </tr></thead><tbody></tbody></table></div>
-        <div class="row">
-          <button id="n-save" class="primary">Save names</button>
-          <span id="n-msg" class="muted"></span>
         </div>
       </div>
 

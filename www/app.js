@@ -1058,26 +1058,89 @@ function renderEditor() {
       c.transitions.join(" "), c.comment, del]);
   }
   renderSoeEditor();
-  renderNames();
   if (!d.fixed_startup.length && !d.startup.length) row(sb, [el("span", { class: "muted" }, "none"), "", "", "", ""]);
   $("e-msg").textContent = d.edited ? "This position has saved changes." : "Defaults (no saved changes).";
+}
+
+// the variables of a PDO row: as the configuration would be built (a saved telegram's IDNs), else the PDO's own entries
+function pdoVariables(p) {
+  const built = editData.variables.filter((v) => v.pdo === p.index && v.dir === (p.dir === "rx" ? "output" : "input"));
+  const own = p.entries.filter((e) => e.index);
+  // a module choice not saved yet brings its own entries under the same PDO index
+  return built.length && !(editData.modules && own.some((e) => !built.find((v) => v.key === e.key))) ? built : own;
+}
+
+function sizeText(bits) {
+  return bits % 8 ? bits + " bit" : bits / 8 + " B";
+}
+
+function nameInput(v, typed) {
+  const saved = editData.variable_names[v.key] || "";
+  const input = el("input", { type: "text", maxlength: "64", "data-key": v.key, "data-saved": saved,
+    placeholder: v.standard, title: `Standard name: ${v.standard}`, "aria-label": `Name for ${v.standard}` });
+  input.value = typed.has(v.key) ? typed.get(v.key) : saved;
+  return input;
+}
+
+// variable names typed but not saved stay through a redraw (ticking a PDO, a scan, a saved startup change)
+let namesFor = null;
+
+function typedNames() {
+  const typed = new Map();
+  if (namesFor === editPos) {
+    for (const i of $("e-pdos").querySelectorAll("input[type=text]")) if (i.value !== i.dataset.saved) typed.set(i.dataset.key, i.value);
+  }
+  namesFor = editPos;
+  return typed;
 }
 
 function renderPdoTable() {
   const d = editData;
   const tb = $("e-pdos").tBodies[0];
+  const typed = typedNames();
   tb.replaceChildren();
+  const variableRows = (vars, single) => {
+    if (single) return;
+    for (const v of vars) {
+      const part = v.standard.slice(v.standard.indexOf(".") + 1);
+      row(tb, ["", "", "", el("td", { class: "var-name" }, part), sizeText(v.bits), nameInput(v, typed), ""], { class: "var" });
+    }
+  };
   for (const p of d.pdos) {
     const box = el("input", { type: "checkbox" });
     box.dataset.index = p.index;
     box.checked = d.selected.includes(p.index);
     box.disabled = !d.editable || p.mandatory;
-    box.onchange = updateEditorRules;
+    box.onchange = () => {
+      d.selected = selectedPdos();
+      renderPdoTable();
+      const again = [...$("e-pdos").querySelectorAll("input[type=checkbox]")].find((c) => Number(c.dataset.index) === p.index);
+      if (again) again.focus();
+    };
     const rules = [p.mandatory ? "mandatory" : "", p.fixed ? "fixed content" : "",
       p.excludes.length ? "excludes " + p.excludes.map((x) => hex(x)).join(" ") : ""].filter(Boolean).join(", ");
-    const tr = row(tb, [el("td", {}, box), p.dir === "rx" ? "out" : "in", hex(p.index), p.name, p.bits / 8 + " B", rules],
-      { class: d.default.includes(p.index) ? "default" : "" });
+    const vars = box.checked ? pdoVariables(p) : [];
+    const single = vars.length === 1;
+    const tr = row(tb, [el("td", {}, box), p.dir === "rx" ? "out" : "in", hex(p.index), p.name, sizeText(p.bits),
+      single ? nameInput(vars[0], typed) : "", rules],
+      { class: "pdo" + (d.default.includes(p.index) ? " default" : "") });
     tr.title = p.entries.map((e) => (e.index ? `${hex(e.index)}:${e.subindex} ${e.name} (${e.bits} bit)` : `padding ${e.bits} bit`)).join("\n");
+    variableRows(vars, single);
+  }
+  // PDOs the configuration has that the list above doesn't offer: they can be named too
+  const listed = new Set(d.pdos.map((p) => `${p.dir === "rx" ? "output" : "input"}:${p.index}`));
+  const others = new Map();
+  for (const v of d.modules ? [] : d.variables) {       // a modular device lists all of its PDOs (a preview: the new ones)
+    if (listed.has(`${v.dir}:${v.pdo}`)) continue;
+    const id = `${v.dir}:${v.pdo}`;
+    if (!others.has(id)) others.set(id, { v, vars: [] });
+    others.get(id).vars.push(v);
+  }
+  for (const { v, vars } of others.values()) {
+    const single = vars.length === 1;
+    row(tb, ["", v.dir === "output" ? "out" : "in", hex(v.pdo), v.pdo_name, sizeText(vars.reduce((n, x) => n + x.bits, 0)),
+      single ? nameInput(vars[0], typed) : "", "in the configuration"], { class: "pdo" });
+    variableRows(vars, single);
   }
   updateEditorRules();
 }
@@ -1181,53 +1244,6 @@ function updateEditorRules() {
   $("e-save").disabled = problems.length > 0;
 }
 
-// Names tab: typed names survive a reload of the editor (a scan, a save on the Settings tab) until they are saved
-let namesFor = null;
-
-function renderNames(forget) {
-  const tb = $("e-names").tBodies[0];
-  const typed = new Map();
-  if (!forget && namesFor === editPos) {
-    for (const i of tb.querySelectorAll("input")) if (i.value !== i.dataset.saved) typed.set(i.dataset.key, i.value);
-  }
-  namesFor = editPos;
-  tb.replaceChildren();
-  const device = cfgDevices.find((x) => x.position === editPos);
-  const prefix = device ? device.name : "Device";
-  for (const v of editData.variables) {
-    const input = el("input", { type: "text", maxlength: "64", "data-key": v.key, "data-saved": v.name, "aria-label": `Name for ${v.standard}` });
-    input.value = typed.has(v.key) ? typed.get(v.key) : v.name;
-    row(tb, [v.dir === "output" ? "out" : "in", v.standard, v.type, v.bits, input]);
-  }
-  const first = editData.variables[0];
-  $("n-example").textContent = first ? `realtime_data/${first.dir}/data/${prefix}/${first.name || "MyInput1"}` : "";
-  $("n-save").disabled = !editData.variables.length;
-  if (!editData.variables.length) row(tb, [el("span", { class: "muted" }, "This device has no process data."), "", "", "", ""]);
-}
-
-$("n-save").onclick = async () => {
-  const change = {};
-  for (const i of $("e-names").tBodies[0].querySelectorAll("input")) {
-    const value = i.value.trim();
-    if (value !== i.dataset.saved) change[i.dataset.key] = value;
-  }
-  const msg = $("n-msg");
-  if (!Object.keys(change).length) {
-    msg.textContent = "No names changed.";
-    msg.className = "muted";
-    return;
-  }
-  try {
-    editData = await api("PUT", `/devices/${editPos}/edit`, { variable_names: change });
-    renderNames(true);
-    msg.textContent = "Saved. Build the configuration to see and write the result.";
-    msg.className = "ok";
-  } catch (e) {
-    msg.textContent = e.message;       // shown where the user acts; the typed names stay to correct them
-    msg.className = "error";
-  }
-};
-
 async function openEditor(pos) {
   try {
     editData = await api("GET", `/devices/${pos}/edit`);
@@ -1244,11 +1260,17 @@ async function saveEdit(change) {
   try {
     banner("");
     editData = await api("PUT", `/devices/${editPos}/edit`, change);
+    if (change.variable_names) namesFor = null;       // saved: nothing typed to keep
     renderEditor();
     $("e-msg").textContent = "Saved. Build the configuration to see and write the result.";
     $("e-msg").className = "ok";
   } catch (e) {
-    banner(e.message);
+    if (change.variable_names) {                      // beside the button; what was typed stays to correct it
+      $("e-msg").textContent = e.message;
+      $("e-msg").className = "error";
+    } else {
+      banner(e.message);
+    }
   }
 }
 
@@ -1264,6 +1286,11 @@ $("e-save").onclick = () => {
     change.soe_mdt = soeLists.mdt;
     change.soe_at = soeLists.at;
   }
+  const names = {};
+  for (const i of $("e-pdos").querySelectorAll("input[type=text]")) {
+    if (i.value.trim() !== i.dataset.saved) names[i.dataset.key] = i.value.trim();
+  }
+  if (Object.keys(names).length) change.variable_names = names;
   soeLists = null;
   saveEdit(change);
 };

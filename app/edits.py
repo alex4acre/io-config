@@ -82,7 +82,9 @@ def _pdo_row(p: dict) -> dict:
     return {"dir": p["dir"], "index": p["index"], "name": p["name"], "bits": _size(p),
             "sm": p["sm"], "fixed": p["fixed"], "mandatory": p["mandatory"], "excludes": p["excludes"],
             "entries": [{"index": e["index"], "subindex": e["subindex"], "name": e["name"], "bits": e["bits"],
-                         "type": e.get("type", "")} for e in p["entries"]]}
+                         "type": e.get("type", ""), "standard": generate.variable_name(p["name"]) + "." + generate.variable_name(e["name"]),
+                         "key": ("in:" if p["dir"] == "tx" else "out:") + generate.variable_name(p["name"]) + "." + generate.variable_name(e["name"])}
+                        for e in p["entries"]]}
 
 
 def _only(esi: dict, no: int, ident: int) -> list:

@@ -62,7 +62,8 @@ def standard_variables(dev: dict) -> list:
                 if x["index"]:
                     standard = f'{variable_name(p["name"])}.{variable_name(x["name"])}'
                     out.append({"key": f"{short}:{standard}", "standard": standard, "dir": word,
-                                "type": DATA_TYPE_NAMES.get(x["type"], x["type"]), "bits": x["bits"]})
+                                "type": DATA_TYPE_NAMES.get(x["type"], x["type"]), "bits": x["bits"],
+                                "pdo": p["index"], "pdo_name": p["name"]})
     return out
 
 

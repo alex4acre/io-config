@@ -91,7 +91,7 @@ try:
     check(sel[:3] == ["Safety Module Basic PDO (#x288110)", "Cyclic Position Mode (#x0100)", "Cyclic Position Mode (#x0100)"],
           f"default modules {sel}")
     check(js("return document.getElementById('e-dc').value") == "DC Sync", "DC mode DC Sync")
-    check(js("return document.querySelectorAll('#e-pdos tbody tr').length") == 6, "6 module PDOs listed")
+    check(js("return document.querySelectorAll('#e-pdos tbody tr.pdo').length") == 6, "6 module PDOs listed")
     js("document.getElementById('e-modules-box').scrollIntoView();")
     shot("elmo-settings-defaults")
     js("const s = document.querySelectorAll('#e-modules select'); s[2].value = '512'; s[2].onchange();")
@@ -101,10 +101,10 @@ try:
     check(js("return document.getElementById('e-sizes').textContent").startswith("23 B inputs, 23 B outputs"),
           f"sizes follow: {js('return document.getElementById(' + chr(39) + 'e-sizes' + chr(39) + ').textContent')}")
     js("const s = document.querySelectorAll('#e-modules select'); s[0].value = '0'; s[0].onchange(); s[2].value = '0'; s[2].onchange();")
-    check(until("document.querySelectorAll('#e-pdos tbody tr').length === 2"), "2 PDOs shown before Save")
+    check(until("document.querySelectorAll('#e-pdos tbody tr.pdo').length === 2"), "2 PDOs shown before Save")
     js("document.getElementById('e-name').value = 'Elmo1'; document.getElementById('e-save').click();")
     check(until("document.getElementById('e-msg').textContent.startsWith('Saved')"), "module edit saved")
-    check(until("document.querySelectorAll('#e-pdos tbody tr').length === 2"), "2 PDOs after the edit")
+    check(until("document.querySelectorAll('#e-pdos tbody tr.pdo').length === 2"), "2 PDOs after the edit")
     js("document.getElementById('e-modules-box').scrollIntoView();")
     shot("elmo-settings-edited")
     js("document.getElementById('plan-devices').tBodies[0].replaceChildren(); document.getElementById('build').click();")

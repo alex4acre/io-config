@@ -280,7 +280,7 @@ visible.
    (`POST /devices/<pos>/read-eeprom`, `/project/devices/<pos>/read-eeprom`). Reads saved in `$SNAP_COMMON/esi-eeprom.json`,
    keyed by identity + serial, or + place when the device reports serial 0; they are shown and compared in later scans without a read.
    A changed EEPROM on the same serial isn't noticed until read again. Device card tabs follow the ESI's protocols, else the EEPROM's.
-18. **Variable names (1.9.0, NOT device-tested):** Configuration device card, Names tab. A name replaces `<Pdo>.<Entry>` in the
+18. **Variable names (1.9.0; typed in the Settings PDO table since 1.9.1, column Variable name: on the PDO's row with one variable, sub-rows with several, only ticked PDOs).** A name replaces `<Pdo>.<Entry>` in the
    ENI's ProcessImage, so the master publishes `realtime_data/<dir>/data/<Device>/<name>`; nothing else in the ENI changes and a
    device without names stays byte-identical. Edit key `variable_names`: `in:` or `out:` + standard name -> name, `""` = standard
    (also over a name read back). Rules: as device names; unique in the device, case ignored, also against other variables'
@@ -289,7 +289,7 @@ visible.
    active bus keeps them and another tool's names stay (I/O Engineering's modular `<dev>/<slot>/<pdo>.<entry>`). A name whose
    variable left (PDO deselected) stays in the edit, isn't written, and the plan warns. The plan's `renamed` list = same
    direction, type, size and offset under another name; if an offset moved too it shows as removed + added.
-   Open: whether the master accepts a custom name (first device test).
+   Proven on the X7 with 1.9.0: the master accepts and publishes a custom name (`XI213204/myvalue`).
 19. **Next:** more than one frame, free PDO mapping (editing PDO contents),
    modules from separate module files (EtherCATModule, e.g. ctrlX DRIVE FSoE).
 
