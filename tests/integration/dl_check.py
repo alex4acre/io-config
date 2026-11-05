@@ -17,6 +17,8 @@ converts and reads exactly as it does against a ctrlX.
 import json
 import os
 import sys
+import tempfile
+import time
 
 import ctrlxdatalayer
 from comm.datalayer import NodeClass
@@ -255,6 +257,7 @@ def nodes_check(provider, bus):
             self.activation = dict(self.activation, state="running", name=name)
 
         creation = {"state": "idle", "name": "", "errors": [], "warnings": []}
+        exporting = {"state": "idle", "name": "", "result": "", "document": "", "warnings": []}
         documents = []
         scans = []
 
@@ -311,10 +314,70 @@ def nodes_check(provider, bus):
         answer = json.loads(bus.read("io-config/bus"))
         check(answer["scan"] == {"state": "done", "error": ""} and answer["devices"][0]["name"] == "Coupler",
               f"bus gives the last scan: {answer}")
-        check(sorted(bus.browse("io-config")) == ["activate", "activation", "bus", "configurations", "create", "creation", "scan"],
+        check(sorted(bus.browse("io-config")) == ["activate", "activation", "bus", "configurations", "create", "creation", "export", "scan"],
               f"browse: {bus.browse('io-config')}")
     finally:
         reg.clear()
+    real_core_check(provider, bus)
+
+
+def wait_until(bus, node, timeout=30):
+    end = time.monotonic() + timeout
+    while bus.read(node) == "running" and time.monotonic() < end:
+        time.sleep(0.05)
+    return bus.read(node)
+
+
+def real_core_check(provider, bus):
+    """The whole way through the real library, with the app's real core on a simulated bus: scan, create, export, activate."""
+    from app.core import Core
+    from app.fake import DATA, FakeBus
+    from app.provider import NodeRegistry
+
+    with tempfile.TemporaryDirectory() as folder:
+        fake = FakeBus()
+        core = Core(os.path.join(folder, "active", "io-config", "config.json"), fake, os.path.join(folder, "esi"), log=lambda m: None)
+        esi_dir = os.path.join(DATA, "esi")
+        for name in sorted(os.listdir(esi_dir)):
+            with open(os.path.join(esi_dir, name), "rb") as f:
+                core.esi.add(name, f.read())
+        reg = NodeRegistry(provider, core, log=lambda m: None)
+        reg.register()
+        try:
+            bus.write("io-config/scan", "start")
+            check(wait_until(bus, "io-config/scan/state") == "done", "real core: scan through the node")
+            devices = json.loads(bus.read("io-config/bus"))["devices"]
+            check(len(devices) == 4 and devices[0]["name"] == "XB_EC_12", f"real core: bus lists {[d['name'] for d in devices]}")
+            bus.write("io-config/export", "")
+            check(wait_until(bus, "io-config/export/state") == "done" and bus.read("io-config/export") == "started list" and
+                  json.loads(bus.read("io-config/export/warnings")) == [], "real core: the list exported through the node")
+            exported = bus.read("io-config/export/document")
+            document = dict(json.loads(exported), name="Line1")
+            check(len(document["devices"]) == 4, f"real core: a {len(exported)}-character document read from the node")
+            bus.write("io-config/create", json.dumps(document))
+            check(wait_until(bus, "io-config/creation/state") == "done", f'real core: created ({bus.read("io-config/creation/errors")})')
+            check(json.loads(bus.read("io-config/configurations")) == ["Line1"], "real core: the document is saved")
+            bus.write("io-config/create", json.dumps(dict(document, name="Bad", devices=[dict(document["devices"][0], product="0x500")])))
+            check(wait_until(bus, "io-config/creation/state") == "error" and
+                  "no ESI" in json.loads(bus.read("io-config/creation/errors"))[0] and
+                  json.loads(bus.read("io-config/configurations")) == ["Line1"], "real core: a refused document is told, not saved")
+            bus.write("io-config/export", "Line1")
+            check(wait_until(bus, "io-config/export/state") == "done" and json.loads(bus.read("io-config/export/document")) == document,
+                  "real core: a created document comes back as written")
+            try:
+                bus.write("io-config/export", "Nope")
+                check(False, "real core: an unknown export name is refused")
+            except BusError as e:
+                check(bus.read("io-config/export").startswith("error: ") and bus.read("io-config/export/state") == "error",
+                      f"real core: an unknown export name is refused ({e})")
+            bus.write("io-config/activate", "Line1")
+            check(wait_until(bus, "io-config/activation/state") == "done", f'real core: activated ({bus.read("io-config/activation/error")})')
+            running = bytes(fake.nodes[MASTER + "admin/fieldbus_config"]["response"]["eni"])
+            check(running == core.saved_file("Line1", "eni"), "real core: the master holds the created configuration")
+            core.wait_scan()
+        finally:
+            reg.clear()
+            core.stop()
 
 
 if __name__ == "__main__":

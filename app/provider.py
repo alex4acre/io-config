@@ -20,6 +20,11 @@
   io-config/scan                  write anything to start a bus scan (no EEPROMs). Reading gives the last result
   io-config/scan/state            idle, running, done or error (of the last scan)
   io-config/bus                   the last scan as JSON: scan state and error, master state, devices
+  io-config/export                write a saved configuration's name, or an empty text for the Configuration list, to
+                                  export it as a JSON document. Reading gives "started <name>", "started list" or "error: ..."
+  io-config/export/state          idle, running, done or error (of the last export)
+  io-config/export/document       the document of the last export
+  io-config/export/warnings       JSON list, e.g. creating from the document would give another ENI
 """
 
 import json
@@ -190,6 +195,20 @@ class NodeRegistry:
         self._add(f"{ROOT}/scan", "Write anything to start a bus scan", lambda: self.last_scan, write=scan)
         self._add(f"{ROOT}/scan/state", "idle, running, done or error", lambda: _scan_state(core.state()["scan"]))
         self._add(f"{ROOT}/bus", "The last scan: scan state and error, master state, devices (JSON)", bus)
+
+        def export(text):
+            try:
+                self.log(f"Data Layer: exporting {core.start_export(text)}")
+            except Exception as e:
+                self.log(f"Data Layer export refused: {e}")
+                raise ValueError(str(e)) from e
+
+        self._add(f"{ROOT}/export", "Write a saved configuration's name, or an empty text for the Configuration list, to "
+                  "export it as a JSON document", lambda: core.exporting["result"], write=export)
+        self._add(f"{ROOT}/export/state", "idle, running, done or error", lambda: core.exporting["state"])
+        self._add(f"{ROOT}/export/document", "The document of the last export (JSON)", lambda: core.exporting["document"])
+        self._add(f"{ROOT}/export/warnings", "What to look at in the last export (JSON list)",
+                  lambda: json.dumps(core.exporting["warnings"]))
 
     def clear(self):
         for n in self.nodes.values():

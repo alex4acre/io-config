@@ -269,6 +269,56 @@ class ExportTest(Base):
             self.core.export_saved("Nope")
 
 
+class ExportNodeTest(Base):
+    """What the Data Layer node io-config/export does."""
+
+    def export(self, name):
+        self.core.start_export(name)
+        self.core.wait_export()
+        return self.core.exporting
+
+    def test_the_list(self):
+        x = self.export("")
+        self.assertEqual((x["state"], x["result"], x["warnings"]), ("done", "started list", []))
+        self.assertEqual(json.loads(x["document"]), self.core.export_project()["document"])
+
+    def test_a_saved_one(self):
+        d = doc(COUPLER)
+        self.core.create_document(d)
+        x = self.export(" Line1 ")
+        self.assertEqual((x["state"], x["name"], x["result"]), ("done", "Line1", "started Line1"))
+        self.assertEqual(json.loads(x["document"]), d)
+
+    def test_a_document_can_go_straight_back_into_create(self):
+        x = self.export("")
+        self.core.start_create(json.dumps(dict(json.loads(x["document"]), name="Back")))
+        self.core.wait_create()
+        self.assertEqual(self.core.creation["state"], "done")
+        self.assertEqual(self.core.saved_file("Back", "eni"), self.running())
+
+    def test_an_unknown_name_fails_at_once(self):
+        self.export("")
+        for bad in ("Nope", "a/b"):
+            with self.assertRaises(ConfigError):
+                self.core.start_export(bad)
+            x = self.core.exporting
+            self.assertEqual((x["state"], x["document"]), ("error", ""))
+            self.assertRegex(x["result"], "^error: ")
+
+    def test_one_at_a_time(self):
+        self.core.exporting["state"] = "running"
+        with self.assertRaises(ConfigError):
+            self.core.start_export("")
+        self.assertEqual(self.core.exporting["state"], "running")   # the running one keeps its result
+        self.core.exporting["state"] = "idle"
+
+    def test_a_failure_in_the_thread_is_told(self):
+        self.core.export_project = lambda: 1 / 0
+        x = self.export("")
+        self.assertEqual((x["state"], x["document"]), ("error", ""))
+        self.assertRegex(x["result"], "^error: division")
+
+
 class DriveTest(Base):
     """The SoE drive on a branch of the coupler, against I/O Engineering's own file."""
     bus_args = {"drive": True}

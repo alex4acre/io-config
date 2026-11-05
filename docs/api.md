@@ -27,8 +27,13 @@ Through ctrlX REST these are `https://<core>/automation/api/v2/nodes/<node>`, wi
 | `io-config/scan` | write, read | Write any text to start a scan. Reading gives `started` or `error: <text>`. |
 | `io-config/scan/state` | read | `idle`, `running`, `done`, `error` |
 | `io-config/bus` | read | The last scan as JSON: `scan` {state, error}, `master`, `devices` |
+| `io-config/export` | write, read | Write a saved name, or an empty text for the Configuration list. Reading gives `started <name>`, `started list` or `error: <text>`. A name that can't be exported fails the call. |
+| `io-config/export/state` | read | `idle`, `running`, `done`, `error` |
+| `io-config/export/document` | read | The document from the last export, as JSON text |
+| `io-config/export/warnings` | read | JSON list, e.g. creating from the document would give a different ENI |
 
-A build runs after the write has returned, so wait for `creation/state` to leave `running`.
+A build runs after the write has returned, so wait for `creation/state` to leave `running`, and likewise `export/state`. One export
+runs at a time; reading doesn't build again, it gives the last result. A PLC string may be too short for a large document.
 
 ## REST
 

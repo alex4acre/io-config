@@ -134,6 +134,8 @@ class Core:
         self.activation = {"state": "idle", "name": "", "error": "", "started": None, "finished": None}
         self.creation = {"state": "idle", "name": "", "errors": [], "warnings": []}    # the last JSON document
         self._create_thread = None
+        self.exporting = {"state": "idle", "name": "", "result": "", "document": "", "warnings": []}   # the last export
+        self._export_thread = None
         self.edits_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "edits.json")
         self.od_cache = {}           # (position, identity) -> object list
         self.project_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "project.json")
@@ -356,6 +358,7 @@ class Core:
     def stop(self):
         self.wait_scan(10)
         self.wait_create(10)
+        self.wait_export(10)
 
     # --- scan ------------------------------------------------------------------------------------
 
@@ -1358,6 +1361,44 @@ class Core:
             doc, warnings = document.export(self._offline_sources(entries, slaves), saved_edits, name,
                                             int(cycle) if cycle and cycle.isdigit() else None)
             return self._document_checked(doc, warnings, eni_bytes, "the saved one")
+
+    def start_export(self, name: str) -> str:
+        """For the Data Layer node: exports a saved configuration, or the Configuration list if the name is empty, in a thread
+        (it builds, to compare the ENI). A name that can't be exported fails at once; the result is in self.exporting."""
+        name = name.strip()
+        label = name or "list"
+        with self.lock:
+            if self.exporting["state"] == "running":
+                raise ConfigError("an export is running already")
+            try:
+                if name:
+                    self._saved_folder(name)
+                elif self._load_project() is None:
+                    raise ConfigError("there is no Configuration list yet")
+            except (ConfigError, KeyError) as e:
+                text = str(e.args[0]) if isinstance(e, KeyError) else str(e)
+                self.exporting = {"state": "error", "name": name, "result": f"error: {text}", "document": "", "warnings": []}
+                raise ConfigError(text) from e
+            self.exporting = {"state": "running", "name": name, "result": f"started {label}", "document": "", "warnings": []}
+
+        def run():
+            try:
+                out = self.export_saved(name) if name else self.export_project()
+                done = {"state": "done", "document": json.dumps(out["document"]), "warnings": out["warnings"]}
+            except Exception as e:
+                self.log(f"export of {label}: {e!r}")
+                done = {"state": "error", "result": f"error: {e}", "document": "", "warnings": []}
+            with self.lock:
+                self.exporting = dict(self.exporting, **done)
+
+        self._export_thread = threading.Thread(target=run, name="export", daemon=True)
+        self._export_thread.start()
+        return label
+
+    def wait_export(self, timeout=60):
+        t = self._export_thread
+        if t is not None:
+            t.join(timeout)
 
     @staticmethod
     def _entries_from_eni(slaves: list) -> list:
