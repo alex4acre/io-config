@@ -33,7 +33,7 @@ import shutil
 import threading
 import time
 
-from app import coe, compare, configure, edits, eni, generate, sii, soe
+from app import coe, compare, configure, document, edits, eni, generate, sii, soe
 from app.esi import EsiLibrary
 
 DEFAULTS = {"instance": "ethercatmaster"}
@@ -132,6 +132,8 @@ class Core:
         self.backup_dir = os.path.join(os.path.dirname(os.path.abspath(config_path)), "backups")
         self.saved_dir = os.path.join(os.path.dirname(os.path.abspath(config_path)), "saved")
         self.activation = {"state": "idle", "name": "", "error": "", "started": None, "finished": None}
+        self.creation = {"state": "idle", "name": "", "errors": [], "warnings": []}    # the last JSON document
+        self._create_thread = None
         self.edits_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "edits.json")
         self.od_cache = {}           # (position, identity) -> object list
         self.project_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "project.json")
@@ -210,6 +212,7 @@ class Core:
                 "download": dict(self.download_state, steps=list(self.download_state["steps"]),
                                  warnings=list(self.download_state["warnings"])),
                 "activation": dict(self.activation),
+                "creation": dict(self.creation),
                 "master_request": dict(self.master_request),
                 "master": self.master,
                 "devices": [self._summary(d) for d in self.devices],
@@ -352,6 +355,7 @@ class Core:
 
     def stop(self):
         self.wait_scan(10)
+        self.wait_create(10)
 
     # --- scan ------------------------------------------------------------------------------------
 
@@ -572,7 +576,8 @@ class Core:
                                                  configuration=True)
             devices.append(report)
             src = {"pos": pos, "bus_pos": b, "uid": entry["uid"], "online": online, "eeprom": eeprom,
-                   "eni_slave": slave, "esi_match": match, "esi_device": device}
+                   "eni_slave": slave, "esi_match": match, "esi_device": device,
+                   "entry_identity": [entry["vendor"], entry["product"], entry["revision"]]}
             if b is None:
                 src["previous"] = self._previous_port(pos, entry, slave, uid_pos, {})
             sources.append(src)
@@ -1163,6 +1168,196 @@ class Core:
             self._thread = threading.Thread(target=run, name="activate", daemon=True)
             self._thread.start()
             return dict(self.activation)
+
+    # --- a whole configuration as one JSON document (app/document.py, docs/api.md) ----------------------
+
+    def _document_sources(self, parsed: dict) -> tuple:
+        """(sources, edits, problems) for a parsed document: every device described by its own ESI, none by the bus or the
+        running configuration, so the same document always gives the same result. Only an exact ESI will do."""
+        sources, user_edits, problems = [], {}, []
+        ids = [[d["vendor"], d["product"]] for d in parsed["devices"]]
+        for pos, d in enumerate(parsed["devices"]):
+            entry = {"vendor": d["vendor"], "product": d["product"], "revision": d["revision"]}
+            match, found = self.esi.find(d["vendor"], d["product"], d["revision"])
+            ident = compare.ident(d["vendor"], d["product"], d["revision"])
+            if match == "none":
+                problems.append(f'{d["label"]}: no ESI in the library for {ident}')
+                continue
+            if match != "exact":
+                problems.append(f'{d["label"]}: the library has no ESI for {ident}, only revision {compare.hx(found["revision"], 8)}')
+                continue
+            try:
+                esi_device = self.esi.device(found)
+            except Exception as e:
+                problems.append(f'{d["label"]}: its ESI could not be read: {e}')
+                continue
+            src = {"pos": pos, "bus_pos": None, "uid": pos, "online": self._listed_online(entry), "eeprom": None,
+                   "eni_slave": None, "esi_match": match, "esi_device": esi_device, "previous": d["previous"]}
+            self._add_dictionary(src, esi_device)
+            sources.append(src)
+            try:
+                checked = edits.validate(src, d["edit"])
+                built = configure.device_for(src, {pos: checked})
+                edits.check_variable_names(built, None, checked)
+                problems += [f'{d["label"]}: the variable {k.split(":", 1)[-1]} ("{n}") is not in its process data'
+                             for k, n in edits.unused_names(built).items()]
+                user_edits[pos] = dict(checked, bus=ids)
+            except edits.EditError as e:
+                problems.append(f'{d["label"]}: {e}')
+        return sources, user_edits, problems
+
+    def _document_plan(self, parsed: dict) -> tuple:
+        """(plan, sources, edits) of a parsed document; DocumentError if it doesn't build."""
+        sources, user_edits, problems = self._document_sources(parsed)
+        if problems:
+            raise document.DocumentError(problems)
+        cycle = parsed["cycle_us"]
+        if cycle is None:              # the master stops at any other cycle than its task's
+            try:
+                cycle = self.bus.read(AUTOMATION_TASK)["cycletime"]
+            except Exception:
+                cycle = None
+        current = self.current or {"eni": b"", "ini": b"", "parsed": None}
+        plan = configure.build_plan(sources, current, self.config["instance"], cycle, user_edits, offline=True)
+        if plan["errors"] or not plan["eni"]:
+            raise document.DocumentError(plan["errors"] or ["the configuration could not be built"], plan["warnings"])
+        plan["warnings"] += self._task_cycle_warnings(plan["cycle_us"])
+        return plan, sources, user_edits
+
+    def create_document(self, doc) -> dict:
+        """Builds the document and saves it as a proposed configuration, or says why not (DocumentError, ConfigError) and
+        saves nothing. The Configuration list, its edits and the master are not touched: activate is a separate step."""
+        name = doc.get("name", "") if isinstance(doc, dict) else ""
+        try:
+            parsed = document.parse(doc)
+            name = parsed["name"]
+            with self.lock:
+                self._saved_folder(name, exists=False)
+                plan, sources, user_edits = self._document_plan(parsed)
+                entries = [{"uid": s["pos"], "vendor": d["vendor"], "product": d["product"], "revision": d["revision"],
+                            "port": s["previous"][0] if s["previous"] else None,
+                            "upstream": s["previous"][1] if s["previous"] else None, "address": None}
+                           for s, d in zip(sources, parsed["devices"])]
+                running = (self.current or {}).get("eni")
+                source = doc if isinstance(doc, dict) else json.loads(doc)
+                files = {"ethercat.xml": plan["eni"], "ethercat.ini": plan["ini"],
+                         "project.json": json.dumps({"eni_checksum": generate.checksum(running) if running else None,
+                                                     "devices": entries}, indent=2).encode(),
+                         "edits.json": json.dumps({str(k): v for k, v in sorted(user_edits.items())}, indent=2).encode(),
+                         "document.json": json.dumps({k: v for k, v in source.items() if k != "overwrite"}, indent=2).encode()}
+                self._write_saved(name, parsed["overwrite"], files,
+                                  {"kind": "proposed", "edits": len(user_edits), "from_document": True,
+                                   "devices": [d["name"] for d in plan["devices"]]})
+        except document.DocumentError as e:
+            self._creation_done(name, e.errors, e.warnings)
+            raise
+        except ConfigError as e:
+            self._creation_done(name, [str(e)], [])
+            raise
+        self._creation_done(name, [], plan["warnings"])
+        return {"name": name, "devices": [d["name"] for d in plan["devices"]], "cycle_us": plan["cycle_us"],
+                "warnings": plan["warnings"], "variables": plan["variables"], "identical": plan["identical"]}
+
+    def _creation_done(self, name, errors, warnings):
+        with self.lock:
+            self.creation = {"state": "error" if errors else "done", "name": name if isinstance(name, str) else "",
+                             "errors": list(errors), "warnings": list(warnings)}
+
+    def start_create(self, text: str) -> str:
+        """For the Data Layer node: what can be told at once fails the write (not JSON, a build already running), the build
+        itself runs in a thread and its result is in self.creation. Returns the document's name."""
+        parsed = document.parse(text)
+        with self.lock:
+            if self.creation["state"] == "running":
+                raise ConfigError("a document is being created already")
+            self.creation = {"state": "running", "name": parsed["name"], "errors": [], "warnings": []}
+
+        def run():
+            try:
+                self.create_document(text)
+            except (ValueError, OSError) as e:           # DocumentError and ConfigError already reported themselves
+                if self.creation["state"] == "running":
+                    self._creation_done(parsed["name"], [str(e)], [])
+            except Exception as e:
+                self.log(f"creating {parsed['name']}: {e!r}")
+                self._creation_done(parsed["name"], [str(e)], [])
+
+        self._create_thread = threading.Thread(target=run, name="create", daemon=True)
+        self._create_thread.start()
+        return parsed["name"]
+
+    def wait_create(self, timeout=60):
+        t = self._create_thread
+        if t is not None:
+            t.join(timeout)
+
+    def _document_checked(self, doc: dict, warnings: list, expected, what: str) -> dict:
+        """An exported document with what the export can't promise: whether creating from it gives the same ENI."""
+        if expected:
+            try:
+                plan = self._document_plan(document.parse(doc))[0]
+                if plan["eni"] != expected:
+                    warnings.append(f"creating from this document gives a different ENI than {what}: "
+                                    "the ENI holds details the document can't carry")
+            except document.DocumentError as e:
+                warnings.append(f"creating from this document would be refused: {e}")
+        return {"document": doc, "warnings": warnings}
+
+    def export_project(self, name="exported") -> dict:
+        """The Configuration list as a document; the list is not changed."""
+        with self.lock:
+            if self._load_project() is None:
+                raise ConfigError("there is no Configuration list yet")
+            plan = self._build()
+            doc, warnings = document.export(self.cfg_sources, self.load_edits(), name, plan["cycle_us"])
+            return self._document_checked(doc, warnings, plan["eni"], "the Configuration list")
+
+    def _offline_sources(self, entries: list, slaves: list) -> list:
+        """Sources for a saved list, without the bus: each entry with its ENI slave (by station address) and its ESI."""
+        by_address = {s["address"]: s for s in slaves}
+        uid_pos = {e["uid"]: pos for pos, e in enumerate(entries)}
+        out = []
+        for pos, e in enumerate(entries):
+            slave = by_address.get(e.get("address"))
+            if slave and (slave["vendor"], slave["product"]) != (e["vendor"], e["product"]):
+                slave = None
+            match, found = self.esi.find(e["vendor"], e["product"], e["revision"])
+            src = {"pos": pos, "bus_pos": None, "uid": e["uid"], "online": self._listed_online(e), "eeprom": None,
+                   "eni_slave": slave, "esi_match": match, "esi_device": self.esi.device(found) if found else None,
+                   "previous": self._previous_port(pos, e, slave, uid_pos, {})}
+            self._add_dictionary(src, src["esi_device"])
+            out.append(src)
+        return out
+
+    def export_saved(self, name: str) -> dict:
+        """A saved configuration as a document: the document it was created from, else rebuilt from what it holds."""
+        folder = self._saved_folder(name)
+
+        def read(file):
+            try:
+                with open(os.path.join(folder, file), "rb") as f:
+                    return f.read()
+            except FileNotFoundError:
+                return b""
+
+        if read("document.json"):
+            return {"document": json.loads(read("document.json")), "warnings": []}
+        info = self._saved_info(name)
+        eni_bytes, ini_bytes = read("ethercat.xml"), read("ethercat.ini")
+        saved_edits = {}
+        if info.get("kind", "active") == "proposed":
+            entries = json.loads(read("project.json"))["devices"]
+            base = read("project-base.xml")
+            slaves = eni.parse_eni(base)["slaves"] if base else []
+            saved_edits = {int(k): v for k, v in json.loads(read("edits.json") or b"{}").items()}
+        else:
+            slaves = sorted(eni.parse_eni(eni_bytes)["slaves"], key=lambda s: s["position"])
+            entries = self._entries_from_eni(slaves)
+        cycle = eni.parse_ini((ini_bytes or read("project-base.ini")).decode("latin-1")).get("EtherCAT.Master", {}).get("CycleTimeUs")
+        with self.lock:
+            doc, warnings = document.export(self._offline_sources(entries, slaves), saved_edits, name,
+                                            int(cycle) if cycle and cycle.isdigit() else None)
+            return self._document_checked(doc, warnings, eni_bytes, "the saved one")
 
     @staticmethod
     def _entries_from_eni(slaves: list) -> list:

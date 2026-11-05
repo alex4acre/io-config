@@ -171,6 +171,23 @@ class RoutesTest(unittest.TestCase):
         self.core.master_request["running"] = False
         self.assertEqual(self.call("GET", "/state")[1]["master"]["state"], "init")
 
+    def test_document_routes(self):
+        d = {"schema": 1, "name": "Line1", "cycle_us": 2000,
+             "devices": [{"vendor": "0x24", "product": "0x242A0F", "revision": "0x10100", "name": "Coupler"}]}
+        status, r = self.call("POST", "/configurations", d)
+        self.assertEqual((status, r["devices"], r["warnings"]), (201, ["Coupler"], []))
+        self.assertEqual(self.call("GET", "/state")[1]["creation"]["state"], "done")
+        status, r = self.call("POST", "/configurations", d)
+        self.assertEqual(status, 400)                               # the name exists
+        status, r = self.call("POST", "/configurations", dict(d, name="B", devices=[{"vendor": 1}]))
+        self.assertEqual(status, 400)
+        self.assertGreaterEqual(len(r["errors"]), 2)                # all problems, as a list
+        status, r = self.call("GET", "/saved/Line1/document")
+        self.assertEqual((status, r["document"], r["warnings"]), (200, d, []))
+        self.assertEqual(self.call("GET", "/saved/Nope/document")[0], 404)
+        status, r = self.call("GET", "/project/document?name=Mine")
+        self.assertEqual((status, r["document"]["name"], len(r["document"]["devices"])), (200, "Mine", 4))
+
     def test_project_update_and_open_need_confirmation(self):
         self.assertEqual(self.call("POST", "/project/update", {})[0], 400)
         self.assertEqual(self.call("POST", "/project/update", {"confirm": True})[0], 200)

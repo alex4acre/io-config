@@ -233,8 +233,11 @@ def soe_type(dict_type: str) -> str:
 
 
 def applies(src: dict, edit: dict) -> bool:
+    """Whether the edit was made for this device. A list entry can name another revision than the bus device it is paired
+    with (the ESI's, say): an edit made for the entry stays valid."""
     info = (src.get("online") or {}).get("response", {}).get("slaveIdentity", {})
-    return edit.get("identity") == [info.get("vendorId"), info.get("productCode"), info.get("revisionNumber")]
+    return edit.get("identity") in ([info.get("vendorId"), info.get("productCode"), info.get("revisionNumber")],
+                                    src.get("entry_identity"))
 
 
 def apply_edit(dev: dict, src: dict, edit: dict) -> dict:

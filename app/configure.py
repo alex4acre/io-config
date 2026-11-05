@@ -253,11 +253,12 @@ def device_for(src: dict, user_edits: dict, used: set = None) -> dict:
 
 
 def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = None, user_edits: dict = None,
-               unlisted: list = None, ini: bytes = None) -> dict:
+               unlisted: list = None, ini: bytes = None, offline: bool = False) -> dict:
     """sources: per present device {"pos", "online", "eeprom", "eni_slave", "esi_match", "esi_device"};
     current: {"eni": bytes, "ini": bytes, "parsed": parse_eni() or None}; user_edits: position -> edit.
     unlisted: None for the live list; for a project (the list is a configuration) the descriptions of the bus
-    devices that are not in it. ini: the ini to start from (the list's base), default the current one."""
+    devices that are not in it. ini: the ini to start from (the list's base), default the current one.
+    offline: the list has nothing to do with the bus (a JSON document): no warnings about devices not on it."""
     devices, rows, errors, warnings = [], [], [], []
     names = device_names(sources, user_edits)
     for name, positions in duplicate_names(names):
@@ -274,7 +275,7 @@ def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = N
         dev["name"] = name
         if warning:
             warnings.append(warning)
-        if absent(src):
+        if absent(src) and not offline:
             warnings.append(f'Position {pos}: {dev["name"]} is not on the bus at the last scan' if unlisted is not None
                             else f'Position {pos}: {dev["name"]} is not present on the bus')
         edit = (user_edits or {}).get(pos)

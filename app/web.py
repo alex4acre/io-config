@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from app.bus import BusError
 from app.core import REQUESTABLE, ConfigError
+from app.document import DocumentError
 
 BASE = "/io-config"
 API = BASE + "/api/v1"
@@ -69,6 +70,9 @@ ROUTES = [
     ("GET", r"/saved/([^/]+)/(eni|ini)", "get_saved_file"),
     ("POST", r"/saved/([^/]+)/activate", "post_activate"),
     ("POST", r"/saved/([^/]+)/open", "post_open_saved"),
+    ("GET", r"/saved/([^/]+)/document", "get_saved_document"),
+    ("POST", r"/configurations", "post_configuration"),
+    ("GET", r"/project/document", "get_project_document"),
     ("GET", r"/esi", "get_esi"),
     ("POST", r"/esi", "post_esi"),
     ("DELETE", r"/esi/([^/]+)", "delete_esi"),
@@ -129,6 +133,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             self.send_json(e.status, {"error": str(e)})
         except KeyError as e:
             self.send_json(404, {"error": str(e.args[0]) if e.args else "Not found"})
+        except DocumentError as e:
+            self.send_json(400, {"error": str(e), "errors": e.errors, "warnings": e.warnings})
         except (ConfigError, ValueError) as e:
             self.send_json(400, {"error": str(e)})
         except BusError as e:
@@ -406,6 +412,17 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             raise HttpError(400, '{"confirm": true} is needed: the list and all unwritten changes are replaced')
         core.open_saved(name)
         self.send_json(200, {"opened": name})
+
+    # --- a whole configuration as one JSON document (docs/api.md) ---------------------------------------
+
+    def post_configuration(self):
+        self.send_json(201, core.create_document(self.read_json()))
+
+    def get_project_document(self):
+        self.send_json(200, core.export_project(self.q("name", "exported")))
+
+    def get_saved_document(self, name):
+        self.send_json(200, core.export_saved(name))
 
     # --- ESI library -------------------------------------------------------------------------------
 

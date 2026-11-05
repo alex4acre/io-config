@@ -254,6 +254,23 @@ def nodes_check(provider, bus):
             self.started.append(name)
             self.activation = dict(self.activation, state="running", name=name)
 
+        creation = {"state": "idle", "name": "", "errors": [], "warnings": []}
+        documents = []
+        scans = []
+
+        def start_create(self, text):
+            doc = json.loads(text)                    # ValueError if it isn't JSON: the write fails
+            self.documents.append(doc)
+            self.creation = {"state": "done", "name": doc["name"], "errors": [], "warnings": ["look"]}
+            return doc["name"]
+
+        def start_scan(self):
+            self.scans.append(1)
+
+        def state(self):
+            return {"scan": {"running": False, "error": None, "finished": 1.0}, "master": {"state": "op"},
+                    "devices": [{"position": 0, "name": "Coupler", "vendor": 36}]}
+
     core = Core()
     reg = NodeRegistry(provider, core, log=lambda m: None)
     reg.register()
@@ -270,6 +287,32 @@ def nodes_check(provider, bus):
         except BusError as e:
             check(bus.read("io-config/activate").startswith("error: ") and core.started == ["Line B"],
                   f"an unknown name is refused ({e})")
+        check(bus.read("io-config/creation/state") == "idle", "creation/state reads idle")
+        document = json.dumps({"schema": 1, "name": "Line1", "devices": [{"vendor": "0x24"}] * 2000})
+        bus.write("io-config/create", document)
+        check(core.documents and core.documents[-1]["name"] == "Line1" and len(core.documents[-1]["devices"]) == 2000,
+              f"a {len(document)}-character document written to create arrives whole")
+        check(bus.read("io-config/create") == "started Line1", "create reads the result of the last call")
+        check(bus.read("io-config/creation/state") == "done" and bus.read("io-config/creation/name") == "Line1" and
+              json.loads(bus.read("io-config/creation/errors")) == [] and
+              json.loads(bus.read("io-config/creation/warnings")) == ["look"], "creation nodes give the result")
+        meta = bus.metadata("io-config/create")
+        check(meta["operations"]["create"] and meta["operations"]["write"], f"create allows write and create: {meta}")
+        answer = bus.create("io-config/create", json.dumps({"schema": 1, "name": "Line2", "devices": []}))
+        check(core.documents[-1]["name"] == "Line2", f"a create on the node does the same as a write (answer {answer!r})")
+        try:
+            bus.write("io-config/create", "{not json")
+            check(False, "a text that isn't JSON is refused")
+        except BusError as e:
+            check(bus.read("io-config/create").startswith("error: "), f"a text that isn't JSON is refused ({e})")
+        bus.write("io-config/scan", "start")
+        check(core.scans == [1] and bus.read("io-config/scan") == "started", "writing to scan starts a scan")
+        check(bus.read("io-config/scan/state") == "done", "scan/state gives the state")
+        answer = json.loads(bus.read("io-config/bus"))
+        check(answer["scan"] == {"state": "done", "error": ""} and answer["devices"][0]["name"] == "Coupler",
+              f"bus gives the last scan: {answer}")
+        check(sorted(bus.browse("io-config")) == ["activate", "activation", "bus", "configurations", "create", "creation", "scan"],
+              f"browse: {bus.browse('io-config')}")
     finally:
         reg.clear()
 
