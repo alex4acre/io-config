@@ -1,6 +1,6 @@
 # io-config: how devices are identified, cross-checked and applied
 
-State: version 1.7.1, ctrlx-baseline 1.0.0 (2026-11-02). File paths are relative to the app folder `io-config/`.
+State: version 1.11.1, ctrlx-baseline 1.0.0 (2026-11-06). File paths are relative to the app folder `io-config/`.
 The code snippets are io-config's own code, shortened (marked `...`); the line numbers point to the full code. The
 shared parts every ctrlX app has (section 2) are described, not shown: their code and rules are in
 `ctrlx-baseline/` (`STANDARD.md`, `framework/`).
@@ -16,7 +16,7 @@ wire (its vendor ID, product code and revision from the master's online info). T
 |---|---|---|
 | **ESI** | The ESI library (the XML device descriptions you uploaded, *EtherCAT Slave Information*) | `exact` = an ESI with the same vendor, product and revision. `other rev.` = same product, a different revision (the nearest one is used). `missing` = no ESI for this product. |
 | **ENI** | The configuration the master runs now (*EtherCAT Network Information*, the `ethercat.xml` written by I/O Engineering or by this app) | `same` = configured with the same identity. `other rev.` = same product, other revision. `different` = another device is configured there. `not in active configuration` (a warn badge) = the device is on the bus but not in the running configuration (e.g. newly plugged in). `not on bus` = configured but missing (it stays in the configuration, see section 4.7). |
-| **EEPROM** | The device's own EEPROM (*SII*, slave information interface), read through the master | `read` = read and decoded. `error` = couldn't be read. |
+| **EEPROM** | The device's own EEPROM (*SII*, slave information interface), read through the master on request (section 3) | `read` = read (now or earlier) and decoded. `not read` = not read yet: Read EEPROM on the device card. `error` = couldn't be read. |
 | **Findings** | All findings for this position (hover to read them) | `OK`, `Warning (n)` = n warnings, `Error (n)`. The Info tab of the device card lists them. |
 
 Typical findings:
@@ -74,20 +74,22 @@ def esi_folder() -> str:
         return os.path.join(os.environ["SNAP_COMMON"], "esi")
     return os.environ.get("IO_CONFIG_ESI", os.path.join(SRC, "data", "esi"))
 
-# app/main.py:114 main (shortened): the core gets the bus, its settings file and the ESI library
+# app/main.py:117 main (shortened): the core gets the bus, its settings file and the ESI library
 core = Core(path, bus, esi_folder(), log=log)
 ...
 log(f"Configuration: {path}, ESI library: {core.esi.folder} ({core.esi.summary()['devices']} devices)")
 ```
 
 The configurator works without its own Data Layer nodes, so the start-up stops trying to start the provider after a
-minute ([app/main.py:73](../app/main.py#L73)) instead of waiting forever.
+minute ([app/main.py:76](../app/main.py#L76)) instead of waiting forever.
 
-**Own Data Layer nodes: switching saved configurations from a PLC.** `io-config/activate` is a command node: a PLC or
-another app writes a configuration's name, and reading the node gives the result of the last write.
+**Own Data Layer nodes: configuring the bus from a PLC or another program.** The nodes are command nodes: a PLC or
+another app writes a text, and reading the node gives the result of the last write. `io-config/activate` takes a saved
+configuration's name and writes it to the master. Since 1.10.0 `io-config/create` takes a whole configuration as JSON,
+`io-config/export` gives one back, and `io-config/scan` starts a scan (section 4.9). The activation nodes look like this:
 
 ```python
-# app/provider.py:106 register (shortened)
+# app/provider.py:139 register (shortened)
 def activate(text):
     name = text.strip()
     try:
@@ -110,7 +112,7 @@ process data, plan, download, backups, saved configurations, ESI library). They'
 ESI upload takes the file itself as the request body, with a larger limit than ordinary JSON requests:
 
 ```python
-# app/web.py:345 post_esi (shortened)
+# app/web.py:442 post_esi (shortened)
 def post_esi(self):
     """The body is the file itself (XML or zip); its name comes in ?name=."""
     name = self.q("name")
@@ -120,19 +122,20 @@ def post_esi(self):
     data = self.rfile.read(length)
     self.send_json(200, core.esi.add(name, data))
 
-# app/web.py:336 post_activate: the same activation as the Data Layer node
+# app/web.py:416 post_activate: the same activation as the Data Layer node
 def post_activate(self, name):
     self.send_json(202, core.start_activate(name))
 ```
 
 **Simulated ctrlX: the recorded X3 bus.** The fake doesn't invent devices. It replays what the X3's master answered
 (online info, EEPROMs, CoE dictionaries in `tests/data/`), so the scan, the cross-check and the byte-for-byte tests
-run on real data without a controller. `IO_CONFIG_FAKE_DRIVE=1` adds the recorded ctrlX DRIVE with its SoE parameters.
+run on real data without a controller. `IO_CONFIG_FAKE_DRIVE=1` adds the recorded ctrlX DRIVE with its SoE parameters,
+`IO_CONFIG_FAKE_ELMO=1` the Elmo Titanium (a modular device).
 
 ```python
-# app/fake.py:75 FakeBus (shortened)
+# app/fake.py:92 FakeBus (shortened)
 class FakeBus:
-    def __init__(self, nodes: dict = None, slaves: list = None, drive: bool = False):
+    def __init__(self, nodes: dict = None, slaves: list = None, drive: bool = False, elmo: bool = False):
         if nodes is None:
             nodes, slaves = recorded_nodes()            # tests/data/x3-bus.json
             if drive:
@@ -161,13 +164,13 @@ nodes the master already offers under `fieldbuses/ethercat/master/instances/ethe
 | Process data | `realtime_data/input|output/data/<variable>` (`<Device>/<Pdo>.<Entry>`, or `<Device>/<your name>` from 1.9.0) | read/write |
 
 So the **master scans the bus** (it does that on its own at start-up and when the topology changes), and the app
-reads the master's results, then each device's EEPROM through the master's EEPROM node. All calls go through the
+reads the master's results. A scan doesn't read EEPROMs (since 1.8.4; see below). All calls go through the
 shared Data Layer client (section 2). The master's device-access nodes need two calls io-config added to it:
 `read_args` for nodes that take arguments (position, EEPROM offset), and `write_json` for nodes that can't be read
 without arguments (SDO, SoE). Both are now part of the baseline's client.
 
 ```python
-# app/core.py:212 _scan (shortened)
+# app/core.py:414 _scan (shortened)
 state = self.bus.read(base + "admin/fieldbus_status/master_state").get("response", {})
 connected = self.bus.read(base + "admin/fieldbus_status/num_connected_slaves").get("response", {}).get("numSlaves", 0)
 ...
@@ -181,7 +184,7 @@ for pos in range(connected):
 ```
 
 ```python
-# app/core.py:285 _read_eeprom: 64 words per call until the EEPROM's end marker
+# app/core.py:680 _read_eeprom: 64 words per call until the EEPROM's end marker
 while len(words) < EEPROM_MAX_WORDS:
     answer = self.bus.read_args(base + "device_access/slave_eeprom", {"request": {
         **address, "eepromOffset": len(words), "maxLength": EEPROM_CHUNK_WORDS}})
@@ -193,9 +196,13 @@ while len(words) < EEPROM_MAX_WORDS:
         break
 ```
 
-The EEPROM words are cached per position + identity + serial number. A rescan doesn't read them again unless
-"Reread EEPROMs" is ticked. [app/sii.py](../app/sii.py) decodes them (ETG.1000.6): identity, mailbox protocols,
-sync managers, FMMUs, PDOs and DC.
+**EEPROMs only when asked for (1.8.4).** Reading every EEPROM made a scan slow: 72 s for the 12 devices on the X7,
+against 0.3 s without. A scan now reads none. **Read EEPROM** on a device card reads that one device (a few seconds),
+and **Read all EEPROMs** on the Bus tab makes the next scan read every one (it unticks itself). What was read is kept in
+`$SNAP_COMMON/esi-eeprom.json`, keyed by identity and serial number (by bus place for devices that report serial 0), and is shown
+and compared in later scans. A changed EEPROM on the same serial isn't noticed until it's read again. A device with no ESI,
+no ENI entry and no saved read gets a finding that points to the button. [app/sii.py](../app/sii.py) decodes the words
+(ETG.1000.6): identity, mailbox protocols, sync managers, FMMUs, PDOs and DC.
 
 ## 4. The process, step by step
 
@@ -205,7 +212,7 @@ sync managers, FMMUs, PDOs and DC.
  master status            per position:                  per position:               backup of the running config
  running ENI + ini   ──>  ESI   (library lookup)   ──>   device from ESI       ──>   master -> Init
  online info / pos        ENI   (paired by type)         (else ENI, else EEPROM)     write ENI + ini
- EEPROM / pos             EEPROM (decoded)               + current choices           compare checksums
+ (EEPROM on request)      EEPROM (decoded)               + current choices           compare checksums
                           -> findings, badges            + your edits                master -> Op
                                                          -> ENI + ini (generated)    files in active configuration
 ```
@@ -213,7 +220,7 @@ sync managers, FMMUs, PDOs and DC.
 ### 4.1 Identify: the ESI lookup
 
 ```python
-# app/esi.py:294 EsiLibrary.find
+# app/esi.py:346 EsiLibrary.find
 def find(self, vendor, product, revision):
     """(match, entry): "exact", "nearest" (highest revision below, else the closest one) or "none"."""
     same = [e for e in self.entries if e["vendor"] == vendor and e["product"] == product]
@@ -228,7 +235,7 @@ def find(self, vendor, product, revision):
 ```
 
 The library index (`$SNAP_COMMON/esi/index.json`) lists every device in every uploaded file, so a lookup doesn't
-parse XML. Only the matching device is parsed, by [app/esi.py:95](../app/esi.py#L95) `parse_device`.
+parse XML. Only the matching device is parsed, by [app/esi.py:142](../app/esi.py#L142) `parse_device`.
 
 ### 4.2 Identify: pairing with the running configuration
 
@@ -236,7 +243,7 @@ Each device on the bus is paired with its entry in the running ENI **by device t
 that the pairing was by position, so a device plugged in before others made those others lose their settings.
 
 ```python
-# app/configure.py:33 pair_in_order: longest common subsequence of [vendor, product]
+# app/configure.py:38 pair_in_order: longest common subsequence of [vendor, product]
 def pair_in_order(old: list, new: list) -> dict:
     n, m = len(old), len(new)
     best = [[0] * (m + 1) for _ in range(n + 1)]
@@ -245,10 +252,11 @@ def pair_in_order(old: list, new: list) -> dict:
             best[i][j] = best[i + 1][j + 1] + 1 if old[i] == new[j] else max(best[i + 1][j], best[i][j + 1])
     ...   # walk the table: equal entries are paired, the others are inserted / removed devices
 
-# app/core.py, in _scan
-bus_ids = [_identity(o) for o in onlines]
-paired = configure.pair_in_order([[s["vendor"], s["product"]] for s in configured_slaves], bus_ids)
-eni_slaves = {paired[k]: s for k, s in enumerate(configured_slaves) if k in paired}
+# app/core.py:495, in _assemble_bus (shortened)
+bus_ids = [_identity(o) for o in raw["onlines"]]
+...
+paired = configure.pair_in_order([[s["vendor"], s["product"]] for s in configured], ids)
+eni_slaves = {paired[k]: s for k, s in enumerate(configured) if k in paired}
 ```
 
 Example from the X3: the running ENI had coupler, 3 I/O modules and the drive. Then the XI112108 was plugged in
@@ -256,15 +264,15 @@ before the drive. The pairing gives coupler…XI522001 → same entries, XI11210
 entry. The drive keeps its edited telegram.
 
 Saved edits from the editor carry the bus they were made for and move with their device the same way
-(`_follow_edits`, [app/core.py:519](../app/core.py#L519)).
+(`_follow_edits`, [app/core.py:1522](../app/core.py#L1522)).
 
 ### 4.3 Cross-check
 
-[app/compare.py:43](../app/compare.py#L43) `device_report` puts online info, EEPROM, ENI entry and ESI device side
+[app/compare.py:75](../app/compare.py#L75) `device_report` puts online info, EEPROM, ENI entry and ESI device side
 by side and adds a finding for each disagreement:
 
 ```python
-# app/compare.py:43 device_report (shortened)
+# app/compare.py:75 device_report (shortened)
 if al is not None and al & 0x10:
     add("error", f"Device reports an error: AL status {al_state(al)}, code ...")
 elif al is not None and master_op and al & 0x0F != 8:
@@ -293,11 +301,11 @@ managers (start address, size) and the mailbox protocols. The worst finding give
 
 ### 4.4 Describe each device (what the new configuration is built from)
 
-[app/configure.py:78](../app/configure.py#L78) `describe` picks the best source per position, then lays the
+[app/configure.py:160](../app/configure.py#L160) `describe` picks the best source per position, then lays the
 current configuration's choices and your edits on top:
 
 ```python
-# app/configure.py:78 describe (shortened)
+# app/configure.py:160 describe (shortened)
 if esi is not None and src.get("esi_match") in ("exact", "nearest"):
     dev = generate.device_from_esi(esi, "")                   # 1. the ESI (the reference)
 elif slave is not None and (slave["vendor"], slave["product"], slave["revision"]) == (vendor, product, revision):
@@ -312,30 +320,32 @@ if slave is not None and (slave["vendor"], slave["product"]) == (vendor, product
     note.insert(0, "kept from the current configuration")
 ```
 
-- `device_from_esi` ([app/generate.py:80](../app/generate.py#L80)) takes the ESI's defaults:
+- `device_from_esi` ([app/generate.py:132](../app/generate.py#L132)) takes the ESI's defaults:
   - the PDOs the ESI assigns to a sync manager;
   - the first DC mode;
   - the mailbox (CoE / SoE / EoE) with the ESI's startup commands;
   - sync managers and FMMUs, including OpOnly (devices without a mailbox, e.g. the XI112108).
-- `apply_eni` ([app/generate.py:151](../app/generate.py#L151)) keeps what the running ENI chose for the same device:
+- `apply_eni` ([app/generate.py:207](../app/generate.py#L207)) keeps what the running ENI chose for the same device:
   - name;
   - PDO assignment;
   - startup parameters;
   - drive telegram content.
-- Your edits come last ([app/edits.py:173](../app/edits.py#L173) `apply_edit`): name, PDO selection, startup
-  parameters, MDT/AT content. Edited MDT/AT entries keep the ESI's names and types; only added IDNs take theirs
-  from the drive's SoE dictionary (as I/O Engineering does).
+- Your edits come last ([app/edits.py:262](../app/edits.py#L262) `apply_edit`): name, modules, DC mode, PDO selection,
+  startup parameters, MDT/AT content, variable names (1.9.0) and EoE settings (1.11.0). Edited MDT/AT entries keep the
+  ESI's names and types; only added IDNs take theirs from the drive's SoE dictionary (as I/O Engineering does).
+- An edit belongs to the device it was made for (vendor, product, revision). Since 1.10.0 it also stays valid when the
+  list names the ESI's revision and the device on the bus reports another one (the X3's drive: 0x3, ESI 0x06000003).
 
 ### 4.5 Build: generate the ENI and ini
 
-[app/configure.py:125](../app/configure.py#L125) `build_plan` does three things:
+[app/configure.py:255](../app/configure.py#L255) `build_plan` does three things:
 - runs the steps above for every position;
 - takes the real cabling from the online info (which port of which device each device is plugged into,
-  `topology`, [app/configure.py:61](../app/configure.py#L61));
+  `topology`, [app/configure.py:131](../app/configure.py#L131));
 - generates the files.
 
 ```python
-# app/generate.py:618 generate_eni (outline)
+# app/generate.py:921 generate_eni (outline)
 lay, out_total, in_total, n_mbx = _layout(devices)    # process-image offsets per device, mailbox-state bits
 ...                                                   # master section: mailbox states, EoE
 for pos, dev in enumerate(devices):
@@ -365,7 +375,7 @@ You can download the ENI and the ini before writing.
 ### 4.6 Apply: write to the master
 
 ```python
-# app/configure.py:201 write_config (the download sequence)
+# app/configure.py:370 write_config (the download sequence)
 bus.write(base + "admin/fieldbus_status/master_state", {"request": {"newState": "init"}})
 _wait_state(bus, base, "init", 30, log)
 bus.write(base + "admin/fieldbus_config", {"request": {"eni": list(eni), "ini": list(ini)}})
@@ -378,7 +388,7 @@ _wait_state(bus, base, "op", op_timeout, log)
 # then: the master stores the files in the active configuration itself (the app checks, else writes them)
 ```
 
-Before this the app does two things ([app/core.py:370](../app/core.py#L370) `_download_thread`):
+Before this the app does two things ([app/core.py:1042](../app/core.py#L1042) `_download_thread`):
 - it notes if someone wrote another configuration since the last scan (since 1.6.0 this no longer stops the write);
 - it saves the running configuration as a **backup** (`io-config/backups/<time>/`, the last 20), read from the
   master at that moment. **Restore** writes a backup back the same way.
@@ -422,8 +432,13 @@ The app then only warns; it does not stop you.
   warns ("The master's configuration changed since this list was started") and still compares with the running one.
 - **Build** builds exactly the list. It warns once per listed device that is not on the bus at the last scan and once
   per bus device that is not in the list ("... is on the bus but not in this configuration"); a moved device
-  therefore warns on both sides. No warning if the list equals the bus. An empty list is an error. The cycle time
-  field starts from the base's ini.
+  therefore warns on both sides. No warning if the list equals the bus. An empty list is an error.
+- **Settings are tables** (1.11.1): each group has a heading and a table with Setting | Value | Note. The "Build
+  configuration" card holds **Master** (cycle time, EoE) and **EoE device addresses**. A device card's Settings tab holds
+  **General** (name, DC mode), Modules, **EoE** and PDOs.
+- **Cycle time** (Master table): every scan and Update from the active bus set it to the active value, also over a typed
+  one. Build warns, but doesn't refuse, when it differs from the scheduler task `ctrlXAutomation`: the master reports an
+  invalid cycle time until they match.
 - **Write** is best effort: Init, write, check the checksums, Op, then the files. A step that fails is a warning, and
   the result says "Written, with warnings". If the master did not take the configuration, it takes effect at the
   next master start. It is an error only if neither the master nor the files took it. **The list stays after a
@@ -453,11 +468,96 @@ The app then only warns; it does not stop you.
 - If the master cannot be read, the scan shows state "unavailable" and the Bus tab's list comes from the files of the
   active configuration.
 
+### 4.8 EoE (Ethernet over EtherCAT, 1.11.0)
+
+EoE gives the controller a network port into the EtherCAT bus: devices that support it (drives, for example) get an IP
+address and can be reached, e.g. by their own web page or engineering tool. I/O Engineering calls the two sides the
+master's "EoE" tab and each device's "EoE" tab.
+
+**Master** ("Build configuration" card, Master table). Until 1.11.0 the app copied the master's ini unchanged, so a
+master running with EoE off (the X3 on 2026-11-05: `Enabled=FALSE`) could not be switched on. Now the list can have its
+own setting: on or off, the master's IP address and subnet mask (default 172.31.254.254 / 255.255.255.0, as I/O
+Engineering). "Use running setting" drops it again. Only the `[EtherCAT.Master.EoE.Endpoint]` section of the ini changes
+([app/generate.py:488](../app/generate.py#L488) `set_eoe`); without a setting of its own the ini stays byte for byte.
+
+```ini
+[EtherCAT.Master.EoE.Endpoint]
+Enabled=TRUE
+IpAddress=172.31.254.254
+SubnetMask=255.255.255.0
+```
+
+**EoE device addresses** (table below it): first and last address, subnet mask, gateway and DNS server the devices get
+automatically. Empty = .1 to .254 of the master's network, its mask, the master as gateway, no DNS server.
+
+**Each device** (device card, Settings, EoE table, only for devices that support EoE): on or off, IP port or switch port
+(a switch port only forwards Ethernet frames and gets its MAC, no IP), and its own IP address, subnet mask, gateway, DNS
+server, DNS name and MAC. An empty field is automatic; the **Gets** column shows what the device gets with the saved
+settings.
+
+[app/generate.py:553](../app/generate.py#L553) `eoe_addresses` hands out the automatic addresses in list order from the
+first one, skipping the master's address and every fixed one. Each device then gets an EoE "set IP parameter" command in
+the ENI ([app/generate.py:402](../app/generate.py#L402) `_eoe_ip`):
+
+```python
+# app/generate.py:402 _eoe_ip (shortened): all fields are always there, the flags say which ones count
+mac = eoe.get("mac") or mac or eoe_mac(phys)         # default 02:60:34:FE:<EtherCAT address>, or the one kept
+if eoe.get("switch"):
+    flags, ip, mask, gateway = EOE_MAC, "0.0.0.0", "0.0.0.0", "0.0.0.0"
+else:
+    flags, ip, mask, gateway = EOE_MAC | EOE_IP | EOE_MASK | EOE_GATEWAY | EOE_DNS_NAME, eoe["ip"], eoe["mask"], eoe["gateway"]
+    if eoe.get("dns"):
+        flags |= EOE_DNS
+```
+
+With the default settings the result is I/O Engineering's file, byte for byte (the acceptance tests with the drive).
+Not checked against I/O Engineering yet: a switch port, a DNS server, a device with EoE off, and per-device IPs that an
+I/O Engineering file already holds (the app keeps a device's MAC from the running configuration, but hands out the
+addresses again).
+
+### 4.9 Configuring the bus from a program: the JSON document (1.10.0)
+
+A whole configuration is one JSON document. A PLC writes it to the Data Layer node `io-config/create`, another program
+sends it to `POST /io-config/api/v1/configurations`. The app checks it, builds the ENI and ini, and saves them under
+the document's name as a proposed configuration. Writing it to the master is a separate step (`io-config/activate`),
+because that stops the bus. The reference with every key and node is [docs/api.md](api.md).
+
+```json
+{
+  "schema": 1, "name": "Line1", "cycle_us": 4000,
+  "eoe": {"enabled": true, "ip": "172.31.254.254", "mask": "255.255.255.0"},
+  "devices": [
+    {"vendor": "0x24", "product": "0x242A0F", "revision": "0x10100", "name": "Coupler"},
+    {"vendor": "0x24", "product": "0x242A1F", "revision": "0x100", "name": "Analog",
+     "connected_to": {"device": "Coupler", "port": "C"},
+     "variable_names": {"in:Channel_1.Value": "Pressure"}}
+  ]
+}
+```
+
+What makes it different from the Configuration tab:
+- **It depends only on the document and the ESI files**, not on the bus or the running configuration: the same document
+  always gives the same files. Each device needs exactly its ESI (the `revision` says which one); there is no fallback
+  to an EEPROM.
+- **It doesn't touch your Configuration list or its edits**, nor the master. Opening the saved result in the UI makes it
+  the list, like any saved configuration.
+- **Everything wrong is reported at once**, and nothing is saved. Unknown keys are refused, so a mistyped option
+  doesn't disappear unnoticed.
+
+**Export** is the way back: `io-config/export` (write a saved name, or an empty text for the list) or
+`GET /project/document` / `GET /saved/<name>/document` give a document. Setting a machine up once in the UI and exporting
+it is the easiest start. An export rebuilds itself and warns if creating from it would not give the same ENI.
+
+The device settings in a document are checked by the same code as an edit in the UI (`edits.validate`), and a
+document builds the same ENI as the same choices in the UI. Both are acceptance tests (`tests/test_document.py`).
+
 ## 5. Where to look for more
 
 - [docs/design.md](design.md): the design history, every rule learned from the controller and what's open.
 - `ctrlx-baseline/STANDARD.md`: the rules all apps follow and the shared framework (§2), how an app moves to it
   (§12). `ctrlx-baseline/tools/check.py ~/ctrlx-apps/io-config` shows where io-config stands.
-- Tests: `tests/test_generate.py` and `tests/test_drive.py` hold the byte-for-byte acceptance tests.
-  `tests/test_nombx.py` covers devices without a mailbox and the real X3 bus with the inserted XI112108.
-  `tests/test_saved.py` covers saved configurations.
+- [docs/api.md](api.md): the JSON document, the Data Layer nodes and the REST calls for programs (section 4.9).
+- Tests: `tests/test_generate.py`, `tests/test_drive.py` and `tests/test_8dev.py` hold the byte-for-byte acceptance
+  tests. `tests/test_nombx.py` covers devices without a mailbox and the real X3 bus with the inserted XI112108.
+  `tests/test_saved.py` covers saved configurations, `tests/test_names.py` variable names, `tests/test_document.py` the
+  JSON document, `tests/test_eoe.py` EoE.
