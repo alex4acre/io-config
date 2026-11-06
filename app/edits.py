@@ -196,6 +196,15 @@ def validate(src: dict, edit: dict) -> dict:
                     row.update(data_type=x["data_type"], bits=x["bits"])     # only to show the value, not in the ENI
                 clean.append(row)
         out["startup"] = clean
+    if edit.get("eoe") is not None:
+        if "EoE" not in mailbox_protocols(src):
+            problems.append("the device has no EoE")
+        else:
+            found = generate.check_device_eoe(edit["eoe"])
+            problems += found
+            if not found:
+                out["eoe"] = {k: (generate.normal_mac(v) if k == "mac" else v) for k, v in edit["eoe"].items()
+                              if v not in ("", None)}
     for key, direction, mark, lead in (("soe_mdt", "rx", "r", SOE_CONTROL_WORD), ("soe_at", "tx", "t", SOE_STATUS_WORD)):
         if edit.get(key) is None:
             continue
@@ -230,6 +239,16 @@ def soe_type(dict_type: str) -> str:
     """Dictionary types like UINT_bin / UDINT_hex as the ENI's data types (UINT / UDINT)."""
     base = dict_type.split("_", 1)[0]
     return base if base in ("SINT", "INT", "DINT", "LINT", "USINT", "UINT", "UDINT", "ULINT", "REAL", "LREAL") else ""
+
+
+def mailbox_protocols(src: dict) -> list:
+    """The mailbox protocols of a device: from its ESI, else its EEPROM, else the running configuration."""
+    esi = _esi(src)
+    if esi is not None:
+        return esi.get("mailbox") or []
+    if src.get("eeprom"):
+        return src["eeprom"].get("mailbox") or []
+    return (src.get("eni_slave") or {}).get("mailbox") or []
 
 
 def applies(src: dict, edit: dict) -> bool:
@@ -290,6 +309,8 @@ def apply_edit(dev: dict, src: dict, edit: dict) -> dict:
             pdos.append(p)
         out["pdos"] = pdos
         out["source"] = "edited"
+    if edit.get("eoe") is not None:
+        out["eoe_cfg"] = dict(edit["eoe"])
     if edit.get("variable_names"):
         names = dict(out.get("variable_names") or {}, **edit["variable_names"])
         out["variable_names"] = {k: v for k, v in names.items() if v}

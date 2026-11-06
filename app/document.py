@@ -24,8 +24,8 @@ MAX_DEVICES = 1024
 MAX_SIZE = 1024 * 1024         # bytes of JSON, as for a REST body
 TOP_KEYS = {"schema", "name", "overwrite", "cycle_us", "eoe", "devices"}
 DEVICE_KEYS = {"vendor", "product", "revision", "name", "connected_to", "pdos", "modules", "dc_mode", "startup",
-               "variable_names", "soe_mdt", "soe_at"}
-EDIT_KEYS = ("name", "pdos", "modules", "dc_mode", "startup", "variable_names", "soe_mdt", "soe_at")
+               "variable_names", "soe_mdt", "soe_at", "eoe"}
+EDIT_KEYS = ("name", "pdos", "modules", "dc_mode", "startup", "variable_names", "soe_mdt", "soe_at", "eoe")
 BRANCH_PORTS = ("B", "C", "D")
 
 
@@ -254,6 +254,12 @@ def export(sources: list, user_edits: dict, name: str, cycle_us=None, eoe: dict 
             startup = _startup_rows(dev, src.get("esi_device"))
             if startup:
                 row["startup"] = startup
+            own_eoe = dict(dev.get("eoe_cfg") or {})
+            # a MAC the running configuration gave the device (I/O Engineering keeps it when the device moves)
+            if dev.get("eoe_mac") and "mac" not in own_eoe and dev["eoe_mac"].upper() != generate.eoe_mac(generate.FIRST_ADDRESS + pos):
+                own_eoe["mac"] = dev["eoe_mac"].upper()
+            if own_eoe:
+                row["eoe"] = own_eoe
             names_used = {k: v for k, v in (dev.get("variable_names") or {}).items() if v}
             if names_used:
                 row["variable_names"] = names_used
@@ -262,6 +268,6 @@ def export(sources: list, user_edits: dict, name: str, cycle_us=None, eoe: dict 
     if cycle_us:
         document["cycle_us"] = cycle_us
     if eoe:
-        document["eoe"] = {k: eoe[k] for k in ("enabled", "ip", "mask")}
+        document["eoe"] = {k: eoe[k] for k in ("enabled", "ip", "mask", "devices") if k in eoe}
     document["devices"] = devices
     return document, warnings

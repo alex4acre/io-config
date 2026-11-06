@@ -107,10 +107,10 @@ class ListTest(unittest.TestCase):
         # the drive: 10.5.0.1, mask 255.255.0.0, gateway the master (byte order reversed, as ETG.1000.6 has it)
         self.assertIn("0100050A" + "0000FFFF" + "C800050A", data)
 
-    def test_master_address_taken_by_a_device(self):
+    def test_the_master_address_is_skipped(self):
         self.core.set_project_eoe(dict(ON, ip="172.31.254.1"))
-        p = self.core.plan(2000)
-        self.assertRegex(" ".join(p["errors"]), "is one the EoE devices get")
+        self.assertEqual(self.core.plan(2000)["errors"], [])
+        self.assertEqual(self.core._eoe_map()[4]["ip"], "172.31.254.2")
 
     def test_reset_kept_through_list_changes_cleared_by_update(self):
         self.core.set_project_eoe(OFF)
@@ -129,7 +129,7 @@ class ListTest(unittest.TestCase):
         self.core.open_saved("P")
         self.assertEqual(self.core.project_eoe(), dict(OFF, own=True))
 
-    def test_refused(self):
+    def test_refused_mask(self):
         with self.assertRaises(ConfigError):
             self.core.set_project_eoe(dict(ON, mask="255.255.255.128"))
 
@@ -142,6 +142,92 @@ class ListTest(unittest.TestCase):
         self.assertEqual(self.core.export_saved("Off")["document"]["eoe"], OFF)
         with self.assertRaises(DocumentError):
             self.core.create_document(dict(exported["document"], name="Bad", eoe={"enabled": True}))
+
+
+def _ip(text):
+    return "".join(f"{int(x):02X}" for x in reversed(text.split(".")))
+
+
+class DeviceTest(ListTest):
+    """Each EoE device's own setting and the master's device range. The drive is position 4, address 1005."""
+
+    def init_data(self):
+        x = self.built()[0]
+        if "eoe init" not in x:
+            return None
+        return x.split("eoe init")[1].split("<Data>")[1].split("</Data>")[0].upper()
+
+    def test_default_as_io_engineering(self):
+        data = self.init_data()
+        self.assertEqual(data[:16], "020000002F000000")             # MAC, IP, mask, gateway, DNS name
+        self.assertEqual(data[16:28], "026034FE03ED")               # 02:60:34:FE:<1005>
+        self.assertEqual(data[28:52], _ip("172.31.254.1") + _ip("255.255.255.0") + _ip("172.31.254.254"))
+
+    def test_own_address_gateway_dns_name_mac(self):
+        options = self.core.save_edit(4, {"eoe": {"ip": "172.31.254.50", "gateway": "172.31.254.1", "dns": "8.8.8.8",
+                                                  "dns_name": "drive1", "mac": "02-60-34-aa-bb-cc"}})
+        self.assertEqual(options["eoe"]["settings"]["mac"], "026034AABBCC")
+        self.assertEqual(options["eoe"]["effective"]["ip"], "172.31.254.50")
+        data = self.init_data()
+        self.assertEqual(data[:16], "020000003F000000")             # + DNS server
+        self.assertEqual(data[16:28], "026034AABBCC")
+        self.assertEqual(data[28:60], _ip("172.31.254.50") + _ip("255.255.255.0") + _ip("172.31.254.1") + _ip("8.8.8.8"))
+        self.assertTrue(data[60:].startswith(b"drive1".hex().upper() + "00"))
+
+    def test_switch_port(self):
+        self.core.save_edit(4, {"eoe": {"mode": "switch"}})
+        data = self.init_data()
+        self.assertEqual(data[:16], "0200000001000000")             # the MAC only
+        self.assertEqual(data[28:], "0" * (32 + 64))
+
+    def test_off(self):
+        self.core.save_edit(4, {"eoe": {"enabled": False}})
+        self.assertIsNone(self.init_data())
+        self.assertNotIn("<MaxPorts>", self.built()[0])            # no EoE device left: no EoE section at the master
+        self.core.save_edit(4, {"eoe": None})                       # back to automatic
+        self.assertIsNotNone(self.init_data())
+
+    def test_device_range(self):
+        self.core.set_project_eoe(dict(ON, devices={"first": "172.31.254.100", "mask": "255.255.0.0", "dns": "1.1.1.1"}))
+        data = self.init_data()
+        self.assertEqual(data[28:60], _ip("172.31.254.100") + _ip("255.255.0.0") + _ip("172.31.254.254") + _ip("1.1.1.1"))
+        self.assertEqual(self.core.edit_options(4)["eoe"]["effective"]["ip"], "172.31.254.100")
+
+    def test_range_exhausted(self):
+        self.core.set_project_eoe(dict(ON, devices={"first": "172.31.254.10", "last": "172.31.254.10"}))
+        self.core.save_edit(4, {"eoe": {}})
+        self.assertEqual(self.core.plan(2000)["errors"], [])
+        self.core.set_project_eoe(dict(ON, devices={"first": "172.31.254.254", "last": "172.31.254.254"}))   # the master's
+        self.assertRegex(" ".join(self.core.plan(2000)["errors"]), "has no address left")
+        self.assertRegex(self.core.edit_options(4)["eoe"]["error"], "has no address left")
+
+    def test_refused(self):
+        for bad, pattern in (({"ip": "1.2.3"}, "not an IPv4"), ({"mode": "x"}, "mode"), ({"mac": "0260"}, "MAC"),
+                             ({"mask": "255.0.255.0"}, "valid mask"), ({"dns_name": "x" * 40}, "DNS name"),
+                             ({"other": 1}, "may hold"), ({"enabled": "yes"}, "enabled")):
+            with self.assertRaisesRegex(ValueError, pattern):
+                self.core.save_edit(4, {"eoe": bad})
+        with self.assertRaisesRegex(ValueError, "has no EoE"):
+            self.core.save_edit(1, {"eoe": {"enabled": False}})
+        with self.assertRaises(ConfigError):
+            self.core.set_project_eoe(dict(ON, devices={"first": "172.31.254.9", "last": "172.31.254.1"}))
+
+    def test_through_a_document(self):
+        self.core.save_edit(4, {"eoe": {"ip": "172.31.254.77"}})
+        self.core.set_project_eoe(dict(ON, devices={"dns": "1.1.1.1"}))
+        exported = self.core.export_project()
+        self.assertEqual(exported["warnings"], [])
+        self.assertEqual(exported["document"]["devices"][4]["eoe"], {"ip": "172.31.254.77"})
+        self.assertEqual(exported["document"]["eoe"]["devices"], {"dns": "1.1.1.1"})
+        self.core.plan(2000)
+        self.core.create_document(dict(exported["document"], name="Back"))
+        self.assertEqual(self.core.saved_file("Back", "eni"), self.core.plan_file("eni"))
+
+    def test_a_kept_mac_goes_into_the_document(self):
+        """The running configuration gave the drive the MAC of another address: the export says so."""
+        kept = "026034FE0400"
+        self.core.save_edit(4, {"eoe": {"mac": kept}})
+        self.assertEqual(self.core.export_project()["document"]["devices"][4]["eoe"], {"mac": kept})
 
 
 if __name__ == "__main__":

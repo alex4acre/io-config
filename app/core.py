@@ -1595,6 +1595,17 @@ class Core:
             out["fixed_startup"] = show_startup([c for c in (coe_cfg or {}).get("init", [])
                                                  if not c.get("user") and not c.get("from_eni")], dictionary)
             out["pdo_assign"] = bool((coe_cfg or {}).get("pdo_assign"))
+            out["eoe"] = None
+            if "EoE" in edits.mailbox_protocols(src):
+                master = self.project_eoe()
+                effective, error = None, ""
+                try:
+                    effective = self._eoe_map().get(position)
+                except generate.GenerateError as e:
+                    error = str(e)
+                out["eoe"] = {"settings": (edit or {}).get("eoe") or {}, "master": master, "effective": effective,
+                              "error": error, "auto_mac": generate.eoe_mac(generate.FIRST_ADDRESS + position),
+                              "kept_mac": (dev or {}).get("eoe_mac")}
             soe_cfg = ((dev or {}).get("mailbox") or {}).get("soe")
             out["soe"] = None
             if soe_cfg is not None:
@@ -1610,6 +1621,19 @@ class Core:
                 }
             return out
 
+    def _eoe_map(self) -> dict:
+        """position -> the EoE settings each device of the list gets (generate.eoe_addresses), as a build would give them."""
+        user_edits = self.load_edits()
+        devices = []
+        for src in self.cfg_sources:
+            try:
+                dev = configure.device_for(src, user_edits)
+            except edits.EditError:
+                dev = None
+            devices.append(dev or {"name": "?", "mailbox": None})
+        master = self.project_eoe()
+        return generate.eoe_addresses(eni.parse_ini(generate.set_eoe("", master)), devices, master.get("devices"))
+
     def _edit_changed(self):
         self._assemble_cfg()              # the list shows the saved name
         self.plan_data = None
@@ -1620,7 +1644,9 @@ class Core:
             all_edits = self.load_edits()
             old = all_edits.get(position) if all_edits.get(position) and edits.applies(src, all_edits[position]) else {}
             merged = {k: v for k, v in old.items() if k != "identity"}
-            merged.update({k: v for k, v in change.items() if k in ("name", "pdos", "startup", "soe_mdt", "soe_at", "modules", "dc_mode")})
+            merged.update({k: v for k, v in change.items() if k in ("name", "pdos", "startup", "soe_mdt", "soe_at", "modules", "dc_mode", "eoe")})
+            if "eoe" in change and change["eoe"] is None:              # back to automatic
+                merged.pop("eoe", None)
             if isinstance(change.get("variable_names"), dict):      # only the rows sent change
                 merged["variable_names"] = dict(old.get("variable_names") or {}, **change["variable_names"])
             elif "variable_names" in change:

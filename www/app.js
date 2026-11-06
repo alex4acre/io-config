@@ -791,7 +791,8 @@ let downloadFinished = null;
 
 let eoeShown = "";           // the EoE setting in the fields: the poll leaves them alone while they are being changed
 let eoeDirty = false;
-for (const id of ["eoe-on", "eoe-ip", "eoe-mask"]) $(id).addEventListener("input", () => { eoeDirty = true; });
+const EOE_RANGE = { first: "eoe-first", last: "eoe-last", mask: "eoe-dmask", gateway: "eoe-gw", dns: "eoe-dns" };
+for (const id of ["eoe-on", "eoe-ip", "eoe-mask", ...Object.values(EOE_RANGE)]) $(id).addEventListener("input", () => { eoeDirty = true; });
 
 function renderEoe(e) {
   if (!e) return;
@@ -803,11 +804,15 @@ function renderEoe(e) {
   $("eoe-on").checked = e.enabled;
   $("eoe-ip").value = e.ip;
   $("eoe-mask").value = e.mask;
+  for (const [key, id] of Object.entries(EOE_RANGE)) $(id).value = (e.devices || {})[key] || "";
+  $("eoe-devices").open = $("eoe-devices").open || Object.keys(e.devices || {}).length > 0;
 }
 
 $("eoe-save").onclick = () => projectChange(async () => {
+  const devices = {};
+  for (const [key, id] of Object.entries(EOE_RANGE)) if ($(id).value.trim()) devices[key] = $(id).value.trim();
   const e = await api("PUT", "/project/eoe", { enabled: $("eoe-on").checked, ip: $("eoe-ip").value.trim(),
-    mask: $("eoe-mask").value.trim() });
+    mask: $("eoe-mask").value.trim(), ...(Object.keys(devices).length ? { devices } : {}) });
   eoeDirty = false;
   eoeShown = "";
   renderEoe(e);
@@ -1209,6 +1214,49 @@ function renderModules() {
   };
   $("e-dc").onchange = showDesc;
   showDesc();
+  renderDeviceEoe(d);
+}
+
+const DEVICE_EOE = { ip: "e-eoe-ip", mask: "e-eoe-mask", gateway: "e-eoe-gw", dns: "e-eoe-dns", dns_name: "e-eoe-name", mac: "e-eoe-mac" };
+
+function macText(hex12) {
+  return hex12 ? hex12.match(/../g).join(":") : "";
+}
+
+function renderDeviceEoe(d) {
+  const e = d.eoe;
+  $("e-eoe-box").hidden = !e;
+  if (!e) return;
+  const s = e.settings || {};
+  const now = e.effective || {};
+  $("e-eoe-on").checked = s.enabled !== false;
+  $("e-eoe-mode").value = s.mode || "ip";
+  for (const [key, id] of Object.entries(DEVICE_EOE)) $(id).value = key === "mac" ? macText(s.mac) : (s[key] || "");
+  $("e-eoe-ip").placeholder = now.ip || "";
+  $("e-eoe-mask").placeholder = now.mask || "";
+  $("e-eoe-gw").placeholder = now.gateway || "";
+  $("e-eoe-dns").placeholder = now.dns || "none";
+  $("e-eoe-name").placeholder = $("e-name").value || d.name || "";
+  $("e-eoe-mac").placeholder = macText(e.kept_mac || e.auto_mac);
+  let text;
+  if (!e.master.enabled) text = "The master's EoE is off (Build configuration): this device gets no EoE settings.";
+  else if (e.error) text = e.error;
+  else if (s.enabled === false) text = "EoE is off for this device.";
+  else if (now.switch) text = "Switch port: the device forwards Ethernet frames and gets its MAC only.";
+  else text = `Gets ${now.ip}, mask ${now.mask}, gateway ${now.gateway}` + (now.dns ? `, DNS server ${now.dns}` : "") + " (saved settings).";
+  $("e-eoe-now").textContent = text;
+  $("e-eoe-now").className = e.error ? "error" : "hint";
+}
+
+function chosenDeviceEoe() {
+  const out = {};
+  if (!$("e-eoe-on").checked) out.enabled = false;
+  if ($("e-eoe-mode").value === "switch") out.mode = "switch";
+  for (const [key, id] of Object.entries(DEVICE_EOE)) {
+    const v = $(id).value.trim();
+    if (v) out[key] = key === "mac" ? v.replace(/[:-]/g, "").toUpperCase() : v;
+  }
+  return out;
 }
 
 function chosenModules() {
@@ -1313,6 +1361,11 @@ $("e-save").onclick = () => {
     if (mods.some((x, i) => x !== editData.modules[i].selected)) change.modules = mods;
   }
   if (editData.dc_modes.length && $("e-dc").value && $("e-dc").value !== editData.dc_mode) change.dc_mode = $("e-dc").value;
+  if (editData.eoe) {
+    const eoe = chosenDeviceEoe();
+    const keys = (o) => JSON.stringify(Object.keys(o).sort().map((k) => [k, o[k]]));
+    if (keys(eoe) !== keys(editData.eoe.settings || {})) change.eoe = Object.keys(eoe).length ? eoe : null;
+  }
   if (editData.soe && soeLists) {
     change.soe_mdt = soeLists.mdt;
     change.soe_at = soeLists.at;

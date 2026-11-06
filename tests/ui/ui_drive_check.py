@@ -110,8 +110,23 @@ try:
           "editor shows the AT with 7 IDNs")
     js("document.getElementById('e-at-add').value = 'S-0-0051 Encoder'; document.getElementById('e-at-btn').click();")
     check(until("document.querySelectorAll('#e-at tbody tr').length === 8"), "S-0-0051 added to the AT")
+    # EoE: the drive supports it; automatic values in grey, a fixed address saved with the rest
+    check(js("return !document.getElementById('e-eoe-box').hidden"), "EoE section shown for the drive")
+    check(until("document.getElementById('e-eoe-ip').placeholder === '172.31.254.1' && "
+                "document.getElementById('e-eoe-mac').placeholder === '02:60:34:FE:03:ED'"),
+          "automatic EoE address and MAC shown: " + js("return document.getElementById('e-eoe-ip').placeholder + ' ' + document.getElementById('e-eoe-mac').placeholder"))
+    js("document.getElementById('e-eoe-ip').value = '172.31.254.20';")
     js("document.getElementById('e-name').value = 'Drive1'; document.getElementById('e-save').click();")
     check(until("document.getElementById('e-msg').textContent.startsWith('Saved')"), "drive edit saved")
+    check(until("document.getElementById('e-eoe-now').textContent.startsWith('Gets 172.31.254.20')"),
+          "the saved EoE address is what the drive gets: " + js("return document.getElementById('e-eoe-now').textContent"))
+    shot("eoe-device")
+    js("const m = document.getElementById('e-eoe-mode'); m.value = 'switch'; document.getElementById('e-eoe-ip').value = ''; "
+       "document.getElementById('e-save').click();")
+    check(until("document.getElementById('e-eoe-now').textContent.startsWith('Switch port')"), "switch port saved")
+    js("const m = document.getElementById('e-eoe-mode'); m.value = 'ip'; document.getElementById('e-eoe-ip').value = '172.31.254.20'; "
+       "document.getElementById('e-save').click();")
+    check(until("document.getElementById('e-eoe-now').textContent.startsWith('Gets 172.31.254.20')"), "back to an IP port")
     shot("drive-editor")
 
     # Request OP: only below OP, behind Writable, and the master's answer is shown

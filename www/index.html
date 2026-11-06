@@ -223,6 +223,25 @@
           <h3>Distributed clocks</h3>
           <div class="row"><select id="e-dc"></select><span id="e-dc-desc" class="muted"></span></div>
         </div>
+        <div id="e-eoe-box" hidden>
+          <h3>Ethernet over EtherCAT (EoE)</h3>
+          <p id="e-eoe-now" class="hint"></p>
+          <div class="row">
+            <label class="check"><input id="e-eoe-on" type="checkbox"> EoE on</label>
+            <select id="e-eoe-mode"><option value="ip">IP port</option><option value="switch">Switch port</option></select>
+          </div>
+          <div class="row">
+            <label class="check">IP address <input id="e-eoe-ip" type="text" size="15"></label>
+            <label class="check">Subnet mask <input id="e-eoe-mask" type="text" size="15"></label>
+            <label class="check">Gateway <input id="e-eoe-gw" type="text" size="15"></label>
+          </div>
+          <div class="row">
+            <label class="check">DNS server <input id="e-eoe-dns" type="text" size="15"></label>
+            <label class="check">DNS name <input id="e-eoe-name" type="text" size="20" maxlength="31"></label>
+            <label class="check">MAC <input id="e-eoe-mac" type="text" size="17"></label>
+          </div>
+          <p class="hint">Empty fields are automatic (shown in grey).</p>
+        </div>
         <h3>PDOs</h3>
         <p id="e-reason" class="hint"></p>
         <p class="hint">Variable name: replaces the standard name (in grey) in the variable's Data Layer path, for example
@@ -277,6 +296,18 @@
         <button id="eoe-reset">Use running setting</button>
         <span id="eoe-source" class="hint"></span>
       </div>
+      <details id="eoe-devices">
+        <summary>EoE device addresses</summary>
+        <p class="hint">What the EoE devices get unless a device has its own setting (device card, Settings). Empty = the
+          master's network from .1, its subnet mask, the master as gateway, no DNS server.</p>
+        <div class="row">
+          <label class="check">First <input id="eoe-first" type="text" size="15"></label>
+          <label class="check">Last <input id="eoe-last" type="text" size="15"></label>
+          <label class="check">Subnet mask <input id="eoe-dmask" type="text" size="15"></label>
+          <label class="check">Gateway <input id="eoe-gw" type="text" size="15"></label>
+          <label class="check">DNS server <input id="eoe-dns" type="text" size="15"></label>
+        </div>
+      </details>
       <p class="hint">Builds the bus configuration (ENI + ini) for exactly the devices in the list above, present or not: each
         device from its ESI (without one: from the configuration the list started from, else from its EEPROM), with the
         settings the list kept for it. Nothing is written until you press "Write to the EtherCAT master". If the master

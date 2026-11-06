@@ -307,11 +307,19 @@ def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = N
     eni_bytes = ini_bytes = None
     if not errors:
         try:
-            eoe = generate.eoe_addresses(eni_mod.parse_ini(ini_text or generate.DEFAULT_INI), devices)
-            gateway = next((e["gateway"] for e in eoe.values()), None)
-            if gateway in {e["ip"] for e in eoe.values()}:
-                raise generate.GenerateError(f"The master's EoE address {gateway} is one the EoE devices get (.1 to .{len(eoe)}): "
-                                             "choose a higher last number")
+            ini_parsed = eni_mod.parse_ini(ini_text or generate.DEFAULT_INI)
+            eoe_map = generate.eoe_addresses(ini_parsed, devices, (eoe or {}).get("devices"))
+            master_ip = ini_parsed.get(generate.EOE_SECTION, {}).get("IpAddress")
+            seen = {}
+            for pos, e in eoe_map.items():
+                if e.get("ip") == master_ip:
+                    raise generate.GenerateError(f'{devices[pos]["name"]}: the EoE address {master_ip} is the master\'s')
+                if e.get("ip") in seen:
+                    raise generate.GenerateError(f'{devices[pos]["name"]} and {devices[seen[e["ip"]]]["name"]} have the same '
+                                                 f'EoE address {e["ip"]}')
+                if e.get("ip"):
+                    seen[e["ip"]] = pos
+            eoe = eoe_map
             eni_bytes = generate.generate_eni(devices, master_name, cycle, ports, eoe)
             ini_bytes = generate.generate_ini(ini_text, cycle)
         except generate.GenerateError as e:

@@ -391,14 +391,30 @@ def _ip_bytes(text: str) -> str:
     return bytes(reversed([int(x) for x in text.split(".")])).hex().upper()
 
 
+EOE_MAC, EOE_IP, EOE_MASK, EOE_GATEWAY, EOE_DNS, EOE_DNS_NAME = 0x01, 0x02, 0x04, 0x08, 0x10, 0x20    # which fields count
+
+
+def eoe_mac(phys: int) -> str:
+    """The MAC I/O Engineering gives a device: 02:60:34:FE:<station address>."""
+    return "026034FE" + phys.to_bytes(2, "big").hex().upper()
+
+
 def _eoe_ip(name: str, phys: int, eoe: dict, mac: str = None) -> str:
-    """EoE "set IP parameter" request (ETG.1000.6): MAC 02:60:34:FE:<station address> (or the MAC the running
-    configuration gave the device: I/O Engineering keeps it when the device moves), the next address of the
-    master's EoE network, its mask, the master as gateway, no DNS server, the device name as DNS name."""
-    mac = mac or "026034FE" + phys.to_bytes(2, "big").hex().upper()
-    data = (le(2, 4) + le(0x2F, 4) + mac +
-            _ip_bytes(eoe["ip"]) + _ip_bytes(eoe["mask"]) + _ip_bytes(eoe["gateway"]) + "00000000")
-    return data + name.encode("latin-1")[:31].ljust(32, b"\0").hex().upper()
+    """EoE "set IP parameter" request (ETG.1000.6): the fields are always all there, the flags say which ones count.
+    Default (as I/O Engineering): MAC 02:60:34:FE:<station address> (or the MAC the running configuration gave the
+    device: I/O Engineering keeps it when the device moves), an address of the master's EoE network, its mask, the master
+    as gateway, no DNS server, the device name as DNS name. A switch port gets its MAC only."""
+    mac = eoe.get("mac") or mac or eoe_mac(phys)
+    if eoe.get("switch"):
+        flags, ip, mask, gateway = EOE_MAC, "0.0.0.0", "0.0.0.0", "0.0.0.0"
+    else:
+        flags, ip, mask, gateway = EOE_MAC | EOE_IP | EOE_MASK | EOE_GATEWAY | EOE_DNS_NAME, eoe["ip"], eoe["mask"], eoe["gateway"]
+        if eoe.get("dns"):
+            flags |= EOE_DNS
+    data = (le(2, 4) + le(flags, 4) + mac + _ip_bytes(ip) + _ip_bytes(mask) + _ip_bytes(gateway) +
+            _ip_bytes(eoe.get("dns") or "0.0.0.0"))
+    text = "" if eoe.get("switch") else (eoe.get("dns_name") or name)
+    return data + text.encode("latin-1")[:31].ljust(32, b"\0").hex().upper()
 
 
 EOE_SECTION = "EtherCAT.Master.EoE.Endpoint"
@@ -419,12 +435,37 @@ def _ipv4(text):
     return [int(p) for p in parts]
 
 
+def _mask_problem(text, what) -> str:
+    mask = _ipv4(text)
+    if mask is None:
+        return f'{what} "{text}" is not an IPv4 mask'
+    bits = "".join(f"{x:08b}" for x in mask)
+    return f'{what} "{text}" is not a valid mask' if "01" in bits or "1" not in bits else ""
+
+
+DEVICE_RANGE_KEYS = ("first", "last", "mask", "gateway", "dns")
+
+
 def check_eoe(eoe) -> list:
     """What is wrong with an EoE endpoint setting {"enabled": bool, "ip": "a.b.c.d", "mask": "a.b.c.d"} (empty if nothing).
-    The devices get addresses 1, 2, ... of the master's network, so the network has to hold at least a /24."""
-    if not isinstance(eoe, dict) or set(eoe) != {"enabled", "ip", "mask"}:
-        return ['EoE must be {"enabled": true or false, "ip": "a.b.c.d", "mask": "a.b.c.d"}']
+    The devices get addresses 1, 2, ... of the master's network, so the network has to hold at least a /24.
+    Optional "devices": {"first", "last", "mask", "gateway", "dns"}: the range and settings the EoE devices get
+    (default: the master's network from .1, its mask, the master as gateway, no DNS server)."""
+    if not isinstance(eoe, dict) or not {"enabled", "ip", "mask"} <= set(eoe) <= {"enabled", "ip", "mask", "devices"}:
+        return ['EoE must be {"enabled": true or false, "ip": "a.b.c.d", "mask": "a.b.c.d"} (and "devices")']
     problems = []
+    pool = eoe.get("devices")
+    if pool is not None:
+        if not isinstance(pool, dict) or not set(pool) <= set(DEVICE_RANGE_KEYS):
+            problems.append('EoE "devices" may hold ' + ", ".join(DEVICE_RANGE_KEYS))
+        else:
+            for key, value in pool.items():
+                if key == "mask":
+                    problems += [p for p in [_mask_problem(value, "EoE device subnet mask")] if p]
+                elif _ipv4(value) is None:
+                    problems.append(f'EoE device {key} "{value}" is not an IPv4 address')
+            if not problems and "first" in pool and "last" in pool and _int(pool["first"]) > _int(pool["last"]):
+                problems.append("EoE device range: the first address is above the last")
     if not isinstance(eoe["enabled"], bool):
         problems.append("EoE enabled must be true or false")
     ip, mask = _ipv4(eoe["ip"]), _ipv4(eoe["mask"])
@@ -469,19 +510,82 @@ def set_eoe(text: str, eoe: dict) -> str:
     return "\n".join(lines[:start] + block + lines[end:])
 
 
-def eoe_addresses(ini: dict, devices: list) -> dict:
-    """position -> EoE IP settings for the devices with EoE, from the master's EoE endpoint in the ini."""
+def _int(text: str) -> int:
+    return int.from_bytes(bytes(_ipv4(text)), "big")
+
+
+def _text(value: int) -> str:
+    return ".".join(str(b) for b in value.to_bytes(4, "big"))
+
+
+EOE_DEVICE_KEYS = ("enabled", "mode", "mac", "ip", "mask", "gateway", "dns", "dns_name")
+
+
+def check_device_eoe(eoe) -> list:
+    """What is wrong with a device's own EoE setting {"enabled", "mode": "ip" or "switch", "mac", "ip", "mask", "gateway",
+    "dns", "dns_name"}: all optional, a missing one is automatic."""
+    if not isinstance(eoe, dict) or not set(eoe) <= set(EOE_DEVICE_KEYS):
+        return ["EoE may hold " + ", ".join(EOE_DEVICE_KEYS)]
+    problems = []
+    if not isinstance(eoe.get("enabled", True), bool):
+        problems.append("EoE enabled must be true or false")
+    if eoe.get("mode", "ip") not in ("ip", "switch"):
+        problems.append('EoE mode must be "ip" (IP port) or "switch" (switch port)')
+    mac = eoe.get("mac")
+    if mac is not None and (not isinstance(mac, str) or len(mac.replace(":", "").replace("-", "")) != 12 or
+                            any(c not in "0123456789abcdefABCDEF" for c in mac.replace(":", "").replace("-", ""))):
+        problems.append(f'EoE MAC "{mac}" must be 6 bytes in hex, e.g. 02:60:34:FE:03:E9')
+    for key in ("ip", "gateway", "dns"):
+        if key in eoe and _ipv4(eoe[key]) is None:
+            problems.append(f'EoE {"DNS server" if key == "dns" else key} "{eoe[key]}" is not an IPv4 address')
+    if "mask" in eoe:
+        problems += [p for p in [_mask_problem(eoe["mask"], "EoE subnet mask")] if p]
+    name = eoe.get("dns_name")
+    if name is not None and (not isinstance(name, str) or len(name) > 31 or not name.isascii()):
+        problems.append("EoE DNS name: up to 31 plain characters")
+    return problems
+
+
+def normal_mac(text: str) -> str:
+    return text.replace(":", "").replace("-", "").upper()
+
+
+def eoe_addresses(ini: dict, devices: list, pool: dict = None) -> dict:
+    """position -> EoE settings {"ip", "mask", "gateway", "dns", "dns_name", "mac", "switch"} for the devices with EoE on,
+    from the master's EoE endpoint in the ini, the device range (pool, see check_eoe) and each device's own setting
+    (dev["eoe_cfg"], see check_device_eoe). Automatic addresses are handed out in list order from the first address of the
+    range, skipping the master's and every fixed one, as I/O Engineering does with its default range."""
     ep = ini.get("EtherCAT.Master.EoE.Endpoint", {})
     if ep.get("Enabled", "").upper() != "TRUE" or not ep.get("IpAddress"):
         return {}
-    gw = [int(x) for x in ep["IpAddress"].split(".")]
-    mask = ep.get("SubnetMask", "255.255.255.0")
-    out, n = {}, 0
-    for pos, d in enumerate(devices):
-        if "EoE" in ((d.get("mailbox") or {}).get("protocols") or []):
-            n += 1
-            ip = gw[:3] + [n]
-            out[pos] = {"ip": ".".join(map(str, ip)), "mask": mask, "gateway": ep["IpAddress"]}
+    pool = pool or {}
+    master = ep["IpAddress"]
+    mask = pool.get("mask") or ep.get("SubnetMask", "255.255.255.0")
+    gw = [int(x) for x in master.split(".")]
+    first = _int(pool["first"]) if pool.get("first") else _int(".".join(map(str, gw[:3] + [1])))
+    last = _int(pool["last"]) if pool.get("last") else _int(".".join(map(str, gw[:3] + [254])))
+    wanted = [(pos, d.get("eoe_cfg") or {}) for pos, d in enumerate(devices)
+              if "EoE" in ((d.get("mailbox") or {}).get("protocols") or [])]
+    wanted = [(pos, c) for pos, c in wanted if c.get("enabled", True)]
+    taken = {_int(master)} | {_int(c["ip"]) for _pos, c in wanted if c.get("ip") and c.get("mode", "ip") == "ip"}
+    out, nxt = {}, first
+    for pos, c in wanted:
+        entry = {"mask": c.get("mask") or mask, "gateway": c.get("gateway") or pool.get("gateway") or master,
+                 "dns": c.get("dns") or pool.get("dns"), "dns_name": c.get("dns_name"),
+                 "mac": normal_mac(c["mac"]) if c.get("mac") else None, "switch": c.get("mode") == "switch"}
+        if entry["switch"]:
+            entry["ip"] = None
+        elif c.get("ip"):
+            entry["ip"] = c["ip"]
+        else:
+            while nxt in taken:
+                nxt += 1
+            if nxt > last:
+                raise GenerateError(f"The EoE device range {_text(first)} to {_text(last)} has no address left for "
+                                    f'{devices[pos]["name"]}')
+            entry["ip"] = _text(nxt)
+            taken.add(nxt)
+        out[pos] = {k: v for k, v in entry.items() if v not in (None, False)}
     return out
 
 

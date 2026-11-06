@@ -80,7 +80,7 @@ text in hex (`"0x1A00"`, `"#x1A00"`).
 | `name` | yes | Name to save under: 1 to 64 letters, digits, spaces, `-`, `_`, `.`; not starting with `.` or a space |
 | `devices` | yes | The devices, in wiring order, at least one |
 | `overwrite` | no | true replaces a saved configuration of this name; otherwise that name is refused |
-| `eoe` | no | The master's EoE endpoint: `{"enabled": true, "ip": "172.31.254.254", "mask": "255.255.255.0"}`. EoE devices get .1, .2, ... of that network; the mask must be 255.255.255.0 or wider. Default: as the running ini. |
+| `eoe` | no | The master's EoE endpoint: `{"enabled": true, "ip": "172.31.254.254", "mask": "255.255.255.0"}`; the mask must be 255.255.255.0 or wider. Optional `"devices": {"first", "last", "mask", "gateway", "dns"}`: the range EoE devices get their addresses from, in list order, skipping the master's and fixed ones (default: .1 to .254 of the master's network, its mask, the master as gateway, no DNS server). Default: as the running ini. |
 | `cycle_us` | no | 125 to 100000. Default: the cycle of the scheduler task `ctrlXAutomation`. Another value gives a warning: the master reports an invalid cycle time until they match. |
 
 Per device:
@@ -95,6 +95,7 @@ Per device:
 | `dc_mode` | no | Name of a DC mode in the ESI. Default: its first. |
 | `startup` | no | CoE: `{"index", "subindex", "data" (hex, device byte order), "transitions" (IP, PS, SO; default PS), "comment"}`. SoE: `{"idn", "data", "comment"}`. Added to the ESI's own commands. |
 | `variable_names` | no | `"in:<standard name>"` or `"out:<standard name>"` -> name. To find them, add the device to the Configuration list: `GET /devices/<list position>/edit` lists them under `variables` (`key`). |
+| `eoe` | no | EoE devices only: `{"enabled": false}` leaves EoE off; `"mode": "switch"` makes it a switch port (MAC only, no IP); `"ip"`, `"mask"`, `"gateway"`, `"dns"`, `"dns_name"` (up to 31 characters), `"mac"` (`"02:60:34:FE:03:E9"` or 12 hex digits). Each one left out is automatic. |
 | `soe_mdt`, `soe_at` | no | SoE drives: the telegrams as lists of IDNs (`47`, `"S-0-0047"`) |
 
 ## What a document doesn't do
