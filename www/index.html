@@ -209,9 +209,12 @@
       <div id="p-settings" class="panel" hidden>
         <h3 id="e-title"></h3>
         <p class="hint">Saved choices are used the next time you build the configuration; nothing is written to the master here.</p>
-        <div class="row">
-          <label class="check">Name <input id="e-name" type="text" maxlength="64"></label>
-        </div>
+        <h3>General</h3>
+        <div class="scroll"><table id="e-general" class="settings"><thead><tr><th>Setting</th><th>Value</th><th>Note</th></tr></thead><tbody>
+          <tr><td>Name</td><td><input id="e-name" type="text" maxlength="64"></td>
+            <td class="muted">Starts with a letter; letters, digits and _. Unique in the list.</td></tr>
+          <tr id="e-dc-box" hidden><td>Distributed clocks</td><td><select id="e-dc"></select></td><td id="e-dc-desc" class="muted"></td></tr>
+        </tbody></table></div>
         <div id="e-modules-box" hidden>
           <h3>Modules</h3>
           <p class="hint">A modular device: its process data comes from the module in each slot (from its ESI). The
@@ -219,28 +222,20 @@
           <div class="scroll"><table id="e-modules"><thead><tr><th>Slot</th><th>Module</th><th></th></tr></thead>
             <tbody></tbody></table></div>
         </div>
-        <div id="e-dc-box" hidden>
-          <h3>Distributed clocks</h3>
-          <div class="row"><select id="e-dc"></select><span id="e-dc-desc" class="muted"></span></div>
-        </div>
         <div id="e-eoe-box" hidden>
           <h3>Ethernet over EtherCAT (EoE)</h3>
           <p id="e-eoe-now" class="hint"></p>
-          <div class="row">
-            <label class="check"><input id="e-eoe-on" type="checkbox"> EoE on</label>
-            <select id="e-eoe-mode"><option value="ip">IP port</option><option value="switch">Switch port</option></select>
-          </div>
-          <div class="row">
-            <label class="check">IP address <input id="e-eoe-ip" type="text" size="15"></label>
-            <label class="check">Subnet mask <input id="e-eoe-mask" type="text" size="15"></label>
-            <label class="check">Gateway <input id="e-eoe-gw" type="text" size="15"></label>
-          </div>
-          <div class="row">
-            <label class="check">DNS server <input id="e-eoe-dns" type="text" size="15"></label>
-            <label class="check">DNS name <input id="e-eoe-name" type="text" size="20" maxlength="31"></label>
-            <label class="check">MAC <input id="e-eoe-mac" type="text" size="17"></label>
-          </div>
-          <p class="hint">Empty fields are automatic (shown in grey).</p>
+          <div class="scroll"><table id="e-eoe" class="settings"><thead><tr><th>Setting</th><th>Value</th><th>Gets</th></tr></thead><tbody>
+          <tr><td>EoE</td><td><label class="check"><input id="e-eoe-on" type="checkbox"> On</label></td><td id="e-eoe-g-on" class="muted"></td></tr>
+          <tr><td>Port type</td><td><select id="e-eoe-mode"><option value="ip">IP port</option><option value="switch">Switch port</option></select></td><td id="e-eoe-g-mode" class="muted"></td></tr>
+          <tr><td>IP address</td><td><input id="e-eoe-ip" type="text"></td><td id="e-eoe-g-ip" class="muted"></td></tr>
+          <tr><td>Subnet mask</td><td><input id="e-eoe-mask" type="text"></td><td id="e-eoe-g-mask" class="muted"></td></tr>
+          <tr><td>Gateway</td><td><input id="e-eoe-gw" type="text"></td><td id="e-eoe-g-gateway" class="muted"></td></tr>
+          <tr><td>DNS server</td><td><input id="e-eoe-dns" type="text"></td><td id="e-eoe-g-dns" class="muted"></td></tr>
+          <tr><td>DNS name</td><td><input id="e-eoe-name" type="text" maxlength="31"></td><td id="e-eoe-g-dns_name" class="muted"></td></tr>
+          <tr><td>MAC address</td><td><input id="e-eoe-mac" type="text"></td><td id="e-eoe-g-mac" class="muted"></td></tr>
+          </tbody></table></div>
+          <p class="hint">Empty fields are automatic: "Gets" shows what the device gets with the saved settings.</p>
         </div>
         <h3>PDOs</h3>
         <p id="e-reason" class="hint"></p>
@@ -285,29 +280,33 @@
     <section class="card" id="config-card">
       <div class="row head">
         <h2>Build configuration</h2>
-        <label class="check">Cycle time <input id="cycle" type="number" min="125" max="100000" step="125"> µs</label>
+        <span class="spacer"></span>
         <button id="build" class="primary">Build configuration</button>
       </div>
-      <div class="row" id="eoe-row">
-        <label class="check"><input id="eoe-on" type="checkbox"> EoE</label>
-        <label class="check">Master IP <input id="eoe-ip" type="text" size="15"></label>
-        <label class="check">Subnet mask <input id="eoe-mask" type="text" size="15"></label>
-        <button id="eoe-save">Save EoE</button>
+      <h3>Master</h3>
+      <div class="scroll"><table id="m-settings" class="settings"><thead><tr><th>Setting</th><th>Value</th><th>Note</th></tr></thead><tbody>
+        <tr><td>Cycle time</td><td><input id="cycle" type="number" min="125" max="100000" step="125"> µs</td>
+          <td class="muted">Used when you build. Must match the scheduler task ctrlXAutomation.</td></tr>
+        <tr><td>EoE (Ethernet over EtherCAT)</td><td><label class="check"><input id="eoe-on" type="checkbox"> On</label></td>
+          <td id="eoe-source" class="muted"></td></tr>
+        <tr><td>EoE master IP address</td><td><input id="eoe-ip" type="text"></td>
+          <td class="muted">The master's address on the EoE network.</td></tr>
+        <tr><td>EoE subnet mask</td><td><input id="eoe-mask" type="text"></td>
+          <td class="muted">255.255.255.0 or wider.</td></tr>
+      </tbody></table></div>
+      <h3>EoE device addresses</h3>
+      <p class="hint">What the EoE devices get unless a device has its own setting (device card, Settings). Empty = the default in the note.</p>
+      <div class="scroll"><table id="eoe-devices" class="settings"><thead><tr><th>Setting</th><th>Value</th><th>Note</th></tr></thead><tbody>
+        <tr><td>First address</td><td><input id="eoe-first" type="text"></td><td class="muted">Default: .1 of the master's network. Handed out in list order.</td></tr>
+        <tr><td>Last address</td><td><input id="eoe-last" type="text"></td><td class="muted">Default: .254 of the master's network.</td></tr>
+        <tr><td>Subnet mask</td><td><input id="eoe-dmask" type="text"></td><td class="muted">Default: the master's.</td></tr>
+        <tr><td>Gateway</td><td><input id="eoe-gw" type="text"></td><td class="muted">Default: the master.</td></tr>
+        <tr><td>DNS server</td><td><input id="eoe-dns" type="text"></td><td class="muted">Default: none.</td></tr>
+      </tbody></table></div>
+      <div class="row">
+        <button id="eoe-save">Save EoE settings</button>
         <button id="eoe-reset">Use running setting</button>
-        <span id="eoe-source" class="hint"></span>
       </div>
-      <details id="eoe-devices">
-        <summary>EoE device addresses</summary>
-        <p class="hint">What the EoE devices get unless a device has its own setting (device card, Settings). Empty = the
-          master's network from .1, its subnet mask, the master as gateway, no DNS server.</p>
-        <div class="row">
-          <label class="check">First <input id="eoe-first" type="text" size="15"></label>
-          <label class="check">Last <input id="eoe-last" type="text" size="15"></label>
-          <label class="check">Subnet mask <input id="eoe-dmask" type="text" size="15"></label>
-          <label class="check">Gateway <input id="eoe-gw" type="text" size="15"></label>
-          <label class="check">DNS server <input id="eoe-dns" type="text" size="15"></label>
-        </div>
-      </details>
       <p class="hint">Builds the bus configuration (ENI + ini) for exactly the devices in the list above, present or not: each
         device from its ESI (without one: from the configuration the list started from, else from its EEPROM), with the
         settings the list kept for it. Nothing is written until you press "Write to the EtherCAT master". If the master

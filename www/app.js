@@ -805,7 +805,6 @@ function renderEoe(e) {
   $("eoe-ip").value = e.ip;
   $("eoe-mask").value = e.mask;
   for (const [key, id] of Object.entries(EOE_RANGE)) $(id).value = (e.devices || {})[key] || "";
-  $("eoe-devices").open = $("eoe-devices").open || Object.keys(e.devices || {}).length > 0;
 }
 
 $("eoe-save").onclick = () => projectChange(async () => {
@@ -1244,6 +1243,14 @@ function renderDeviceEoe(d) {
   else if (s.enabled === false) text = "EoE is off for this device.";
   else if (now.switch) text = "Switch port: the device forwards Ethernet frames and gets its MAC only.";
   else text = `Gets ${now.ip}, mask ${now.mask}, gateway ${now.gateway}` + (now.dns ? `, DNS server ${now.dns}` : "") + " (saved settings).";
+  const gets = e.effective ? {
+    on: "On", mode: now.switch ? "Switch port" : "IP port", ip: now.ip || "-", mask: now.mask || "-",
+    gateway: now.gateway || "-", dns: now.switch ? "-" : (now.dns || "none"),
+    dns_name: now.switch ? "-" : (now.dns_name || $("e-name").value || d.name || ""),
+    mac: macText(now.mac || e.kept_mac || e.auto_mac),
+  } : { on: s.enabled === false ? "Off" : (e.master.enabled ? "-" : "Off (master's EoE is off)") };
+  for (const key of ["on", "mode", "ip", "mask", "gateway", "dns", "dns_name", "mac"]) $(`e-eoe-g-${key}`).textContent = gets[key] || "-";
+  $("e-eoe-now").hidden = !(e.error || !e.master.enabled);
   $("e-eoe-now").textContent = text;
   $("e-eoe-now").className = e.error ? "error" : "hint";
 }

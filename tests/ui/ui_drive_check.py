@@ -118,15 +118,18 @@ try:
     js("document.getElementById('e-eoe-ip').value = '172.31.254.20';")
     js("document.getElementById('e-name').value = 'Drive1'; document.getElementById('e-save').click();")
     check(until("document.getElementById('e-msg').textContent.startsWith('Saved')"), "drive edit saved")
-    check(until("document.getElementById('e-eoe-now').textContent.startsWith('Gets 172.31.254.20')"),
-          "the saved EoE address is what the drive gets: " + js("return document.getElementById('e-eoe-now').textContent"))
+    check(until("document.getElementById('e-eoe-g-ip').textContent === '172.31.254.20'"),
+          "the saved EoE address is what the drive gets: " + js("return document.getElementById('e-eoe-g-ip').textContent"))
+    check(js("return document.getElementById('e-eoe-g-mac').textContent") == "02:60:34:FE:03:ED", "the Gets column shows the MAC")
+    js("document.getElementById('e-eoe').scrollIntoView({block: 'center'})")
     shot("eoe-device")
     js("const m = document.getElementById('e-eoe-mode'); m.value = 'switch'; document.getElementById('e-eoe-ip').value = ''; "
        "document.getElementById('e-save').click();")
-    check(until("document.getElementById('e-eoe-now').textContent.startsWith('Switch port')"), "switch port saved")
+    check(until("document.getElementById('e-eoe-g-mode').textContent === 'Switch port' && "
+                "document.getElementById('e-eoe-g-ip').textContent === '-'"), "switch port saved")
     js("const m = document.getElementById('e-eoe-mode'); m.value = 'ip'; document.getElementById('e-eoe-ip').value = '172.31.254.20'; "
        "document.getElementById('e-save').click();")
-    check(until("document.getElementById('e-eoe-now').textContent.startsWith('Gets 172.31.254.20')"), "back to an IP port")
+    check(until("document.getElementById('e-eoe-g-ip').textContent === '172.31.254.20'"), "back to an IP port")
     shot("drive-editor")
 
     # Request OP: only below OP, behind Writable, and the master's answer is shown
