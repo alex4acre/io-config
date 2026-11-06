@@ -269,6 +269,14 @@
         <label class="check">Cycle time <input id="cycle" type="number" min="125" max="100000" step="125"> µs</label>
         <button id="build" class="primary">Build configuration</button>
       </div>
+      <div class="row" id="eoe-row">
+        <label class="check"><input id="eoe-on" type="checkbox"> EoE</label>
+        <label class="check">Master IP <input id="eoe-ip" type="text" size="15"></label>
+        <label class="check">Subnet mask <input id="eoe-mask" type="text" size="15"></label>
+        <button id="eoe-save">Save EoE</button>
+        <button id="eoe-reset">Use running setting</button>
+        <span id="eoe-source" class="hint"></span>
+      </div>
       <p class="hint">Builds the bus configuration (ENI + ini) for exactly the devices in the list above, present or not: each
         device from its ESI (without one: from the configuration the list started from, else from its EEPROM), with the
         settings the list kept for it. Nothing is written until you press "Write to the EtherCAT master". If the master

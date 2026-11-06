@@ -253,12 +253,13 @@ def device_for(src: dict, user_edits: dict, used: set = None) -> dict:
 
 
 def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = None, user_edits: dict = None,
-               unlisted: list = None, ini: bytes = None, offline: bool = False) -> dict:
+               unlisted: list = None, ini: bytes = None, offline: bool = False, eoe: dict = None) -> dict:
     """sources: per present device {"pos", "online", "eeprom", "eni_slave", "esi_match", "esi_device"};
     current: {"eni": bytes, "ini": bytes, "parsed": parse_eni() or None}; user_edits: position -> edit.
     unlisted: None for the live list; for a project (the list is a configuration) the descriptions of the bus
     devices that are not in it. ini: the ini to start from (the list's base), default the current one.
-    offline: the list has nothing to do with the bus (a JSON document): no warnings about devices not on it."""
+    offline: the list has nothing to do with the bus (a JSON document): no warnings about devices not on it.
+    eoe: the master's EoE endpoint {"enabled", "ip", "mask"} to set in the ini; None keeps the ini's."""
     devices, rows, errors, warnings = [], [], [], []
     names = device_names(sources, user_edits)
     for name, positions in duplicate_names(names):
@@ -300,11 +301,17 @@ def build_plan(sources: list, current: dict, master_name: str, cycle_us: int = N
     warnings += [f"{d} is on the bus but not in this configuration" for d in unlisted or []]
 
     ini_text = ((current.get("ini") or b"") if ini is None else ini).decode("latin-1")
+    if eoe is not None:
+        ini_text = generate.set_eoe(ini_text, eoe)
     cycle = cycle_us or int(eni_mod.parse_ini(ini_text).get("EtherCAT.Master", {}).get("CycleTimeUs", 0) or 0) or 2000
     eni_bytes = ini_bytes = None
     if not errors:
         try:
             eoe = generate.eoe_addresses(eni_mod.parse_ini(ini_text or generate.DEFAULT_INI), devices)
+            gateway = next((e["gateway"] for e in eoe.values()), None)
+            if gateway in {e["ip"] for e in eoe.values()}:
+                raise generate.GenerateError(f"The master's EoE address {gateway} is one the EoE devices get (.1 to .{len(eoe)}): "
+                                             "choose a higher last number")
             eni_bytes = generate.generate_eni(devices, master_name, cycle, ports, eoe)
             ini_bytes = generate.generate_ini(ini_text, cycle)
         except generate.GenerateError as e:

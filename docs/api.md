@@ -44,6 +44,7 @@ Under `https://<core>/io-config/api/v1`, with the same bearer token as the rest 
 | `POST /configurations` with the document | 201 `{name, devices, cycle_us, warnings, variables, identical}`. 400 `{error, errors, warnings}`, nothing saved. Answers when the build is done. |
 | `GET /project/document?name=<name>` | 200 `{document, warnings}`: the Configuration list as a document |
 | `GET /saved/<name>/document` | 200 `{document, warnings}`: a saved configuration as a document |
+| `PUT /project/eoe` `{enabled, ip, mask}`, `DELETE /project/eoe` | The Configuration list's EoE setting; DELETE goes back to the running ini's |
 | `POST /saved/<name>/activate` | 202: the same as writing to `io-config/activate` |
 | `POST /scan`, `GET /state` | Start a scan; state of the app, `creation` and `activation` included |
 
@@ -79,6 +80,7 @@ text in hex (`"0x1A00"`, `"#x1A00"`).
 | `name` | yes | Name to save under: 1 to 64 letters, digits, spaces, `-`, `_`, `.`; not starting with `.` or a space |
 | `devices` | yes | The devices, in wiring order, at least one |
 | `overwrite` | no | true replaces a saved configuration of this name; otherwise that name is refused |
+| `eoe` | no | The master's EoE endpoint: `{"enabled": true, "ip": "172.31.254.254", "mask": "255.255.255.0"}`. EoE devices get .1, .2, ... of that network; the mask must be 255.255.255.0 or wider. Default: as the running ini. |
 | `cycle_us` | no | 125 to 100000. Default: the cycle of the scheduler task `ctrlXAutomation`. Another value gives a warning: the master reports an invalid cycle time until they match. |
 
 Per device:

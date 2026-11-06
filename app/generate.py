@@ -401,6 +401,74 @@ def _eoe_ip(name: str, phys: int, eoe: dict, mac: str = None) -> str:
     return data + name.encode("latin-1")[:31].ljust(32, b"\0").hex().upper()
 
 
+EOE_SECTION = "EtherCAT.Master.EoE.Endpoint"
+EOE_DEFAULT = {"enabled": False, "ip": "172.31.254.254", "mask": "255.255.255.0"}     # I/O Engineering's address
+
+
+def eoe_from_ini(ini: dict) -> dict:
+    """The master's EoE endpoint as an ini (parse_ini) sets it: {"enabled", "ip", "mask"}."""
+    ep = ini.get(EOE_SECTION, {})
+    return {"enabled": ep.get("Enabled", "").upper() == "TRUE", "ip": ep.get("IpAddress") or EOE_DEFAULT["ip"],
+            "mask": ep.get("SubnetMask") or EOE_DEFAULT["mask"]}
+
+
+def _ipv4(text):
+    parts = text.split(".") if isinstance(text, str) else []
+    if len(parts) != 4 or not all(p.isdigit() and int(p) <= 255 and str(int(p)) == p for p in parts):
+        return None
+    return [int(p) for p in parts]
+
+
+def check_eoe(eoe) -> list:
+    """What is wrong with an EoE endpoint setting {"enabled": bool, "ip": "a.b.c.d", "mask": "a.b.c.d"} (empty if nothing).
+    The devices get addresses 1, 2, ... of the master's network, so the network has to hold at least a /24."""
+    if not isinstance(eoe, dict) or set(eoe) != {"enabled", "ip", "mask"}:
+        return ['EoE must be {"enabled": true or false, "ip": "a.b.c.d", "mask": "a.b.c.d"}']
+    problems = []
+    if not isinstance(eoe["enabled"], bool):
+        problems.append("EoE enabled must be true or false")
+    ip, mask = _ipv4(eoe["ip"]), _ipv4(eoe["mask"])
+    if ip is None:
+        problems.append(f'EoE IP address "{eoe["ip"]}" is not an IPv4 address')
+    if mask is None:
+        problems.append(f'EoE subnet mask "{eoe["mask"]}" is not an IPv4 mask')
+    else:
+        bits = "".join(f"{x:08b}" for x in mask)
+        prefix = bits.count("1")
+        if "01" in bits:
+            problems.append(f'EoE subnet mask "{eoe["mask"]}" is not a valid mask')
+        elif not 8 <= prefix <= 24:
+            problems.append("EoE subnet mask must be between 255.0.0.0 and 255.255.255.0: the devices get the addresses .1, .2, ...")
+    if ip is not None and (ip[3] in (0, 255) or ip[0] in (0, 127) or ip[0] >= 224):
+        problems.append(f'EoE IP address "{eoe["ip"]}" can\'t be the master\'s address')
+    return problems
+
+
+def set_eoe(text: str, eoe: dict) -> str:
+    """The ini text with the master's EoE endpoint as given; the rest stays as it is (an unchanged setting gives the same text).
+    A missing section goes after [EtherCAT.Master]'s keys, where I/O Engineering writes it."""
+    lines = (text or DEFAULT_INI).replace("\r\n", "\n").split("\n")
+    block = [f"[{EOE_SECTION}]", f'Enabled={"TRUE" if eoe["enabled"] else "FALSE"}']
+    if eoe["enabled"]:
+        block += [f'IpAddress={eoe["ip"]}', f'SubnetMask={eoe["mask"]}']
+    header = lambda s: s.strip().startswith("[")
+    start = next((i for i, s in enumerate(lines) if s.strip().lower() == f"[{EOE_SECTION.lower()}]"), None)
+    if start is not None:
+        end = next((i for i in range(start + 1, len(lines)) if header(lines[i])), len(lines))
+        while end > start + 1 and not lines[end - 1].strip():        # keep blank lines before the next section
+            end -= 1
+    else:
+        master = next((i for i, s in enumerate(lines) if s.strip().lower() == "[ethercat.master]"), None)
+        if master is None:
+            start = len(lines)
+        else:
+            start = next((i for i in range(master + 1, len(lines)) if header(lines[i])), len(lines))
+            while start > master + 1 and not lines[start - 1].strip():
+                start -= 1
+        end = start
+    return "\n".join(lines[:start] + block + lines[end:])
+
+
 def eoe_addresses(ini: dict, devices: list) -> dict:
     """position -> EoE IP settings for the devices with EoE, from the master's EoE endpoint in the ini."""
     ep = ini.get("EtherCAT.Master.EoE.Endpoint", {})

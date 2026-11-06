@@ -222,7 +222,7 @@ class Core:
                                   "scanned": self._bus_known(),
                                   "devices": [dict(self._summary(d), configured=True, present=src["bus_pos"] is not None)
                                               for d, src in zip(self.cfg_devices, self.cfg_sources)],
-                                  "unconfigured": self.unconfigured},
+                                  "unconfigured": self.unconfigured, "eoe": self.project_eoe()},
                 "esi": self.esi.summary(),
             }
 
@@ -719,11 +719,43 @@ class Core:
             self.log(f"{self.project_path}: {e!r}; ignoring the project")
             return None
 
-    def _write_project(self, devices: list, eni_checksum="keep"):
+    def _write_project(self, devices: list, eni_checksum="keep", eoe="keep"):
+        """eoe: the list's own EoE endpoint setting (None: the ini's); "keep" keeps the one the list has."""
+        old = self._load_project() if "keep" in (eni_checksum, eoe) else None
         if eni_checksum == "keep":
-            old = self._load_project()
             eni_checksum = old["eni_checksum"] if old else None
-        _write_atomic(self.project_path, json.dumps({"eni_checksum": eni_checksum, "devices": devices}, indent=2).encode())
+        if eoe == "keep":
+            eoe = (old or {}).get("eoe")
+        data = {"eni_checksum": eni_checksum, "devices": devices}
+        if eoe is not None:
+            data["eoe"] = eoe
+        _write_atomic(self.project_path, json.dumps(data, indent=2).encode())
+
+    def _ini_eoe(self) -> dict:
+        """The EoE endpoint of the ini the list builds from (its base, else the running one)."""
+        base = self._load_base()
+        ini_bytes = base["ini"] if base else (self.current or {}).get("ini") or b""
+        return generate.eoe_from_ini(eni.parse_ini(ini_bytes.decode("latin-1")))
+
+    def project_eoe(self) -> dict:
+        """The EoE endpoint the list gets: its own setting ("own": True), else the ini's."""
+        project = self._load_project()
+        if project and project.get("eoe"):
+            return dict(project["eoe"], own=True)
+        return dict(self._ini_eoe(), own=False)
+
+    def set_project_eoe(self, eoe) -> dict:
+        """Sets the list's EoE endpoint (None: back to the ini's). Nothing is written to the master until a write."""
+        with self.lock:
+            if eoe is not None:
+                problems = generate.check_eoe(eoe)
+                if problems:
+                    raise ConfigError("; ".join(problems))
+            if self._load_project() is None:
+                raise ConfigError("there is no Configuration list yet")
+            self._write_project(self._project_edit(), eoe=eoe)
+            self._project_changed()
+            return self.project_eoe()
 
     def _write_base(self, eni_bytes, ini_bytes):
         """The ENI/ini the list started from (or was last written as): the settings of its devices come from here."""
@@ -787,7 +819,7 @@ class Core:
         self._remove_base()
         if running.get("eni"):
             self._write_base(running["eni"], running.get("ini"))
-        self._write_project(self._bus_entries(), generate.checksum(running["eni"]) if running.get("eni") else None)
+        self._write_project(self._bus_entries(), generate.checksum(running["eni"]) if running.get("eni") else None, eoe=None)
         # the edits followed the Bus view: they move with the devices that are in the list
         self._remap_edits([s["pos"] for s in self.sources if s.get("eni_slave")], self._load_project()["devices"])
 
@@ -888,7 +920,7 @@ class Core:
             self._remove_base()
             if running.get("eni"):
                 self._write_base(running["eni"], running.get("ini"))
-            self._write_project(self._bus_entries(), generate.checksum(running["eni"]) if running.get("eni") else None)
+            self._write_project(self._bus_entries(), generate.checksum(running["eni"]) if running.get("eni") else None, eoe=None)
             self._save_edits({})
             self._project_changed()
 
@@ -916,9 +948,9 @@ class Core:
             raise ConfigError("cycle time must be 125 to 100000 µs")
         current = self.current or {"eni": b"", "ini": b"", "parsed": None}
         base = self._load_base()
-        p = configure.build_plan(self.cfg_sources, current, self.config["instance"], cycle_us, self.load_edits(),
-                                 self.unlisted, base["ini"] if base else None)
         project = self._load_project()
+        p = configure.build_plan(self.cfg_sources, current, self.config["instance"], cycle_us, self.load_edits(),
+                                 self.unlisted, base["ini"] if base else None, eoe=(project or {}).get("eoe"))
         if project and current["eni"] and project.get("eni_checksum") != generate.checksum(current["eni"]):
             p["warnings"].append("The master's configuration changed since this list was started")
         p["warnings"] += self._task_cycle_warnings(p["cycle_us"])
@@ -1221,7 +1253,8 @@ class Core:
             except Exception:
                 cycle = None
         current = self.current or {"eni": b"", "ini": b"", "parsed": None}
-        plan = configure.build_plan(sources, current, self.config["instance"], cycle, user_edits, offline=True)
+        plan = configure.build_plan(sources, current, self.config["instance"], cycle, user_edits, offline=True,
+                                    eoe=parsed["eoe"])
         if plan["errors"] or not plan["eni"]:
             raise document.DocumentError(plan["errors"] or ["the configuration could not be built"], plan["warnings"])
         plan["warnings"] += self._task_cycle_warnings(plan["cycle_us"])
@@ -1244,8 +1277,9 @@ class Core:
                 running = (self.current or {}).get("eni")
                 source = doc if isinstance(doc, dict) else json.loads(doc)
                 files = {"ethercat.xml": plan["eni"], "ethercat.ini": plan["ini"],
-                         "project.json": json.dumps({"eni_checksum": generate.checksum(running) if running else None,
-                                                     "devices": entries}, indent=2).encode(),
+                         "project.json": json.dumps(dict({"eni_checksum": generate.checksum(running) if running else None,
+                                                          "devices": entries}, **({"eoe": parsed["eoe"]} if parsed["eoe"] else {})),
+                                                    indent=2).encode(),
                          "edits.json": json.dumps({str(k): v for k, v in sorted(user_edits.items())}, indent=2).encode(),
                          "document.json": json.dumps({k: v for k, v in source.items() if k != "overwrite"}, indent=2).encode()}
                 self._write_saved(name, parsed["overwrite"], files,
@@ -1312,7 +1346,8 @@ class Core:
             if self._load_project() is None:
                 raise ConfigError("there is no Configuration list yet")
             plan = self._build()
-            doc, warnings = document.export(self.cfg_sources, self.load_edits(), name, plan["cycle_us"])
+            eoe = {k: v for k, v in self.project_eoe().items() if k != "own"}
+            doc, warnings = document.export(self.cfg_sources, self.load_edits(), name, plan["cycle_us"], eoe)
             return self._document_checked(doc, warnings, plan["eni"], "the Configuration list")
 
     def _offline_sources(self, entries: list, slaves: list) -> list:
@@ -1356,10 +1391,11 @@ class Core:
         else:
             slaves = sorted(eni.parse_eni(eni_bytes)["slaves"], key=lambda s: s["position"])
             entries = self._entries_from_eni(slaves)
-        cycle = eni.parse_ini((ini_bytes or read("project-base.ini")).decode("latin-1")).get("EtherCAT.Master", {}).get("CycleTimeUs")
+        ini = eni.parse_ini((ini_bytes or read("project-base.ini")).decode("latin-1"))
+        cycle = ini.get("EtherCAT.Master", {}).get("CycleTimeUs")
         with self.lock:
             doc, warnings = document.export(self._offline_sources(entries, slaves), saved_edits, name,
-                                            int(cycle) if cycle and cycle.isdigit() else None)
+                                            int(cycle) if cycle and cycle.isdigit() else None, generate.eoe_from_ini(ini))
             return self._document_checked(doc, warnings, eni_bytes, "the saved one")
 
     def start_export(self, name: str) -> str:
@@ -1440,12 +1476,12 @@ class Core:
                 if os.path.exists(os.path.join(folder, "project-base.xml")):
                     self._write_base(read("project-base.xml"),
                                      read("project-base.ini") if os.path.exists(os.path.join(folder, "project-base.ini")) else b"")
-                self._write_project(project["devices"], project.get("eni_checksum"))
+                self._write_project(project["devices"], project.get("eni_checksum"), eoe=project.get("eoe"))
             else:
                 eni_bytes, ini_bytes = read("ethercat.xml"), read("ethercat.ini")
                 slaves = sorted(eni.parse_eni(eni_bytes)["slaves"], key=lambda s: s["position"])
                 self._write_base(eni_bytes, ini_bytes)
-                self._write_project(self._entries_from_eni(slaves), generate.checksum(eni_bytes))
+                self._write_project(self._entries_from_eni(slaves), generate.checksum(eni_bytes), eoe=None)
             self._save_edits(saved_edits)
             self._project_changed()
 

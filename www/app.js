@@ -789,8 +789,39 @@ async function openDevice(pos) {
 let plan = null;
 let downloadFinished = null;
 
+let eoeShown = "";           // the EoE setting in the fields: the poll leaves them alone while they are being changed
+let eoeDirty = false;
+for (const id of ["eoe-on", "eoe-ip", "eoe-mask"]) $(id).addEventListener("input", () => { eoeDirty = true; });
+
+function renderEoe(e) {
+  if (!e) return;
+  const shown = JSON.stringify(e);
+  $("eoe-source").textContent = e.own ? "Set in this list" : "As the running configuration";
+  $("eoe-reset").disabled = !e.own;
+  if (eoeDirty || shown === eoeShown) return;
+  eoeShown = shown;
+  $("eoe-on").checked = e.enabled;
+  $("eoe-ip").value = e.ip;
+  $("eoe-mask").value = e.mask;
+}
+
+$("eoe-save").onclick = () => projectChange(async () => {
+  const e = await api("PUT", "/project/eoe", { enabled: $("eoe-on").checked, ip: $("eoe-ip").value.trim(),
+    mask: $("eoe-mask").value.trim() });
+  eoeDirty = false;
+  eoeShown = "";
+  renderEoe(e);
+});
+$("eoe-reset").onclick = () => projectChange(async () => {
+  await api("DELETE", "/project/eoe");
+  eoeDirty = false;
+  eoeShown = "";
+});
+
 function renderConfig(s) {
   const busy = s.scan.running || s.download.running || s.master_request.running;
+  renderEoe(s.configuration && s.configuration.eoe);
+  $("eoe-save").disabled = busy || !(s.configuration && s.configuration.exists);
   $("build").disabled = busy;
   $("write").disabled = busy || !plan || plan.errors.length > 0;
   if (s.master && !$("cycle").value && s.master.cycle_us) $("cycle").value = s.master.cycle_us;

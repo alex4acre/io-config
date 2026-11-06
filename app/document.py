@@ -22,7 +22,7 @@ from app.eni import num
 SCHEMA = 1
 MAX_DEVICES = 1024
 MAX_SIZE = 1024 * 1024         # bytes of JSON, as for a REST body
-TOP_KEYS = {"schema", "name", "overwrite", "cycle_us", "devices"}
+TOP_KEYS = {"schema", "name", "overwrite", "cycle_us", "eoe", "devices"}
 DEVICE_KEYS = {"vendor", "product", "revision", "name", "connected_to", "pdos", "modules", "dc_mode", "startup",
                "variable_names", "soe_mdt", "soe_at"}
 EDIT_KEYS = ("name", "pdos", "modules", "dc_mode", "startup", "variable_names", "soe_mdt", "soe_at")
@@ -126,6 +126,9 @@ def parse(doc) -> dict:
     cycle = doc.get("cycle_us")
     if cycle is not None and (not isinstance(cycle, int) or isinstance(cycle, bool) or not 125 <= cycle <= 100000):
         problems.append('"cycle_us" must be 125 to 100000')
+    eoe = doc.get("eoe")
+    if eoe is not None:
+        problems += generate.check_eoe(eoe)
     devices = doc.get("devices")
     if not isinstance(devices, list) or not devices:
         problems.append('"devices" must be a list with at least one device')
@@ -162,7 +165,7 @@ def parse(doc) -> dict:
         seen[str(device.get("name") or f"#{position}").lower()] = position
     if problems:
         raise DocumentError(problems)
-    return {"name": doc["name"], "overwrite": doc.get("overwrite", False), "cycle_us": cycle, "devices": out}
+    return {"name": doc["name"], "overwrite": doc.get("overwrite", False), "cycle_us": cycle, "eoe": eoe, "devices": out}
 
 
 # --- the way back: a device list as a document ------------------------------------------------------------
@@ -218,7 +221,7 @@ def _choices(row: dict, src: dict, dev: dict, label: str, warnings: list):
                 row[key] = _telegram(dev, direction)
 
 
-def export(sources: list, user_edits: dict, name: str, cycle_us=None) -> tuple:
+def export(sources: list, user_edits: dict, name: str, cycle_us=None, eoe: dict = None) -> tuple:
     """(document, warnings) for a device list, as configure.build_plan would build it. Always names every device, since
     connected_to refers to names."""
     user_edits = user_edits or {}
@@ -258,5 +261,7 @@ def export(sources: list, user_edits: dict, name: str, cycle_us=None) -> tuple:
     document = {"schema": SCHEMA, "name": name}
     if cycle_us:
         document["cycle_us"] = cycle_us
+    if eoe:
+        document["eoe"] = {k: eoe[k] for k in ("enabled", "ip", "mask")}
     document["devices"] = devices
     return document, warnings

@@ -120,6 +120,20 @@ try:
     check(js("return document.querySelectorAll('#devices tbody tr')[2].cells[8].textContent") == "not read", "and no other device")
     js("document.getElementById('d-close').click()")
     check(js("return window.tipsMissing") == [], "every tooltip finds its element: " + str(js("return window.tipsMissing")))
+    # EoE: from the running ini (on in the simulated master) until the list gets its own setting
+    check(until("document.getElementById('eoe-source').textContent === 'As the running configuration' && "
+                "document.getElementById('eoe-on').checked && document.getElementById('eoe-ip').value === '172.31.254.254'"),
+          "EoE shows the running setting")
+    js("const c = document.getElementById('eoe-on'); c.checked = false; c.dispatchEvent(new Event('input')); "
+       "document.getElementById('eoe-save').click()")
+    check(until("document.getElementById('eoe-source').textContent === 'Set in this list' && !document.getElementById('eoe-on').checked"),
+          "EoE switched off and kept with the list")
+    js("const i = document.getElementById('eoe-ip'); i.value = '172.31.254'; i.dispatchEvent(new Event('input')); "
+       "document.getElementById('eoe-save').click()")
+    check(until("/not an IPv4 address/.test(document.body.innerText)"), "a wrong address is refused with the reason")
+    js("document.getElementById('eoe-reset').click()")
+    check(until("document.getElementById('eoe-source').textContent === 'As the running configuration'"), "Use running setting")
+    js("const i = document.getElementById('eoe-ip'); i.value = '172.31.254.254'; i.dispatchEvent(new Event('input'));")
     untipped = js("return [...document.querySelectorAll('th')].filter((h) => h.textContent.trim() && !h.title).map((h) => h.closest('table').id + ':' + h.textContent)")
     check(untipped == [], f"every column has a tooltip: {untipped}")
     check("No ESI" in js("return document.querySelectorAll('#devices tbody tr')[3].cells[9].firstChild.title"), "the Findings badge lists its findings: " + js("return document.querySelectorAll('#devices tbody tr')[3].cells[9].firstChild.title"))

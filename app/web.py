@@ -52,6 +52,8 @@ ROUTES = [
     ("PUT", r"/devices/(\d+)/soe/(\d+)", "put_soe"),
     ("POST", r"/project/devices", "post_project_device"),
     ("POST", r"/project/devices/add-from-bus", "post_project_add_from_bus"),
+    ("PUT", r"/project/eoe", "put_project_eoe"),
+    ("DELETE", r"/project/eoe", "delete_project_eoe"),
     ("DELETE", r"/project/devices/(\d+)", "delete_project_device"),
     ("POST", r"/project/devices/(\d+)/move", "post_project_move"),
     ("POST", r"/project/update", "post_project_update"),
@@ -253,6 +255,13 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         if not isinstance(d.get("bus_pos"), int):
             raise HttpError(400, '{"bus_pos"} is needed')
         self.send_json(201, {"position": core.project_add_from_bus(d["bus_pos"])})
+
+    def put_project_eoe(self):
+        d = self.read_json()
+        self.send_json(200, core.set_project_eoe({k: d.get(k) for k in ("enabled", "ip", "mask")} if set(d) <= {"enabled", "ip", "mask"} else d))
+
+    def delete_project_eoe(self):
+        self.send_json(200, core.set_project_eoe(None))
 
     def delete_project_device(self, position):
         core.project_remove(int(position))
