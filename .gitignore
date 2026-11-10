@@ -10,3 +10,6 @@ __pycache__/
 *.pyc
 # development data (fake mode)
 data/
+
+# local ENI test files
+ENI Test Files/
